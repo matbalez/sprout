@@ -4,6 +4,11 @@ import data from "@emoji-mart/data";
 import * as React from "react";
 
 import type { TimelineMessage } from "@/features/messages/types";
+import {
+  type SystemMessagePayload,
+  parseSystemMessagePayload,
+} from "@/features/messages/lib/describeSystemEvent";
+import { iconForSystemEvent } from "@/features/messages/lib/systemEventIcons";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -15,14 +20,6 @@ import { Spinner } from "@/shared/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { MessageTimestamp } from "./MessageTimestamp";
-
-type SystemMessagePayload = {
-  type: string;
-  actor?: string;
-  target?: string;
-  topic?: string;
-  purpose?: string;
-};
 
 type SystemMessageDescription = {
   action: React.ReactNode;
@@ -171,10 +168,8 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
     select: handleReactionSelect,
   } = useReactionHandler(message, onToggleReaction);
 
-  let payload: SystemMessagePayload;
-  try {
-    payload = JSON.parse(message.body);
-  } catch {
+  const payload = parseSystemMessagePayload(message.body);
+  if (!payload) {
     return null;
   }
 
@@ -187,6 +182,8 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
   if (!description) {
     return null;
   }
+
+  const Icon = iconForSystemEvent(payload.type);
 
   const avatarPubkey = payload.actor ?? payload.target;
   const avatarLabel = avatarPubkey
@@ -220,7 +217,8 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
               time={message.time}
             />
           </div>
-          <p className="mt-1 text-sm leading-snug text-muted-foreground/70">
+          <p className="mt-1 flex items-center gap-1.5 text-sm leading-snug text-muted-foreground/70">
+            <Icon className="h-3 w-3 shrink-0" />
             {description.action}
           </p>
           <div>
