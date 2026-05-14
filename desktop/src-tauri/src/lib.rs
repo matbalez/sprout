@@ -24,7 +24,7 @@ use huddle::{
     speak_agent_message, start_huddle, start_stt_pipeline,
 };
 use managed_agents::{
-    ensure_nest, kill_stale_tracked_processes, load_managed_agents,
+    ensure_nest, kill_stale_tracked_processes, load_managed_agents, regenerate_nest_context,
     restore_managed_agents_on_launch, save_managed_agents, sync_managed_agent_processes,
     BackendKind, ManagedAgentProcess,
 };
@@ -391,6 +391,10 @@ pub fn run() {
             // Non-fatal: agents fall back to $HOME if nest creation fails.
             if let Err(error) = ensure_nest() {
                 eprintln!("sprout-desktop: failed to create nest: {error}");
+            }
+
+            if let Err(error) = regenerate_nest_context(&app_handle) {
+                eprintln!("sprout-desktop: failed to regenerate nest context: {error}");
             }
 
             // Pre-download voice models in the background so they're ready
