@@ -2,7 +2,7 @@ use nostr::PublicKey;
 use sprout_sdk::{DiffMeta, ThreadRef, VoteDirection};
 use uuid::Uuid;
 
-use crate::client::SproutClient;
+use crate::client::{normalize_events, normalize_write_response, SproutClient};
 use crate::error::CliError;
 use crate::validate::{
     infer_language, parse_event_id, parse_uuid, read_or_stdin, truncate_diff,
@@ -234,7 +234,7 @@ pub async fn cmd_get_messages(
     let limit = limit.unwrap_or(50).min(200);
 
     let mut filter = serde_json::json!({
-        "kinds": [9, 40002],
+        "kinds": [9, 40002, 40008, 45001, 45003],
         "#h": [channel_id],
         "limit": limit
     });
@@ -255,7 +255,10 @@ pub async fn cmd_get_messages(
     }
 
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    events.sort_by_key(|e| e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0));
+    let raw_sorted = serde_json::to_string(&events).unwrap_or_default();
+    println!("{}", normalize_events(&raw_sorted));
     Ok(())
 }
 
@@ -270,15 +273,23 @@ pub async fn cmd_get_thread(
     validate_hex64(event_id)?;
     let limit = limit.unwrap_or(100).min(500);
 
-    // Get the root event and all replies referencing it via e-tag
-    let filter = serde_json::json!({
-        "kinds": [9, 40002],
+    // Two filters ORed in a single HTTP call:
+    // 1. Replies referencing this event via e-tag (no kind restriction)
+    // 2. The root event itself by ID
+    let reply_filter = serde_json::json!({
         "#h": [channel_id],
         "#e": [event_id],
         "limit": limit
     });
-    let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let root_filter = serde_json::json!({
+        "ids": [event_id],
+        "limit": 1
+    });
+    let resp = client.query_multi(&[reply_filter, root_filter]).await?;
+    let mut events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    events.sort_by_key(|e| e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0));
+    let raw_sorted = serde_json::to_string(&events).unwrap_or_default();
+    println!("{}", normalize_events(&raw_sorted));
     Ok(())
 }
 
@@ -293,7 +304,7 @@ pub async fn cmd_search(
         "limit": limit
     });
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    println!("{}", normalize_events(&resp));
     Ok(())
 }
 
@@ -375,7 +386,7 @@ pub async fn cmd_send_message(client: &SproutClient, p: SendMessageParams) -> Re
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -466,7 +477,7 @@ pub async fn cmd_send_diff_message(
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -483,7 +494,7 @@ pub async fn cmd_delete_message(client: &SproutClient, event_id: &str) -> Result
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -506,7 +517,7 @@ pub async fn cmd_edit_message(
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -537,7 +548,7 @@ pub async fn cmd_vote_on_post(
     let event = client.sign_event(builder)?;
 
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::client::SproutClient;
+use crate::client::{extract_d_tag, extract_p_tags, normalize_write_response, SproutClient};
 use crate::error::CliError;
 use crate::validate::{parse_uuid, read_or_stdin, validate_hex64, validate_uuid};
 
@@ -10,34 +10,112 @@ use crate::validate::{parse_uuid, read_or_stdin, validate_hex64, validate_uuid};
 
 pub async fn cmd_list_channels(
     client: &SproutClient,
-    _visibility: Option<&str>,
-    _member: Option<bool>,
+    visibility: Option<&str>,
+    member: Option<bool>,
 ) -> Result<(), CliError> {
-    // Query kind:39002 channel metadata events.
-    // If member=true, filter by #p tag containing our pubkey.
-    let my_pk = client.keys().public_key().to_hex();
-    let mut filter = serde_json::json!({
-        "kinds": [39002]
-    });
-    // When member filter is requested, query channels where we're a participant
-    if _member == Some(true) {
-        filter["#p"] = serde_json::json!([my_pk]);
-    }
-    // Visibility filtering is done client-side from the returned events
-    let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let raw = if member == Some(true) {
+        // Step 1: find channel IDs where we're a member (kind:39002)
+        let my_pk = client.keys().public_key().to_hex();
+        let member_filter = serde_json::json!({
+            "kinds": [39002],
+            "#p": [my_pk],
+            "limit": 500
+        });
+        let member_resp = client.query(&member_filter).await?;
+        let member_events: Vec<serde_json::Value> =
+            serde_json::from_str(&member_resp).unwrap_or_default();
+        let channel_ids: Vec<String> = member_events
+            .iter()
+            .map(extract_d_tag)
+            .filter(|id| !id.is_empty())
+            .collect();
+        if channel_ids.is_empty() {
+            println!("[]");
+            return Ok(());
+        }
+        // Step 2: fetch kind:41 metadata for those channels
+        let metadata_filter = serde_json::json!({
+            "kinds": [41],
+            "#d": channel_ids,
+            "limit": 500
+        });
+        client.query(&metadata_filter).await?
+    } else {
+        let filter = serde_json::json!({
+            "kinds": [41],
+            "limit": 500
+        });
+        client.query(&filter).await?
+    };
+
+    let events: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap_or_default();
+    let channels: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|e| {
+            if let Some(vis) = visibility {
+                // Client-side visibility filter: check for ["visibility", vis] in tags
+                e.get("tags")
+                    .and_then(|t| t.as_array())
+                    .map(|tags| {
+                        tags.iter().any(|tag| {
+                            tag.as_array()
+                                .map(|a| {
+                                    a.first().and_then(|v| v.as_str()) == Some("visibility")
+                                        && a.get(1).and_then(|v| v.as_str()) == Some(vis)
+                                })
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .map(|e| {
+            let content: serde_json::Value = e
+                .get("content")
+                .and_then(|c| c.as_str())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(serde_json::json!({}));
+            serde_json::json!({
+                "channel_id": extract_d_tag(e),
+                "name": content.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                "description": content.get("about").and_then(|v| v.as_str()).unwrap_or(""),
+                "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        })
+        .collect();
+    let output = serde_json::to_string(&channels).unwrap_or_default();
+    println!("{output}");
     Ok(())
 }
 
 pub async fn cmd_get_channel(client: &SproutClient, channel_id: &str) -> Result<(), CliError> {
     validate_uuid(channel_id)?;
-    // Query kind:39002 with #h tag matching the channel UUID
     let filter = serde_json::json!({
-        "kinds": [39002],
-        "#h": [channel_id]
+        "kinds": [41],
+        "#d": [channel_id],
+        "limit": 1
     });
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    if let Some(e) = events.first() {
+        let content: serde_json::Value = e
+            .get("content")
+            .and_then(|c| c.as_str())
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::json!({}));
+        let normalized = serde_json::json!({
+            "channel_id": extract_d_tag(e),
+            "name": content.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+            "description": content.get("about").and_then(|v| v.as_str()).unwrap_or(""),
+            "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
+            "pubkey": e.get("pubkey").and_then(|v| v.as_str()).unwrap_or(""),
+        });
+        println!("{normalized}");
+    } else {
+        println!("null");
+    }
     Ok(())
 }
 
@@ -46,25 +124,35 @@ pub async fn cmd_list_channel_members(
     channel_id: &str,
 ) -> Result<(), CliError> {
     validate_uuid(channel_id)?;
-    // Query kind:39002 channel metadata — members are in the p-tags
     let filter = serde_json::json!({
         "kinds": [39002],
-        "#h": [channel_id]
+        "#d": [channel_id],
+        "limit": 1
     });
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    let members = events
+        .first()
+        .map(extract_p_tags)
+        .unwrap_or_default();
+    let output = serde_json::to_string(&members).unwrap_or_default();
+    println!("{output}");
     Ok(())
 }
 
 pub async fn cmd_get_canvas(client: &SproutClient, channel_id: &str) -> Result<(), CliError> {
     validate_uuid(channel_id)?;
-    // Canvas is kind:40100 with #h tag
     let filter = serde_json::json!({
         "kinds": [40100],
         "#h": [channel_id]
     });
     let resp = client.query(&filter).await?;
-    println!("{resp}");
+    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
+    if let Some(content) = events.first().and_then(|e| e.get("content")).and_then(|c| c.as_str()) {
+        println!("{content}");
+    } else {
+        println!("No canvas set for this channel.");
+    }
     Ok(())
 }
 
@@ -114,7 +202,13 @@ pub async fn cmd_create_channel(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    let mut normalized: serde_json::Value =
+        serde_json::from_str(&resp).unwrap_or(serde_json::json!({}));
+    normalized["channel_id"] = serde_json::json!(channel_uuid.to_string());
+    if normalized.get("accepted").is_none() {
+        normalized["accepted"] = serde_json::json!(true);
+    }
+    println!("{normalized}");
     Ok(())
 }
 
@@ -136,7 +230,7 @@ pub async fn cmd_update_channel(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -152,7 +246,7 @@ pub async fn cmd_set_channel_topic(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -168,7 +262,7 @@ pub async fn cmd_set_channel_purpose(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -180,7 +274,7 @@ pub async fn cmd_join_channel(client: &SproutClient, channel_id: &str) -> Result
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -192,7 +286,7 @@ pub async fn cmd_leave_channel(client: &SproutClient, channel_id: &str) -> Resul
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -204,7 +298,7 @@ pub async fn cmd_archive_channel(client: &SproutClient, channel_id: &str) -> Res
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -219,7 +313,7 @@ pub async fn cmd_unarchive_channel(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -231,7 +325,7 @@ pub async fn cmd_delete_channel(client: &SproutClient, channel_id: &str) -> Resu
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -262,7 +356,7 @@ pub async fn cmd_add_channel_member(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -279,7 +373,7 @@ pub async fn cmd_remove_channel_member(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
@@ -296,7 +390,7 @@ pub async fn cmd_set_canvas(
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
-    println!("{resp}");
+    println!("{}", normalize_write_response(&resp));
     Ok(())
 }
 
