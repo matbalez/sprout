@@ -8,7 +8,7 @@ import {
   type SystemMessagePayload,
   parseSystemMessagePayload,
 } from "@/features/messages/lib/describeSystemEvent";
-import { iconForSystemEvent } from "@/features/messages/lib/systemEventIcons";
+
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -219,8 +219,6 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
     return null;
   }
 
-  const Icon = iconForSystemEvent(payload.type);
-
   const avatarLabel = description.avatarPubkey
     ? resolveUserLabel({
         pubkey: description.avatarPubkey,
@@ -242,7 +240,6 @@ export const SystemMessageRow = React.memo(function SystemMessageRow({
           displayName={avatarLabel}
           testId="system-message-avatar"
         />
-        <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
         <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {description.text}
         </p>

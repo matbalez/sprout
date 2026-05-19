@@ -110,6 +110,7 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
           <SystemEventGroupRow
             entries={entry.entries}
             currentPubkey={currentPubkey}
+            onToggleReaction={onToggleReaction}
             personaLookup={personaLookup}
             profiles={profiles}
           />

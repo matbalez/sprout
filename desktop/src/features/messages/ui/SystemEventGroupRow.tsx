@@ -1,6 +1,7 @@
 import * as React from "react";
 import { ChevronRight } from "lucide-react";
 
+import type { TimelineMessage } from "@/features/messages/types";
 import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
 import {
   type UserProfileLookup,
@@ -10,7 +11,7 @@ import {
   parseSystemMessagePayload,
   type SystemMessagePayload,
 } from "@/features/messages/lib/describeSystemEvent";
-import { iconForSystemEventGroup } from "@/features/messages/lib/systemEventIcons";
+
 import { cn } from "@/shared/lib/cn";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { SystemMessageRow } from "./SystemMessageRow";
@@ -167,11 +168,17 @@ function resolveAvatarUrl(
 export function SystemEventGroupRow({
   entries,
   currentPubkey,
+  onToggleReaction,
   personaLookup,
   profiles,
 }: {
   entries: MainTimelineEntry[];
   currentPubkey?: string;
+  onToggleReaction?: (
+    message: TimelineMessage,
+    emoji: string,
+    remove: boolean,
+  ) => Promise<void>;
   personaLookup?: Map<string, string>;
   profiles?: UserProfileLookup;
 }) {
@@ -188,11 +195,6 @@ export function SystemEventGroupRow({
   const summary = React.useMemo(
     () => buildSummary(payloads, currentPubkey, profiles, personaLookup),
     [payloads, currentPubkey, profiles, personaLookup],
-  );
-
-  const GroupIcon = React.useMemo(
-    () => iconForSystemEventGroup(payloads),
-    [payloads],
   );
 
   const avatarPubkeys = React.useMemo(
@@ -242,7 +244,6 @@ export function SystemEventGroupRow({
             </div>
           ) : null}
         </div>
-        <GroupIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
         <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {summary}
         </p>
@@ -266,6 +267,7 @@ export function SystemEventGroupRow({
               key={entry.message.id}
               message={entry.message}
               currentPubkey={currentPubkey}
+              onToggleReaction={onToggleReaction}
               personaLookup={personaLookup}
               profiles={profiles}
             />
