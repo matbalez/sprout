@@ -106,13 +106,14 @@ export const TimelineMessageList = React.memo(function TimelineMessageList({
     if (entry.entryType === "system-event-group") {
       const groupKey = entry.entries.map((e) => e.message.id).join(",");
       currentDayGroup.elements.push(
-        <SystemEventGroupRow
-          key={`sys-group-${groupKey}`}
-          entries={entry.entries}
-          currentPubkey={currentPubkey}
-          personaLookup={personaLookup}
-          profiles={profiles}
-        />,
+        <div key={`sys-group-${groupKey}`} className="my-1">
+          <SystemEventGroupRow
+            entries={entry.entries}
+            currentPubkey={currentPubkey}
+            personaLookup={personaLookup}
+            profiles={profiles}
+          />
+        </div>,
       );
       continue;
     }

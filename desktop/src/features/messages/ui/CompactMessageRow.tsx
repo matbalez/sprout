@@ -10,7 +10,6 @@ import { parseImetaTags } from "@/features/messages/lib/parseImeta";
 import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
 import { Markdown } from "@/shared/ui/markdown";
 import { MessageActionBar } from "./MessageActionBar";
-import { MessageTimestamp } from "./MessageTimestamp";
 
 const DiffMessage = React.lazy(() => import("./DiffMessage"));
 const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
@@ -160,15 +159,8 @@ export const CompactMessageRow = React.memo(
         data-message-id={message.id}
         data-testid="compact-message-row"
       >
-        {/* Hover timestamp in the avatar gutter */}
-        <div className="flex w-[42px] shrink-0 items-start justify-center pt-1">
-          <span className="text-[10px] leading-none text-muted-foreground/0 transition-colors group-hover/message:text-muted-foreground/60">
-            <MessageTimestamp
-              createdAt={message.createdAt}
-              time={message.time}
-            />
-          </span>
-        </div>
+        {/* Empty gutter aligned with avatar column (36px avatar + 10px gap = 46px) */}
+        <div className="w-[46px] shrink-0" />
 
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-start">
