@@ -12,7 +12,11 @@ import {
 } from "@/features/messages/lib/describeSystemEvent";
 import { iconForSystemEventGroup } from "@/features/messages/lib/systemEventIcons";
 import { cn } from "@/shared/lib/cn";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
 import { SystemMessageRow } from "./SystemMessageRow";
+
+/** Max avatars to show in the stacked ingress before showing +N. */
+const MAX_STACKED_AVATARS = 4;
 
 // ---------------------------------------------------------------------------
 // Summary builder
@@ -117,6 +121,46 @@ function buildSummary(
 }
 
 // ---------------------------------------------------------------------------
+// Avatar helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract unique pubkeys to display as stacked avatars.
+ * For add/remove: show targets. For topic/purpose/channel: show actors.
+ */
+function extractAvatarPubkeys(payloads: SystemMessagePayload[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const p of payloads) {
+    const key =
+      p.type === "member_joined" ||
+      p.type === "member_removed" ||
+      p.type === "member_left"
+        ? // For member_left the actor IS the target (they left themselves)
+          p.type === "member_left"
+          ? p.actor
+          : p.target
+        : p.actor;
+
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  }
+
+  return result;
+}
+
+function resolveAvatarUrl(
+  pubkey: string | undefined,
+  profiles: UserProfileLookup | undefined,
+): string | null {
+  if (!pubkey || !profiles) return null;
+  return profiles[pubkey.toLowerCase()]?.avatarUrl ?? null;
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -151,6 +195,14 @@ export function SystemEventGroupRow({
     [payloads],
   );
 
+  const avatarPubkeys = React.useMemo(
+    () => extractAvatarPubkeys(payloads),
+    [payloads],
+  );
+
+  const visibleAvatars = avatarPubkeys.slice(0, MAX_STACKED_AVATARS);
+  const overflowCount = avatarPubkeys.length - visibleAvatars.length;
+
   const groupId = React.useId();
   const panelId = `${groupId}-panel`;
 
@@ -160,15 +212,40 @@ export function SystemEventGroupRow({
       <button
         aria-controls={panelId}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left transition-colors hover:bg-muted/50"
+        className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left transition-colors hover:bg-muted/50"
         data-testid="system-event-group-toggle"
         onClick={() => setExpanded((prev) => !prev)}
         type="button"
       >
-        <div className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-muted">
-          <GroupIcon className="h-3 w-3 text-muted-foreground" />
+        {/* Stacked avatars */}
+        <div className="flex shrink-0 items-center">
+          {visibleAvatars.map((pubkey, index) => (
+            <div
+              key={pubkey}
+              className={index > 0 ? "-ml-1.5" : ""}
+              style={{ zIndex: 10 - index }}
+            >
+              <UserAvatar
+                avatarUrl={resolveAvatarUrl(pubkey, profiles)}
+                className="rounded-full border-2 border-background"
+                displayName={resolveActorName(pubkey, currentPubkey, profiles)}
+                size="xs"
+              />
+            </div>
+          ))}
+          {overflowCount > 0 ? (
+            <div
+              className="-ml-1.5 flex h-5 w-5 items-center justify-center rounded-full border-2 border-background bg-muted text-[8px] font-medium text-muted-foreground"
+              style={{ zIndex: 10 - visibleAvatars.length }}
+            >
+              +{overflowCount}
+            </div>
+          ) : null}
         </div>
-        <p className="flex-1 text-xs text-muted-foreground">{summary}</p>
+        <GroupIcon className="h-3 w-3 shrink-0 text-muted-foreground" />
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          {summary}
+        </p>
         <ChevronRight
           className={cn(
             "h-3.5 w-3.5 shrink-0 text-muted-foreground/60 transition-transform duration-150",
