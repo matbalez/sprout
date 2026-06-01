@@ -473,12 +473,15 @@ export function ForumComposer({
             formattingDisabled={disabled ?? false}
             isEmojiPickerOpen={isEmojiPickerOpen}
             isFormattingOpen={isFormattingOpen}
+            isKudosActive={false}
             isSending={isSending ?? false}
             isUploading={media.isUploading}
+            kudosDisabled
             onCaptureSelection={handleToolbarMouseDown}
             onEmojiPickerOpenChange={setIsEmojiPickerOpen}
             onEmojiSelect={insertEmoji}
             onFormattingToggle={handleFormattingToggle}
+            onGiveKudos={() => {}}
             onOpenMentionPicker={openMentionPicker}
             onPaperclip={handlePaperclipClick}
             sendDisabled={sendDisabled}

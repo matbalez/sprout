@@ -10,6 +10,7 @@ import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelFindBar } from "@/features/search/ui/ChannelFindBar";
+import { isWalletBotChannelId } from "@/features/wallet/api";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
 import {
   BotActivityComposerAction,
@@ -63,11 +64,13 @@ type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
+    options?: { kudos?: boolean },
   ) => Promise<void>;
   onSendThreadReply: (
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
+    options?: { kudos?: boolean },
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
   onToggleReaction?: (
@@ -163,6 +166,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   const timelineScrollRef = React.useRef<HTMLDivElement>(null);
   const composerWrapperRef = React.useRef<HTMLDivElement>(null);
   useComposerHeightPadding(timelineScrollRef, composerWrapperRef);
+  const isWalletBotActive = isWalletBotChannelId(activeChannel?.id);
 
   // Scope the edit target to the correct composer: if the message being edited
   // lives inside the open thread (thread head or a reply), show the editing UI
@@ -177,12 +181,14 @@ export const ChannelPane = React.memo(function ChannelPane({
 
   const isNonMemberView =
     activeChannel !== null &&
+    !isWalletBotActive &&
     !activeChannel.isMember &&
     activeChannel.visibility === "open" &&
     !activeChannel.archivedAt;
 
   const isComposerDisabled =
-    !activeChannel?.isMember ||
+    activeChannel === null ||
+    (!isWalletBotActive && !activeChannel.isMember) ||
     activeChannel.archivedAt !== null ||
     activeChannel.channelType === "forum" ||
     isSending;
@@ -283,7 +289,11 @@ export const ChannelPane = React.memo(function ChannelPane({
           onDelete={onDelete}
           onEdit={onEdit}
           onMarkUnread={onMarkUnread}
-          onReply={activeChannel?.archivedAt ? undefined : onOpenThread}
+          onReply={
+            activeChannel?.archivedAt || isWalletBotActive
+              ? undefined
+              : onOpenThread
+          }
           onTargetReached={onTargetReached}
           onToggleReaction={onToggleReaction}
           searchActiveMessageId={channelFind.activeMatch?.messageId ?? null}
@@ -336,11 +346,13 @@ export const ChannelPane = React.memo(function ChannelPane({
                 placeholder={
                   activeChannel?.archivedAt
                     ? "Archived channels are read-only."
-                    : activeChannel?.channelType === "forum"
-                      ? "Forum posting is not wired in this pass."
-                      : activeChannel
-                        ? `Message #${activeChannel.name}`
-                        : "Select a channel"
+                    : isWalletBotActive
+                      ? "Message WalletBot"
+                      : activeChannel?.channelType === "forum"
+                        ? "Forum posting is not wired in this pass."
+                        : activeChannel
+                          ? `Message #${activeChannel.name}`
+                          : "Select a channel"
                 }
                 showTopBorder={false}
               />

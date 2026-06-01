@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { TimelineMessage } from "@/features/messages/types";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
+import { MessageTips } from "@/features/messages/ui/MessageTips";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
@@ -24,6 +25,14 @@ const DiffMessageExpanded = React.lazy(() => import("./DiffMessageExpanded"));
 
 const MESSAGE_TEXT_OFFSET_PX = 54;
 const NESTED_REPLY_OFFSET_PX = 28;
+
+function KudosMessageChip() {
+  return (
+    <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-300 px-2 py-0.5 text-[11px] font-bold uppercase text-zinc-950 shadow-sm">
+      Kudos
+    </span>
+  );
+}
 
 export const MessageRow = React.memo(
   function MessageRow({
@@ -246,16 +255,29 @@ export const MessageRow = React.memo(
 
     const messageBodyNode = (
       <>
-        {renderBody()}
-        <MessageReactions
-          messageId={message.id}
-          reactions={reactions}
-          canToggle={canToggleReactions}
-          pending={reactionPending}
-          onSelect={(emoji) => {
-            void handleReactionSelect(emoji);
-          }}
-        />
+        {message.kudos ? (
+          <div className="flex min-w-0 items-start gap-2">
+            <KudosMessageChip />
+            <div className="min-w-0 flex-1">{renderBody()}</div>
+          </div>
+        ) : (
+          renderBody()
+        )}
+        {message.tipSummary || reactions.length > 0 ? (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pt-1">
+            <MessageTips summary={message.tipSummary} />
+            <MessageReactions
+              messageId={message.id}
+              reactions={reactions}
+              canToggle={canToggleReactions}
+              pending={reactionPending}
+              onSelect={(emoji) => {
+                void handleReactionSelect(emoji);
+              }}
+              className="mt-0 pt-0"
+            />
+          </div>
+        ) : null}
         {reactionErrorMessage ? (
           <p className="mt-1.5 text-xs text-destructive">
             {reactionErrorMessage}
@@ -439,7 +461,9 @@ export const MessageRow = React.memo(
     prev.message.kind === next.message.kind &&
     prev.message.pending === next.message.pending &&
     prev.message.edited === next.message.edited &&
+    prev.message.kudos === next.message.kudos &&
     prev.message.reactions === next.message.reactions &&
+    prev.message.tipSummary === next.message.tipSummary &&
     prev.message.tags === next.message.tags &&
     prev.message.role === next.message.role &&
     prev.message.personaDisplayName === next.message.personaDisplayName &&

@@ -21,6 +21,7 @@ import {
   unarchiveChannel,
   updateChannel,
 } from "@/shared/api/tauri";
+import { withWalletBotChannel } from "@/features/wallet/api";
 import type {
   AddChannelMembersInput,
   Channel,
@@ -104,7 +105,8 @@ function setChannelArchivedState(
 export function useChannelsQuery() {
   return useQuery({
     queryKey: channelsQueryKey,
-    queryFn: async () => sortChannels(await getChannels()),
+    queryFn: async () =>
+      sortChannels(withWalletBotChannel(await getChannels())),
     staleTime: 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,

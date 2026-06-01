@@ -11,6 +11,7 @@ mod prevent_sleep;
 mod relay;
 mod templates;
 mod util;
+mod wallet;
 
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
 use commands::*;
@@ -35,6 +36,7 @@ use std::sync::{
 use tauri::{Emitter, Manager, RunEvent};
 use tauri_plugin_window_state::StateFlags;
 use url::Url;
+use wallet::*;
 
 fn shutdown_managed_agents(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -428,6 +430,13 @@ pub fn run() {
             resolve_persisted_identity(&app_handle, &state)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+            let wallet_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = prewarm_lightning_wallet(wallet_handle).await {
+                    eprintln!("sprout-desktop: failed to prewarm Lexe wallet: {error}");
+                }
+            });
+
             // Start the localhost media streaming proxy. Uses the shared HTTP
             // client so WARP tunnelling applies. The port is stored in AppState
             // and exposed to the frontend via the `get_media_proxy_port` command.
@@ -571,6 +580,7 @@ pub fn run() {
             list_archived_identities,
             resolve_oa_owner,
             list_relay_agents,
+            resolve_shared_agent_owner,
             list_managed_agents,
             create_managed_agent,
             start_managed_agent,
@@ -647,6 +657,21 @@ pub fn run() {
             apply_workspace,
             get_active_workspace,
             set_prevent_sleep_active,
+            get_lightning_wallet_summary,
+            get_lightning_wallet_source_config,
+            set_lightning_wallet_source,
+            refresh_lightning_wallet,
+            reveal_lightning_wallet_seed,
+            get_lightning_wallet_transactions,
+            get_user_wallet_bolt12_offer,
+            send_lightning_wallet_payment,
+            send_message_kudos,
+            send_message_tip,
+            send_shared_agent_invocation_payment,
+            get_walletbot_messages,
+            send_walletbot_command,
+            register_klaim_faucet_channel,
+            pay_klaim_faucet_member,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

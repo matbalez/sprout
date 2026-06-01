@@ -1,5 +1,6 @@
 import { useEffect, useEffectEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { listen } from "@tauri-apps/api/event";
 
 import {
   channelMessagesKey,
@@ -12,6 +13,7 @@ import {
   normalizeMentionPubkeys,
   resolveReplyRootId,
 } from "@/features/messages/lib/threading";
+import { createOptimisticMessage } from "@/features/messages/lib/optimisticMessage";
 import { relayClient } from "@/shared/api/relayClient";
 import {
   addReaction,
@@ -20,7 +22,33 @@ import {
   removeReaction,
   sendChannelMessage,
 } from "@/shared/api/tauri";
-import type { Channel, Identity, RelayEvent } from "@/shared/api/types";
+import type {
+  Channel,
+  Identity,
+  ManagedAgent,
+  Profile,
+  RelayAgent,
+  RelayEvent,
+} from "@/shared/api/types";
+import { buildKudosMessageTag } from "@/features/messages/lib/messageKudos";
+import {
+  echoKudosPayment,
+  payForKudosMessage,
+} from "@/features/messages/lib/sendMessageKudos";
+import {
+  echoSharedAgentInvocationPayments,
+  payForSharedAgentInvocations,
+} from "@/features/messages/lib/sendSharedAgentInvocationPayment";
+import {
+  getWalletBotMessages,
+  isWalletBotChannel,
+  isWalletBotChannelId,
+  sendWalletBotCommand,
+  WALLETBOT_MESSAGES_UPDATED,
+  type WalletBotMessagesPayload,
+  walletBotMessagesToRelayEvents,
+} from "@/features/wallet/api";
+import type { UserProfileLookup } from "@/features/profile/lib/identity";
 // Same .mjs the renderer uses, so the cache-update projection can't drift
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
@@ -33,6 +61,9 @@ type MessageQueryContext = {
   optimisticId: string;
   previousMessages: RelayEvent[];
   queryKey: ReturnType<typeof channelMessagesKey>;
+};
+type WalletBotMutationResult = RelayEvent & {
+  walletBotEvents?: RelayEvent[];
 };
 
 const CHANNEL_HISTORY_LIMIT = 200;
@@ -70,54 +101,6 @@ export function mergeTimelineCacheMessages(
   );
 }
 
-function createOptimisticMessage(
-  channelId: string,
-  content: string,
-  identity: Identity,
-  currentMessages: RelayEvent[],
-  mentionPubkeys: string[] = [],
-  parentEventId: string | null = null,
-  mediaTags: string[][] = [],
-): RelayEvent {
-  const tags: string[][] = [];
-
-  if (parentEventId) {
-    tags.push(
-      ...buildReplyTags(
-        channelId,
-        identity.pubkey,
-        parentEventId,
-        resolveReplyRootId(parentEventId, currentMessages),
-        mentionPubkeys,
-      ),
-    );
-  } else {
-    tags.push(["h", channelId]);
-    tags.push(["p", identity.pubkey]);
-    for (const pubkey of normalizeMentionPubkeys(
-      mentionPubkeys,
-      identity.pubkey,
-    )) {
-      tags.push(["p", pubkey]);
-    }
-  }
-
-  for (const tag of mediaTags) {
-    tags.push(tag);
-  }
-
-  return {
-    id: `optimistic-${crypto.randomUUID()}`,
-    pubkey: identity.pubkey,
-    created_at: Math.floor(Date.now() / 1_000),
-    kind: KIND_STREAM_MESSAGE,
-    tags,
-    content,
-    sig: "",
-    pending: true,
-  };
-}
-
 export function useChannelMessagesQuery(channel: Channel | null) {
   const queryClient = useQueryClient();
   const queryKey = channelMessagesKey(channel?.id ?? "none");
@@ -129,6 +112,13 @@ export function useChannelMessagesQuery(channel: Channel | null) {
     queryFn: async () => {
       if (!channel) {
         throw new Error("No channel selected.");
+      }
+
+      if (isWalletBotChannel(channel)) {
+        const messages = await getWalletBotMessages();
+        return normalizeTimelineMessages(
+          walletBotMessagesToRelayEvents(messages),
+        );
       }
 
       const history = await relayClient.fetchChannelHistory(
@@ -213,6 +203,39 @@ export function useChannelSubscription(channel: Channel | null) {
       return;
     }
 
+    if (isWalletBotChannelId(channelId)) {
+      let isDisposed = false;
+      let unlisten: (() => void) | null = null;
+
+      listen<WalletBotMessagesPayload>(WALLETBOT_MESSAGES_UPDATED, (event) => {
+        if (isDisposed) {
+          return;
+        }
+
+        queryClient.setQueryData<RelayEvent[]>(
+          channelMessagesKey(channelId),
+          normalizeTimelineMessages(
+            walletBotMessagesToRelayEvents(event.payload.messages),
+          ),
+        );
+      })
+        .then((fn) => {
+          if (isDisposed) {
+            fn();
+            return;
+          }
+          unlisten = fn;
+        })
+        .catch((error) => {
+          console.error("Failed to listen for WalletBot messages", error);
+        });
+
+      return () => {
+        isDisposed = true;
+        unlisten?.();
+      };
+    }
+
     let isDisposed = false;
     let cleanup: (() => Promise<void>) | undefined;
     const disposeReconnectListener = relayClient.subscribeToReconnects(() => {
@@ -262,12 +285,21 @@ export function useChannelSubscription(channel: Channel | null) {
         void cleanup();
       }
     };
-  }, [channelId, channelType]);
+  }, [channelId, channelType, queryClient]);
 }
 
 export function useSendMessageMutation(
   channel: Channel | null,
   identity: Identity | undefined,
+  sharedAgentInvocationPayments?: {
+    currentProfile?: Pick<
+      Profile,
+      "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    > | null;
+    managedAgents: readonly ManagedAgent[];
+    profiles?: UserProfileLookup;
+    relayAgents: readonly RelayAgent[];
+  },
 ) {
   const queryClient = useQueryClient();
 
@@ -279,11 +311,13 @@ export function useSendMessageMutation(
       mentionPubkeys?: string[];
       parentEventId?: string | null;
       mediaTags?: string[][];
+      kudos?: boolean;
     },
     MessageQueryContext | undefined
   >({
     mutationFn: async ({
       content,
+      kudos,
       mentionPubkeys,
       parentEventId,
       mediaTags,
@@ -295,6 +329,48 @@ export function useSendMessageMutation(
       if (!identity) {
         throw new Error("No identity available for sending messages.");
       }
+
+      if (isWalletBotChannel(channel)) {
+        if (parentEventId || (mediaTags && mediaTags.length > 0) || kudos) {
+          throw new Error("WalletBot only supports plain commands.");
+        }
+
+        const messages = await sendWalletBotCommand(content);
+        const events = normalizeTimelineMessages(
+          walletBotMessagesToRelayEvents(messages),
+        );
+        const lastEvent = events[events.length - 1];
+        if (!lastEvent) {
+          throw new Error("WalletBot did not return a message.");
+        }
+
+        return {
+          ...lastEvent,
+          walletBotEvents: events,
+        } satisfies WalletBotMutationResult;
+      }
+
+      const normalizedMentionPubkeys = mentionPubkeys ?? [];
+      const sharedAgentPaymentTargets = sharedAgentInvocationPayments
+        ? await payForSharedAgentInvocations({
+            channelId: channel.id,
+            currentIdentity: identity,
+            currentProfile: sharedAgentInvocationPayments.currentProfile,
+            managedAgents: sharedAgentInvocationPayments.managedAgents,
+            mentionPubkeys: normalizedMentionPubkeys,
+            profiles: sharedAgentInvocationPayments.profiles,
+            queryClient,
+            relayAgents: sharedAgentInvocationPayments.relayAgents,
+          })
+        : [];
+      const annotationTags = kudos
+        ? await payForKudosMessage({
+            channelId: channel.id,
+            currentPubkey: identity.pubkey,
+            mentionPubkeys: normalizedMentionPubkeys,
+            queryClient,
+          })
+        : [];
 
       // Media-bearing messages MUST go through REST so the relay's imeta
       // validation runs. The WebSocket path does not validate imeta tags.
@@ -308,7 +384,9 @@ export function useSendMessageMutation(
           content,
           parentEventId ?? null,
           mediaTags,
-          mentionPubkeys,
+          normalizedMentionPubkeys,
+          undefined,
+          annotationTags,
         );
 
         // Build tags matching relay-emitted shape: h, author p, mention ps, reply es, imeta.
@@ -320,7 +398,7 @@ export function useSendMessageMutation(
               identity.pubkey,
               parentEventId,
               resolveReplyRootId(parentEventId, cachedMessages),
-              mentionPubkeys,
+              normalizedMentionPubkeys,
             )
           : [];
         const baseTags = parentEventId
@@ -330,7 +408,7 @@ export function useSendMessageMutation(
               ["p", identity.pubkey],
             ]; // non-reply: add ourselves
 
-        return {
+        const sentMessage = {
           id: result.eventId,
           pubkey: identity.pubkey,
           created_at: result.createdAt,
@@ -340,25 +418,56 @@ export function useSendMessageMutation(
             // For non-replies, add mention p-tags here (replies get them via buildReplyTags)
             ...(!parentEventId
               ? normalizeMentionPubkeys(
-                  mentionPubkeys ?? [],
+                  normalizedMentionPubkeys,
                   identity.pubkey,
                 ).map((pk) => ["p", pk])
               : []),
             ...(mediaTags ?? []),
+            ...annotationTags,
           ],
           content: content.trim(),
           sig: "",
         };
+
+        if (kudos) {
+          echoKudosPayment(channel.id);
+        }
+        if (sharedAgentPaymentTargets.length > 0) {
+          echoSharedAgentInvocationPayments(
+            channel.id,
+            sharedAgentPaymentTargets,
+          );
+        }
+
+        return sentMessage;
       }
 
-      return relayClient.sendMessage(
+      const sentMessage = await relayClient.sendMessage(
         channel.id,
         content,
-        mentionPubkeys ?? [],
-        [],
+        normalizedMentionPubkeys,
+        annotationTags,
       );
+
+      if (kudos) {
+        echoKudosPayment(channel.id);
+      }
+      if (sharedAgentPaymentTargets.length > 0) {
+        echoSharedAgentInvocationPayments(
+          channel.id,
+          sharedAgentPaymentTargets,
+        );
+      }
+
+      return sentMessage;
     },
-    onMutate: async ({ content, mentionPubkeys, parentEventId, mediaTags }) => {
+    onMutate: async ({
+      content,
+      kudos,
+      mentionPubkeys,
+      parentEventId,
+      mediaTags,
+    }) => {
       if (!channel || !identity || channel.channelType === "forum") {
         return undefined;
       }
@@ -376,6 +485,7 @@ export function useSendMessageMutation(
         mentionPubkeys ?? [],
         parentEventId ?? null,
         mediaTags ?? [],
+        kudos ? [buildKudosMessageTag()] : [],
       );
 
       queryClient.setQueryData<RelayEvent[]>(
@@ -398,6 +508,16 @@ export function useSendMessageMutation(
     },
     onSuccess: (message, _variables, context) => {
       if (!context) {
+        return;
+      }
+
+      const walletBotEvents = (message as WalletBotMutationResult)
+        .walletBotEvents;
+      if (walletBotEvents) {
+        queryClient.setQueryData<RelayEvent[]>(
+          context.queryKey,
+          normalizeTimelineMessages(walletBotEvents),
+        );
         return;
       }
 

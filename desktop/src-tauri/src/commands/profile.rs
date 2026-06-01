@@ -56,27 +56,27 @@ pub async fn update_profile(
     .await?;
 
     // Pull the current content as a JSON object so we can merge with
-    // the caller's overrides.
+    // the caller's overrides without dropping wallet or other metadata.
     let current: Value = prior_events
         .first()
         .and_then(|ev| serde_json::from_str::<Value>(&ev.content).ok())
         .unwrap_or(Value::Null);
 
-    let dn = display_name
-        .as_deref()
-        .or_else(|| current.get("display_name").and_then(Value::as_str));
-    let name = current.get("name").and_then(Value::as_str);
-    let picture = avatar_url
-        .as_deref()
-        .or_else(|| current.get("picture").and_then(Value::as_str));
-    let ab = about
-        .as_deref()
-        .or_else(|| current.get("about").and_then(Value::as_str));
-    let nip05 = nip05_handle
-        .as_deref()
-        .or_else(|| current.get("nip05").and_then(Value::as_str));
+    let mut metadata = current.as_object().cloned().unwrap_or_default();
+    if let Some(value) = display_name.as_deref() {
+        metadata.insert("display_name".into(), Value::String(value.to_string()));
+    }
+    if let Some(value) = avatar_url.as_deref() {
+        metadata.insert("picture".into(), Value::String(value.to_string()));
+    }
+    if let Some(value) = about.as_deref() {
+        metadata.insert("about".into(), Value::String(value.to_string()));
+    }
+    if let Some(value) = nip05_handle.as_deref() {
+        metadata.insert("nip05".into(), Value::String(value.to_string()));
+    }
 
-    let builder = events::build_profile(dn, name, picture, ab, nip05)?;
+    let builder = events::build_profile_metadata(metadata)?;
     submit_event(builder, &state).await?;
 
     // Re-fetch to return canonical profile.

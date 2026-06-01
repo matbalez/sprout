@@ -272,6 +272,7 @@ pub async fn send_channel_message(
     media_tags: Option<Vec<Vec<String>>>,
     mention_pubkeys: Option<Vec<String>>,
     kind: Option<u32>,
+    annotation_tags: Option<Vec<Vec<String>>>,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
     let channel_uuid = uuid::Uuid::parse_str(&channel_id)
@@ -279,6 +280,7 @@ pub async fn send_channel_message(
     let mentions = mention_pubkeys.unwrap_or_default();
     let mention_refs: Vec<&str> = mentions.iter().map(|s| s.as_str()).collect();
     let media = media_tags.unwrap_or_default();
+    let annotations = annotation_tags.unwrap_or_default();
     let kind_num = kind.unwrap_or(sprout_core::kind::KIND_STREAM_MESSAGE);
 
     let mut resolved_root: Option<String> = None;
@@ -316,6 +318,7 @@ pub async fn send_channel_message(
                 thread_ref.as_ref(),
                 &mention_refs,
                 &media,
+                &annotations,
             )?
         }
     };

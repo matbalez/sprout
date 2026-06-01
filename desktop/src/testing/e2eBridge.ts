@@ -43,6 +43,7 @@ type E2eConfig = {
     archivedIdentities?: string[];
     oaOwnerIsMe?: boolean;
     relayRole?: "owner" | "admin" | "member" | null;
+    sharedAgentOwners?: Record<string, string | null>;
   };
   relayHttpUrl?: string;
   relayWsUrl?: string;
@@ -272,6 +273,7 @@ type RawRelayAgent = {
   pubkey: string;
   name: string;
   agent_type: string;
+  owner_pubkey: string | null;
   channels: string[];
   channel_ids: string[];
   capabilities: string[];
@@ -1105,6 +1107,7 @@ let mockRelayAgents: RawRelayAgent[] = [
     pubkey: ALICE_PUBKEY,
     name: "alice",
     agent_type: "goose",
+    owner_pubkey: BOB_PUBKEY,
     channels: ["general", "agents"],
     channel_ids: [
       "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50",
@@ -1117,6 +1120,7 @@ let mockRelayAgents: RawRelayAgent[] = [
     pubkey: CHARLIE_PUBKEY,
     name: "charlie",
     agent_type: "codex",
+    owner_pubkey: ALICE_PUBKEY,
     channels: ["general"],
     channel_ids: ["9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50"],
     capabilities: ["code", "reviews"],
@@ -1386,6 +1390,7 @@ function syncMockRelayAgentsFromManagedAgents() {
         pubkey: agent.pubkey,
         name: agent.name,
         agent_type: agent.agent_command,
+        owner_pubkey: MOCK_IDENTITY_PUBKEY,
         channels: memberships.channels,
         channel_ids: memberships.channelIds,
         capabilities: ["messages", "channels", "mcp"],
@@ -1596,9 +1601,11 @@ function buildTopLevelMessageTags(
   channelId: string,
   mentionPubkeys: string[] | undefined,
   selfPubkey: string,
+  annotationTags: string[][] | undefined,
 ) {
   const tags: string[][] = [["h", channelId]];
   appendMentionTags(tags, mentionPubkeys, selfPubkey);
+  tags.push(...(annotationTags ?? []));
   return tags;
 }
 
@@ -1608,6 +1615,7 @@ function buildReplyMessageTags(
   parentEventId: string,
   rootEventId: string,
   mentionPubkeys: string[] | undefined,
+  annotationTags: string[][] | undefined,
 ) {
   // Preserve the reply tag ordering that the desktop message hooks already
   // expect locally: author p, h, mention ps, then thread e-tags.
@@ -1616,6 +1624,7 @@ function buildReplyMessageTags(
     ["h", channelId],
   ];
   appendMentionTags(tags, mentionPubkeys, authorPubkey);
+  tags.push(...(annotationTags ?? []));
 
   if (parentEventId === rootEventId) {
     tags.push(["e", rootEventId, "", "reply"]);
@@ -1684,6 +1693,7 @@ function getMockMessageStore(channelId: string): RelayEvent[] {
                 ALICE_PUBKEY,
                 "mock-forum-release-thread",
                 "mock-forum-release-thread",
+                undefined,
                 undefined,
               ),
               content: "Looks good to me. We should ship it.",
@@ -1788,6 +1798,7 @@ function emitMockChannelMessage(
       authorPubkey,
       parentEventId,
       rootEventId,
+      undefined,
       undefined,
     ),
     authorPubkey,
@@ -4275,6 +4286,7 @@ async function handleSendChannelMessage(
     parentEventId?: string | null;
     kind?: number | null;
     mentionPubkeys?: string[];
+    annotationTags?: string[][];
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -4292,6 +4304,7 @@ async function handleSendChannelMessage(
           args.channelId,
           args.mentionPubkeys,
           mockPubkey,
+          args.annotationTags,
         ),
       );
       recordMockMessage(args.channelId, event);
@@ -4349,6 +4362,7 @@ async function handleSendChannelMessage(
         args.parentEventId,
         rootEventId,
         args.mentionPubkeys,
+        args.annotationTags,
       ),
       content: args.content.trim(),
       sig: "mocksig".repeat(20).slice(0, 128),
@@ -4374,11 +4388,13 @@ async function handleSendChannelMessage(
         args.parentEventId,
         args.parentEventId,
         args.mentionPubkeys,
+        args.annotationTags,
       )
     : buildTopLevelMessageTags(
         args.channelId,
         args.mentionPubkeys,
         relayIdentity.pubkey,
+        args.annotationTags,
       );
 
   const result = await submitSignedEvent(config, {
@@ -4446,6 +4462,7 @@ async function handleGetEvent(
           ALICE_PUBKEY,
           "mock-forum-release-thread",
           "mock-forum-release-thread",
+          undefined,
           undefined,
         ),
         content: "Looks good to me. We should ship it.",
@@ -5159,6 +5176,15 @@ export function maybeInstallE2eTauriMocks() {
           ? (identity?.pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey)
           : "ff".repeat(32);
         return { owner, is_me: isMe };
+      }
+      case "resolve_shared_agent_owner": {
+        const targetPubkey = (
+          payload as { targetPubkey?: string } | null
+        )?.targetPubkey?.toLowerCase();
+        if (!targetPubkey) {
+          return null;
+        }
+        return activeConfig?.mock?.sharedAgentOwners?.[targetPubkey] ?? null;
       }
       case "list_archived_identities": {
         const archived = activeConfig?.mock?.archivedIdentities ?? [];

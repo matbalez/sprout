@@ -11,6 +11,7 @@ import {
   formatMemberName,
   formatPubkey,
 } from "@/features/channels/lib/memberUtils";
+import { processKlaimGiftMembers } from "@/features/klaim-gifts/processKlaimGiftMembers";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { usePresenceQuery } from "@/features/presence/hooks";
 import { changeChannelMemberRole } from "@/shared/api/tauri";
@@ -233,7 +234,16 @@ export function MembersSidebar({
               <ChannelMemberInviteCard
                 existingMembers={rawMembers}
                 isPending={addMembersMutation.isPending}
-                onSubmit={(input) => addMembersMutation.mutateAsync(input)}
+                onSubmit={async (input) => {
+                  const result = await addMembersMutation.mutateAsync(input);
+                  if (result.added.length > 0 && input.role !== "bot") {
+                    void processKlaimGiftMembers({
+                      channel,
+                      pubkeys: result.added,
+                    });
+                  }
+                  return result;
+                }}
                 open={open}
                 requestErrorMessage={
                   addMembersMutation.error instanceof Error

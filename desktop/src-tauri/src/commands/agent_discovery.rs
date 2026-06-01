@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::{collections::BTreeMap, io::Read};
 use tauri::State;
 
 use crate::{
@@ -17,6 +17,110 @@ fn active_installs() -> &'static std::sync::Mutex<std::collections::HashSet<Stri
     use std::sync::{Mutex, OnceLock};
     static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn extract_agent_owner_pubkey(event: &nostr::Event) -> Option<String> {
+    let agent_hex = event.pubkey.to_hex();
+    let agent_pubkey = nostr::PublicKey::from_hex(&agent_hex).ok()?;
+
+    for tag in event.tags.iter() {
+        let slice = tag.as_slice();
+        if slice.first().map(String::as_str) != Some("auth") || slice.len() != 4 {
+            continue;
+        }
+
+        let tag_json = serde_json::to_string(slice).ok()?;
+        if let Ok(owner) = sprout_sdk::nip_oa::verify_auth_tag(&tag_json, &agent_pubkey) {
+            return Some(owner.to_hex());
+        }
+    }
+
+    None
+}
+
+#[tauri::command]
+pub async fn resolve_shared_agent_owner(
+    target_pubkey: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let target = nostr::PublicKey::from_hex(&target_pubkey)
+        .map_err(|error| format!("invalid target pubkey: {error}"))?;
+    let target_pubkey = target.to_hex();
+
+    // Existing shared agents may not have a relay-agent directory entry yet,
+    // but their profile or replies can still carry a verifiable NIP-OA auth tag.
+    let events = query_relay(
+        &state,
+        &[
+            serde_json::json!({
+                "kinds": [0],
+                "authors": [target_pubkey.clone()],
+                "limit": 1,
+            }),
+            serde_json::json!({
+                "kinds": [9],
+                "authors": [target_pubkey.clone()],
+                "limit": 50,
+            }),
+        ],
+    )
+    .await?;
+
+    let mut owner: Option<(u64, String)> = None;
+    for event in events {
+        if event.pubkey.to_hex() != target_pubkey {
+            continue;
+        }
+
+        let Some(owner_pubkey) = extract_agent_owner_pubkey(&event) else {
+            continue;
+        };
+        let created_at = event.created_at.as_secs();
+        match owner {
+            Some((existing_created_at, _)) if existing_created_at > created_at => {}
+            _ => owner = Some((created_at, owner_pubkey)),
+        }
+    }
+
+    Ok(owner.map(|(_, owner_pubkey)| owner_pubkey))
+}
+
+async fn resolve_agent_owner_pubkeys(
+    state: &AppState,
+    agent_pubkeys: &[String],
+) -> Result<BTreeMap<String, String>, String> {
+    if agent_pubkeys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [0],
+            "authors": agent_pubkeys,
+        })],
+    )
+    .await?;
+
+    let mut owners: BTreeMap<String, (u64, String)> = BTreeMap::new();
+    for event in events {
+        let Some(owner_pubkey) = extract_agent_owner_pubkey(&event) else {
+            continue;
+        };
+        let agent_pubkey = event.pubkey.to_hex().to_ascii_lowercase();
+        let created_at = event.created_at.as_secs();
+        match owners.get(&agent_pubkey) {
+            Some((existing_created_at, _)) if *existing_created_at > created_at => {}
+            _ => {
+                owners.insert(agent_pubkey, (created_at, owner_pubkey));
+            }
+        }
+    }
+
+    Ok(owners
+        .into_iter()
+        .map(|(agent_pubkey, (_, owner_pubkey))| (agent_pubkey, owner_pubkey))
+        .collect())
 }
 
 #[tauri::command]
@@ -324,5 +428,81 @@ pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAg
         .get("agents")
         .cloned()
         .unwrap_or_else(|| serde_json::json!([]));
-    serde_json::from_value(agents).map_err(|e| format!("agent parse failed: {e}"))
+    let mut agents: Vec<RelayAgentInfo> =
+        serde_json::from_value(agents).map_err(|e| format!("agent parse failed: {e}"))?;
+
+    let agent_pubkeys: Vec<String> = agents
+        .iter()
+        .map(|agent| agent.pubkey.to_ascii_lowercase())
+        .collect();
+    if let Ok(owner_pubkeys) = resolve_agent_owner_pubkeys(&state, &agent_pubkeys).await {
+        for agent in &mut agents {
+            agent.owner_pubkey = owner_pubkeys
+                .get(&agent.pubkey.to_ascii_lowercase())
+                .cloned();
+        }
+    }
+
+    Ok(agents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+
+    fn event_with_auth(kind: Kind, agent: &Keys, owner: &Keys) -> nostr::Event {
+        let agent_hex = agent.public_key().to_hex();
+        let agent_compat = nostr::PublicKey::from_hex(&agent_hex).unwrap();
+        let owner_secret =
+            nostr::SecretKey::from_slice(owner.secret_key().as_secret_bytes()).unwrap();
+        let owner_compat = nostr::Keys::new(owner_secret);
+        let tag_json = sprout_sdk::nip_oa::compute_auth_tag(&owner_compat, &agent_compat, "")
+            .expect("compute auth tag");
+        let tag = sprout_sdk::nip_oa::parse_auth_tag(&tag_json).expect("parse auth tag");
+        let tag = Tag::parse(tag.as_slice()).expect("convert auth tag");
+
+        EventBuilder::new(kind, "{}")
+            .tags([tag])
+            .sign_with_keys(agent)
+            .expect("sign kind0")
+    }
+
+    fn kind0_with_auth(agent: &Keys, owner: &Keys) -> nostr::Event {
+        event_with_auth(Kind::Metadata, agent, owner)
+    }
+
+    #[test]
+    fn extracts_verified_owner_from_kind0_auth_tag() {
+        let owner = Keys::generate();
+        let agent = Keys::generate();
+        let event = kind0_with_auth(&agent, &owner);
+
+        assert_eq!(
+            extract_agent_owner_pubkey(&event),
+            Some(owner.public_key().to_hex())
+        );
+    }
+
+    #[test]
+    fn extracts_verified_owner_from_message_auth_tag() {
+        let owner = Keys::generate();
+        let agent = Keys::generate();
+        let event = event_with_auth(Kind::Custom(9), &agent, &owner);
+
+        assert_eq!(
+            extract_agent_owner_pubkey(&event),
+            Some(owner.public_key().to_hex())
+        );
+    }
+
+    #[test]
+    fn ignores_kind0_without_auth_tag() {
+        let agent = Keys::generate();
+        let event = EventBuilder::new(Kind::Metadata, "{}")
+            .sign_with_keys(&agent)
+            .expect("sign kind0");
+
+        assert_eq!(extract_agent_owner_pubkey(&event), None);
+    }
 }

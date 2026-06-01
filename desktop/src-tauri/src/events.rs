@@ -5,9 +5,14 @@
 //!
 //! Mental model:
 //!   caller params → build_*() → EventBuilder → submit_event() signs + POSTs
-//!
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
+
+mod message_annotations;
+mod message_tips;
+
+use message_annotations::annotation_tags;
+pub use message_tips::build_message_tip_receipt;
 
 use nostr::{EventBuilder, EventId, Kind, Tag};
 use sprout_core::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
@@ -240,6 +245,7 @@ pub fn build_message(
     thread_ref: Option<&ThreadRef>,
     mentions: &[&str],
     media_tags: &[Vec<String>],
+    annotations: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -248,6 +254,7 @@ pub fn build_message(
     }
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
+    annotation_tags(annotations, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
 }
 
@@ -359,7 +366,14 @@ pub fn build_profile(
     if let Some(v) = nip05 {
         map.insert("nip05".into(), serde_json::Value::String(v.into()));
     }
+    build_profile_metadata(map)
+}
+
+pub fn build_profile_metadata(
+    map: serde_json::Map<String, serde_json::Value>,
+) -> Result<EventBuilder, String> {
     let content = serde_json::Value::Object(map).to_string();
+    check_content(&content)?;
     Ok(EventBuilder::new(Kind::Custom(0), content))
 }
 
@@ -772,6 +786,32 @@ mod tests {
         let err = build_archive_identity_request(TARGET_HEX, "", None, Some(TARGET_HEX), None)
             .unwrap_err();
         assert!(err.contains("replaced-by"));
+    }
+
+    #[test]
+    fn profile_metadata_builder_preserves_unknown_fields() {
+        let mut wallet = serde_json::Map::new();
+        wallet.insert(
+            "bolt12_offer".into(),
+            serde_json::Value::String("lno1wallet".into()),
+        );
+
+        let mut metadata = serde_json::Map::new();
+        metadata.insert(
+            "display_name".into(),
+            serde_json::Value::String("Mat".into()),
+        );
+        metadata.insert("wallet".into(), serde_json::Value::Object(wallet));
+
+        let event = build_profile_metadata(metadata)
+            .unwrap()
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
+
+        assert_eq!(event.kind, Kind::Custom(0));
+        assert_eq!(content["display_name"], "Mat");
+        assert_eq!(content["wallet"]["bolt12_offer"], "lno1wallet");
     }
 
     #[test]

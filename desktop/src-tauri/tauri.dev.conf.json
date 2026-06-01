@@ -1,4 +1,16 @@
 {
   "identifier": "xyz.block.sprout.app.dev",
-  "productName": "Sprout Dev"
+  "productName": "Sprout Dev",
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["sprout-dev"]
+      }
+    }
+  },
+  "bundle": {
+    "macOS": {
+      "infoPlist": "Info.dev.plist"
+    }
+  }
 }

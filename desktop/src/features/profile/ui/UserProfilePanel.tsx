@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
   Archive,
@@ -28,8 +29,10 @@ import {
 import { usePresenceQuery } from "@/features/presence/hooks";
 import { useMyRelayMembershipQuery } from "@/features/relay-members/hooks";
 import { useUserStatusQuery } from "@/features/user-status/hooks";
+import { getUserWalletBolt12Offer } from "@/features/wallet/api";
 import { PresenceBadge } from "@/features/presence/ui/PresenceBadge";
 import { BotIdenticon } from "@/features/messages/ui/BotIdenticon";
+import { ProfilePaymentForm } from "@/features/profile/ui/ProfilePaymentForm";
 import { useAgentSession } from "@/shared/context/AgentSessionContext";
 import { useEscapeKey } from "@/shared/hooks/useEscapeKey";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
@@ -128,6 +131,12 @@ export function UserProfilePanel({
   const isBot = Boolean(relayAgent || managedAgent);
   const isSelf =
     currentPubkey !== undefined && pubkeyLower === currentPubkey.toLowerCase();
+  const walletOfferQuery = useQuery({
+    enabled: !isSelf,
+    queryKey: ["user-wallet-bolt12-offer", pubkeyLower],
+    queryFn: () => getUserWalletBolt12Offer(pubkey),
+    staleTime: 60_000,
+  });
   const canViewActivity = isBot && Boolean(onOpenAgentSession);
   const isFollowing =
     !isSelf &&
@@ -305,6 +314,15 @@ export function UserProfilePanel({
               <Copy className="h-3.5 w-3.5 shrink-0" />
             </button>
           </div>
+
+          {walletOfferQuery.data ? (
+            <ProfilePaymentForm
+              bolt12Offer={walletOfferQuery.data}
+              displayName={displayName}
+              key={pubkey}
+              pubkey={pubkey}
+            />
+          ) : null}
 
           {/* Bot info badges */}
           {isBot && (managedAgent || relayAgent) ? (

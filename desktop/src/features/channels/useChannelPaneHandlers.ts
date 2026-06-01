@@ -197,11 +197,13 @@ export function useChannelPaneHandlers({
       content: string,
       mentionPubkeys: string[],
       mediaTags?: string[][],
+      options?: { kudos?: boolean },
     ) => {
       await sendMutateRef.current({
         content,
         mentionPubkeys,
         mediaTags,
+        kudos: options?.kudos,
       });
     },
     [],
@@ -212,6 +214,7 @@ export function useChannelPaneHandlers({
       content: string,
       mentionPubkeys: string[],
       mediaTags?: string[][],
+      options?: { kudos?: boolean },
     ) => {
       const activeThreadHeadId = openThreadHeadIdRef.current;
       const parentEventId =
@@ -237,6 +240,7 @@ export function useChannelPaneHandlers({
         mentionPubkeys,
         parentEventId,
         mediaTags,
+        kudos: options?.kudos,
       });
       setThreadReplyTargetId(activeThreadHeadId);
       if (activeThreadHeadId && parentEventId !== activeThreadHeadId) {

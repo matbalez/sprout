@@ -40,6 +40,7 @@ import { useLoadMissingAncestors } from "@/features/messages/useLoadMissingAnces
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
+import { isWalletBotChannel, WALLETBOT_PUBKEY } from "@/features/wallet/api";
 import type {
   Channel,
   Identity,
@@ -111,6 +112,7 @@ export function ChannelScreen({
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
   const currentPubkey = currentIdentity?.pubkey;
   const activeChannelId = activeChannel?.id ?? null;
+  const isWalletBotActive = isWalletBotChannel(activeChannel);
   const messagesQuery = useChannelMessagesQuery(activeChannel);
   useChannelSubscription(activeChannel);
   const { fetchOlder, hasOlderMessages, isFetchingOlder } =
@@ -133,10 +135,6 @@ export function ChannelScreen({
     activeDmPresenceStatus,
     activeChannelEphemeralDisplay,
   } = useActiveChannelHeader(activeChannel, currentPubkey);
-  const sendMessageMutation = useSendMessageMutation(
-    activeChannel,
-    currentIdentity,
-  );
   const toggleReactionMutation = useToggleReactionMutation();
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
   const editMessageMutation = useEditMessageMutation(activeChannel);
@@ -160,24 +158,36 @@ export function ChannelScreen({
     currentPubkey,
     latestMessageEvent,
   );
-  const messageProfilePubkeys = React.useMemo(
-    () => [
-      ...new Set([
-        ...messageAuthorPubkeys,
-        ...typingEntries.map((entry) => entry.pubkey),
-      ]),
-    ],
-    [messageAuthorPubkeys, typingEntries],
+  const channelMembersQuery = useChannelMembersQuery(
+    activeChannel?.id ?? null,
+    !isWalletBotActive,
   );
-  const messageProfilesQuery = useUsersBatchQuery(messageProfilePubkeys, {
-    enabled: messageProfilePubkeys.length > 0,
-  });
-  const channelMembersQuery = useChannelMembersQuery(activeChannel?.id ?? null);
   const channelMembers = channelMembersQuery.data;
   const managedAgentsQuery = useManagedAgentsQuery();
   const managedAgents = managedAgentsQuery.data ?? [];
   const relayAgentsQuery = useRelayAgentsQuery();
   const relayAgents = relayAgentsQuery.data ?? [];
+  const sharedAgentOwnerPubkeys = React.useMemo(
+    () =>
+      relayAgents
+        .map((agent) => agent.ownerPubkey)
+        .filter((pubkey): pubkey is string => Boolean(pubkey)),
+    [relayAgents],
+  );
+  const messageProfilePubkeys = React.useMemo(
+    () =>
+      [
+        ...new Set([
+          ...messageAuthorPubkeys,
+          ...typingEntries.map((entry) => entry.pubkey),
+          ...sharedAgentOwnerPubkeys,
+        ]),
+      ].filter((pubkey) => pubkey.toLowerCase() !== WALLETBOT_PUBKEY),
+    [messageAuthorPubkeys, sharedAgentOwnerPubkeys, typingEntries],
+  );
+  const messageProfilesQuery = useUsersBatchQuery(messageProfilePubkeys, {
+    enabled: messageProfilePubkeys.length > 0,
+  });
   const {
     botTypingEntries,
     channelAgentSessionAgents: activeChannelAgentSessionAgents,
@@ -199,13 +209,40 @@ export function ChannelScreen({
         messageProfilesQuery.data?.profiles,
         currentProfile,
       ) ?? {};
-    return mergeAgentNamesIntoProfiles(base, managedAgents, relayAgents);
+    const merged = mergeAgentNamesIntoProfiles(
+      base,
+      managedAgents,
+      relayAgents,
+    );
+    if (!isWalletBotActive) {
+      return merged;
+    }
+
+    return {
+      ...merged,
+      [WALLETBOT_PUBKEY]: {
+        avatarUrl: null,
+        displayName: "WalletBot",
+        nip05Handle: null,
+      },
+    };
   }, [
     currentProfile,
+    isWalletBotActive,
     managedAgents,
     messageProfilesQuery.data?.profiles,
     relayAgents,
   ]);
+  const sendMessageMutation = useSendMessageMutation(
+    activeChannel,
+    currentIdentity,
+    {
+      currentProfile,
+      managedAgents,
+      profiles: messageProfiles,
+      relayAgents,
+    },
+  );
   const personasQuery = usePersonasQuery();
   const { personaLookup, respondToLookup } = React.useMemo(() => {
     const agents = managedAgentsQuery.data ?? [];
@@ -338,10 +375,13 @@ export function ChannelScreen({
 
   const effectiveToggleReaction = React.useMemo(
     () =>
-      activeChannel && !activeChannel.archivedAt && activeChannel.isMember
+      activeChannel &&
+      !isWalletBotActive &&
+      !activeChannel.archivedAt &&
+      activeChannel.isMember
         ? handleToggleReaction
         : undefined,
-    [activeChannel, handleToggleReaction],
+    [activeChannel, handleToggleReaction, isWalletBotActive],
   );
 
   const handleMarkUnread = React.useCallback(
@@ -521,11 +561,19 @@ export function ChannelScreen({
                   onCloseAgentSession={handleCloseAgentSession}
                   onCloseThread={handleCloseThread}
                   onDelete={
-                    activeChannel?.archivedAt ? undefined : handleDelete
+                    activeChannel?.archivedAt || isWalletBotActive
+                      ? undefined
+                      : handleDelete
                   }
-                  onEdit={activeChannel?.archivedAt ? undefined : handleEdit}
+                  onEdit={
+                    activeChannel?.archivedAt || isWalletBotActive
+                      ? undefined
+                      : handleEdit
+                  }
                   onEditSave={
-                    activeChannel?.archivedAt ? undefined : handleEditSave
+                    activeChannel?.archivedAt || isWalletBotActive
+                      ? undefined
+                      : handleEditSave
                   }
                   onMarkUnread={handleMarkUnread}
                   onExpandThreadReplies={handleExpandThreadReplies}

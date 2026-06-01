@@ -60,6 +60,8 @@ pub struct RelayAgentInfo {
     pub pubkey: String,
     pub name: String,
     pub agent_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_pubkey: Option<String>,
     pub channels: Vec<String>,
     #[serde(default)]
     pub channel_ids: Vec<String>,

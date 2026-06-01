@@ -20,6 +20,7 @@ pub struct AppState {
     pub channel_templates_store_lock: Mutex<()>,
     pub managed_agent_processes: Mutex<HashMap<String, ManagedAgentProcess>>,
     pub huddle_state: Mutex<HuddleState>,
+    pub wallet_state: crate::wallet::WalletRuntimeState,
     /// Tauri app handle — stored after setup so huddle commands can emit
     /// `huddle-state-changed` events without needing the handle threaded
     /// through every call site.
@@ -72,6 +73,7 @@ pub fn build_app_state() -> AppState {
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),
         huddle_state: Mutex::new(HuddleState::default()),
+        wallet_state: crate::wallet::WalletRuntimeState::default(),
         app_handle: Mutex::new(None),
         audio_output_device: Mutex::new(None),
         media_proxy_port: AtomicU16::new(0),

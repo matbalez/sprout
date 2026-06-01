@@ -4,6 +4,7 @@ import {
   getChannelIdFromTags,
   getThreadReference,
 } from "@/features/messages/lib/threading";
+import { isWalletBotChannelId } from "@/features/wallet/api";
 import { relayClient } from "@/shared/api/relayClient";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import {
@@ -176,7 +177,11 @@ export function useChannelTyping(
   }, [channelId, latestMessageEvent]);
 
   useEffect(() => {
-    if (!channelId || channelType === "forum") {
+    if (
+      !channelId ||
+      channelType === "forum" ||
+      isWalletBotChannelId(channelId)
+    ) {
       return;
     }
 

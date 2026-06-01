@@ -9,6 +9,11 @@ import type {
   TimelineMessage,
   TimelineReaction,
 } from "@/features/messages/types";
+import {
+  buildTipsByEventId,
+  isMessageTipReceiptEvent,
+} from "@/features/messages/lib/messageTips";
+import { isKudosMessageEvent } from "@/features/messages/lib/messageKudos";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import {
   resolveUserLabel,
@@ -205,7 +210,11 @@ export function formatTimelineMessages(
   >();
 
   for (const event of events) {
-    if (event.kind !== KIND_REACTION || deletedEventIds.has(event.id)) {
+    if (
+      event.kind !== KIND_REACTION ||
+      isMessageTipReceiptEvent(event) ||
+      deletedEventIds.has(event.id)
+    ) {
       continue;
     }
 
@@ -257,6 +266,14 @@ export function formatTimelineMessages(
     current.set(emoji, existing);
     reactionsByEventId.set(targetId, current);
   }
+
+  const tipsByEventId = buildTipsByEventId({
+    events,
+    eventsById,
+    deletedEventIds,
+    currentPubkeyLower,
+    profiles,
+  });
 
   const authorPubkeyByEventId = new Map<string, string>();
   const authorLabelByEventId = new Map<string, string>();
@@ -354,6 +371,7 @@ export function formatTimelineMessages(
       accent: currentPubkey === authorPubkey,
       pending: event.pending,
       edited: edit !== undefined,
+      kudos: isKudosMessageEvent(event),
       kind: event.kind,
       // When edited, swap the original event's imeta tags for the edit's
       // imeta tags. All non-imeta tags on the original are preserved.
@@ -364,6 +382,7 @@ export function formatTimelineMessages(
         const reactions = reactionsByEventId.get(event.id);
         return reactions ? [...reactions.values()] : undefined;
       })(),
+      tipSummary: tipsByEventId.get(event.id),
     };
   });
 }

@@ -101,6 +101,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
           pubkey: agent.pubkey,
           name: agent.name,
           agentType: agent.agentCommand,
+          ownerPubkey: null,
           channels: [],
           channelIds: [],
           capabilities: [],

@@ -5,6 +5,11 @@ import { resolveUserLabel } from "@/features/profile/lib/identity";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { resolveChannelDisplayLabel } from "@/features/sidebar/lib/channelLabels";
 import type { SidebarDmParticipant } from "@/features/sidebar/ui/SidebarSection";
+import {
+  isWalletBotChannel,
+  WALLETBOT_CHANNEL_ID,
+  WALLETBOT_PUBKEY,
+} from "@/features/wallet/api";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
 
 export function useDmSidebarMetadata({
@@ -31,8 +36,12 @@ export function useDmSidebarMetadata({
   );
   const dmParticipantPubkeys = React.useMemo(
     () =>
-      directMessages.flatMap((channel) =>
-        channel.participantPubkeys.filter((pubkey, index) => {
+      directMessages.flatMap((channel) => {
+        if (isWalletBotChannel(channel)) {
+          return [];
+        }
+
+        return channel.participantPubkeys.filter((pubkey, index) => {
           const normalizedPubkey = pubkey.toLowerCase();
           if (normalizedPubkey === currentPubkey?.toLowerCase()) {
             return false;
@@ -41,8 +50,8 @@ export function useDmSidebarMetadata({
           const participantLabel =
             channel.participants[index]?.trim().toLowerCase() ?? null;
           return !participantLabel || !selfDmLabels.has(participantLabel);
-        }),
-      ),
+        });
+      }),
     [currentPubkey, directMessages, selfDmLabels],
   );
   const dmPresenceQuery = usePresenceQuery(dmParticipantPubkeys, {
@@ -56,6 +65,10 @@ export function useDmSidebarMetadata({
     () =>
       Object.fromEntries(
         directMessages.map((channel) => {
+          if (isWalletBotChannel(channel)) {
+            return [channel.id, "offline"];
+          }
+
           const otherParticipantPubkey = channel.participantPubkeys.find(
             (pubkey, index) => {
               const normalizedPubkey = pubkey.toLowerCase();
@@ -85,11 +98,13 @@ export function useDmSidebarMetadata({
       Object.fromEntries(
         directMessages.map((channel) => [
           channel.id,
-          resolveChannelDisplayLabel(
-            channel,
-            currentPubkey,
-            dmProfilesQuery.data?.profiles,
-          ),
+          isWalletBotChannel(channel)
+            ? "WalletBot"
+            : resolveChannelDisplayLabel(
+                channel,
+                currentPubkey,
+                dmProfilesQuery.data?.profiles,
+              ),
         ]),
       ),
     [currentPubkey, directMessages, dmProfilesQuery.data],
@@ -98,6 +113,19 @@ export function useDmSidebarMetadata({
     () =>
       Object.fromEntries(
         directMessages.map((channel) => {
+          if (channel.id === WALLETBOT_CHANNEL_ID) {
+            return [
+              channel.id,
+              [
+                {
+                  avatarUrl: null,
+                  label: "WalletBot",
+                  pubkey: WALLETBOT_PUBKEY,
+                },
+              ],
+            ];
+          }
+
           const participants = channel.participantPubkeys.map(
             (pubkey, index) => ({
               fallbackName: channel.participants[index] ?? null,

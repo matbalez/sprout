@@ -195,6 +195,7 @@ type RawRelayAgent = {
   pubkey: string;
   name: string;
   agent_type: string;
+  owner_pubkey?: string | null;
   channels: string[];
   channel_ids: string[];
   capabilities: string[];
@@ -726,6 +727,7 @@ export async function sendChannelMessage(
   mediaTags?: string[][],
   mentionPubkeys?: string[],
   kind?: number,
+  annotationTags?: string[][],
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -736,6 +738,7 @@ export async function sendChannelMessage(
       mediaTags: mediaTags ?? null,
       mentionPubkeys: mentionPubkeys ?? null,
       kind: kind ?? null,
+      annotationTags: annotationTags ?? null,
     },
   );
 
@@ -836,6 +839,7 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
     pubkey: agent.pubkey,
     name: agent.name,
     agentType: agent.agent_type,
+    ownerPubkey: agent.owner_pubkey ?? null,
     channels: agent.channels,
     channelIds: agent.channel_ids ?? [],
     capabilities: agent.capabilities,
@@ -982,6 +986,14 @@ export async function listRelayAgents(): Promise<RelayAgent[]> {
   return (await invokeTauri<RawRelayAgent[]>("list_relay_agents")).map(
     fromRawRelayAgent,
   );
+}
+
+export async function resolveSharedAgentOwner(
+  targetPubkey: string,
+): Promise<string | null> {
+  return invokeTauri<string | null>("resolve_shared_agent_owner", {
+    targetPubkey,
+  });
 }
 
 export async function listManagedAgents(): Promise<ManagedAgent[]> {

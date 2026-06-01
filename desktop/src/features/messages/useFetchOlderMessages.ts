@@ -5,6 +5,7 @@ import {
   channelMessagesKey,
   sortMessages,
 } from "@/features/messages/lib/messageQueryKeys";
+import { isWalletBotChannelId } from "@/features/wallet/api";
 import { relayClient } from "@/shared/api/relayClient";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 
@@ -28,6 +29,7 @@ export function useFetchOlderMessages(channel: Channel | null) {
   const fetchOlder = useCallback(async () => {
     if (
       !channelId ||
+      isWalletBotChannelId(channelId) ||
       isFetchingOlderRef.current ||
       !hasOlderMessagesRef.current
     ) {

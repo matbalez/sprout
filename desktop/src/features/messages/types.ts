@@ -9,6 +9,19 @@ export type TimelineReaction = {
   }>;
 };
 
+export type TimelineTipSummary = {
+  amountSats: number;
+  count: number;
+  tippedByCurrentUser?: boolean;
+  users: Array<{
+    pubkey: string;
+    displayName: string;
+    avatarUrl: string | null;
+    amountSats: number;
+    tipId: string;
+  }>;
+};
+
 export type TimelineMessage = {
   id: string;
   createdAt: number;
@@ -29,7 +42,9 @@ export type TimelineMessage = {
   pending?: boolean;
   edited?: boolean;
   highlighted?: boolean;
+  kudos?: boolean;
   kind?: number;
   tags?: string[][];
   reactions?: TimelineReaction[];
+  tipSummary?: TimelineTipSummary;
 };

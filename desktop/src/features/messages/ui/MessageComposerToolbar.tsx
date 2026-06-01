@@ -25,14 +25,17 @@ export const MessageComposerToolbar = React.memo(
     formattingDisabled,
     isEmojiPickerOpen,
     isFormattingOpen,
+    isKudosActive,
     isSending,
     isUploading,
     onCaptureSelection,
     onEmojiPickerOpenChange,
     onEmojiSelect,
     onFormattingToggle,
+    onGiveKudos,
     onOpenMentionPicker,
     onPaperclip,
+    kudosDisabled,
     sendDisabled,
   }: {
     composerDisabled: boolean;
@@ -41,14 +44,17 @@ export const MessageComposerToolbar = React.memo(
     formattingDisabled: boolean;
     isEmojiPickerOpen: boolean;
     isFormattingOpen: boolean;
+    isKudosActive: boolean;
     isSending: boolean;
     isUploading: boolean;
     onCaptureSelection: () => void;
     onEmojiPickerOpenChange: (open: boolean) => void;
     onEmojiSelect: (emoji: string) => void;
     onFormattingToggle: (pressed: boolean) => void;
+    onGiveKudos: () => void;
     onOpenMentionPicker: () => void;
     onPaperclip: () => void;
+    kudosDisabled: boolean;
     sendDisabled: boolean;
   }) {
     return (
@@ -203,6 +209,32 @@ export const MessageComposerToolbar = React.memo(
                   onTriggerMouseDown={onCaptureSelection}
                   open={isEmojiPickerOpen}
                 />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Button
+                        aria-label="Give Kudos"
+                        aria-pressed={isKudosActive}
+                        className={cn(
+                          "h-8 w-8 rounded-md p-0 text-sm font-bold",
+                          isKudosActive
+                            ? "bg-amber-300 text-zinc-950 hover:bg-amber-300/90"
+                            : "",
+                        )}
+                        data-testid="message-give-kudos"
+                        disabled={composerDisabled || kudosDisabled}
+                        onClick={onGiveKudos}
+                        onMouseDown={onCaptureSelection}
+                        size="icon"
+                        type="button"
+                        variant={isKudosActive ? "secondary" : "ghost"}
+                      >
+                        K
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Give Kudos</TooltipContent>
+                </Tooltip>
                 <motion.div
                   initial={{ x: -8, opacity: 0 }}
                   animate={{ x: 0, opacity: 1 }}

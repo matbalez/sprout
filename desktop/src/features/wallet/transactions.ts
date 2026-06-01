@@ -1,0 +1,54 @@
+import type { WalletTransaction } from "@/features/wallet/api";
+
+const SPROUT_TIP_PAYER_MESSAGE_PREFIX = "sprout-tip:v1:";
+const SPROUT_MESSAGE_TIP_NOTE = "Sprout message tip";
+
+function normalizedPaymentField(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function displayPaymentNote(value: string | null | undefined) {
+  const note = normalizedPaymentField(value);
+  if (!note) {
+    return null;
+  }
+
+  if (note.startsWith(SPROUT_TIP_PAYER_MESSAGE_PREFIX)) {
+    return SPROUT_MESSAGE_TIP_NOTE;
+  }
+
+  return note;
+}
+
+function isBolt12Payment(tx: WalletTransaction) {
+  return (
+    tx.kind.trim().toLowerCase() === "offer" ||
+    tx.rail.trim().toLowerCase() === "offer"
+  );
+}
+
+export function formatWalletTransactionTitle(tx: WalletTransaction) {
+  const direction = tx.direction.trim().toLowerCase();
+
+  if (isBolt12Payment(tx)) {
+    if (direction === "inbound") {
+      return "incoming BOLT12 payment";
+    }
+    if (direction === "outbound") {
+      return "outgoing BOLT12 payment";
+    }
+    return "BOLT12 payment";
+  }
+
+  return `${tx.direction} ${tx.kind}`.trim();
+}
+
+export function walletTransactionNotes(tx: WalletTransaction) {
+  const notes = [
+    displayPaymentNote(tx.message),
+    displayPaymentNote(tx.personalNote),
+  ].filter((note): note is string => Boolean(note));
+
+  return [...new Set(notes)];
+}

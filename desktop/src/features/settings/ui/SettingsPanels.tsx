@@ -14,6 +14,7 @@ import {
   Stethoscope,
   Sun,
   UserRound,
+  WalletCards,
   type LucideIcon,
 } from "lucide-react";
 import type {
@@ -31,6 +32,7 @@ import { SYNTAX_THEMES, isLightTheme } from "@/shared/theme/theme-loader";
 import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
 import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
+import { LightningWalletSettingsCard } from "./LightningWalletSettingsCard";
 import { MobilePairingCard } from "./MobilePairingCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
@@ -40,6 +42,7 @@ import { UpdateChecker } from "../UpdateChecker";
 export type SettingsSection =
   | "profile"
   | "notifications"
+  | "lightning-wallet"
   | "agents"
   | "channel-templates"
   | "appearance"
@@ -81,6 +84,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "notifications",
     label: "Notifications",
     icon: BellRing,
+  },
+  {
+    value: "lightning-wallet",
+    label: "Wallet",
+    icon: WalletCards,
   },
   {
     value: "agents",
@@ -280,6 +288,8 @@ export function renderSettingsSection(
           onSetSoundEnabled={props.onSetSoundEnabled}
         />
       );
+    case "lightning-wallet":
+      return <LightningWalletSettingsCard />;
     case "agents":
       return <PreventSleepSettingsCard />;
     case "channel-templates":

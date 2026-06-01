@@ -70,6 +70,11 @@ type MockBridgeOptions = {
    * evaluates false).
    */
   relayRole?: "owner" | "admin" | "member" | null;
+  /**
+   * Lowercase target agent pubkey to verified owner pubkey, used by
+   * `resolve_shared_agent_owner` in the mocked desktop bridge.
+   */
+  sharedAgentOwners?: Record<string, string | null>;
 };
 
 type BridgeOptions = {

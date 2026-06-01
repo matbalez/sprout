@@ -253,6 +253,7 @@ export type RelayAgent = {
   pubkey: string;
   name: string;
   agentType: string;
+  ownerPubkey: string | null;
   channels: string[];
   channelIds: string[];
   capabilities: string[];

@@ -1,7 +1,6 @@
 import * as React from "react";
 
 import { EditorContent } from "@tiptap/react";
-import { X } from "lucide-react";
 import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
 import { useComposerAutofocus } from "@/features/messages/lib/useComposerAutofocus";
 import type { ChannelSuggestion } from "@/features/messages/lib/useChannelLinks";
@@ -31,15 +30,17 @@ import {
 import { useTypingBroadcast } from "@/features/messages/useTypingBroadcast";
 import { getSproutCodeBlockClipboardText } from "@/shared/lib/codeBlockClipboard";
 import { cn } from "@/shared/lib/cn";
-import { Button } from "@/shared/ui/button";
 import { ChannelAutocomplete } from "./ChannelAutocomplete";
 import { ComposerAttachments, DropZoneOverlay } from "./ComposerAttachments";
+import { ComposerContextBanner } from "./ComposerContextBanner";
+import { ComposerKudosChip } from "./ComposerKudosChip";
 import { EmojiAutocomplete } from "./EmojiAutocomplete";
 import {
   MentionAutocomplete,
   type MentionSuggestion,
 } from "./MentionAutocomplete";
 import { MessageComposerToolbar } from "./MessageComposerToolbar";
+import { useComposerKudos } from "./useComposerKudos";
 
 type MessageComposerProps = {
   channelId?: string | null;
@@ -51,13 +52,6 @@ type MessageComposerProps = {
     author: string;
     body: string;
     id: string;
-    /**
-     * NIP-92 imeta attachments on the original event, in tag order. Loaded
-     * into the composer's pending-imeta state on edit-open so the user sees
-     * them as removable thumbnails (just like the send path) and can add
-     * more. The submit path emits a fresh full imeta tag set on the edit
-     * event; the receiver overlays it.
-     */
     imetaMedia?: ImetaMedia[];
   } | null;
   isSending?: boolean;
@@ -68,6 +62,7 @@ type MessageComposerProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
+    options?: { kudos?: boolean },
   ) => Promise<void>;
   placeholder?: string;
   profiles?: UserProfileLookup;
@@ -108,6 +103,7 @@ export function MessageComposer({
 
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
   const [isFormattingOpen, setIsFormattingOpen] = React.useState(false);
+  const [sendError, setSendError] = React.useState<string | null>(null);
 
   const handleFormattingToggle = React.useCallback((pressed: boolean) => {
     if (pressed) setIsEmojiPickerOpen(false);
@@ -119,10 +115,6 @@ export function MessageComposer({
   const previousDraftKeyRef = React.useRef<string | null>(null);
   const effectiveDraftKeyRef = React.useRef(effectiveDraftKey);
   effectiveDraftKeyRef.current = effectiveDraftKey;
-  // Snapshot of composer state at the moment we enter edit mode (text body
-  // + draft attachments) so the user's pre-edit work isn't lost when the
-  // composer is hijacked for editing. Restored on edit-cancel/exit. `null`
-  // while not in edit mode.
   const preEditSnapshotRef = React.useRef<{
     content: string;
     pendingImeta: ImetaMedia[];
@@ -201,6 +193,16 @@ export function MessageComposer({
       }
     },
   });
+  const {
+    handleGiveKudos: activateKudos,
+    isKudosActive,
+    kudosDisabled,
+    setIsKudosActive,
+  } = useComposerKudos({
+    disabled,
+    editTargetActive: Boolean(editTarget),
+    focusEditor: richText.focus,
+  });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
   React.useEffect(() => {
@@ -225,6 +227,8 @@ export function MessageComposer({
 
     media.setPendingImeta([]);
     media.setUploadState({ status: "idle" });
+    setIsKudosActive(false);
+    setSendError(null);
     setIsEmojiPickerOpen(false);
     mentions.clearMentions();
     channelLinks.clearChannels();
@@ -240,6 +244,7 @@ export function MessageComposer({
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
   React.useEffect(() => {
     if (editTarget) {
+      setIsKudosActive(false);
       // Snapshot the current draft (text + attachments) so the user's
       // in-flight work survives the edit-mode hijack and is restored on
       // edit-cancel/exit.
@@ -453,6 +458,7 @@ export function MessageComposer({
 
     const savedContent = trimmed;
     const savedImeta = [...currentPendingImeta];
+    const savedKudos = isKudosActive;
 
     setContent("");
     contentRef.current = "";
@@ -461,19 +467,27 @@ export function MessageComposer({
     mentions.clearMentions();
     channelLinks.clearChannels();
     emojiAutocomplete.clearEmojis();
+    setIsKudosActive(false);
     setIsEmojiPickerOpen(false);
 
     const sentDraftKey = effectiveDraftKeyRef.current;
+    setSendError(null);
     try {
-      await onSendRef.current(finalContent, pubkeys, mediaTags);
+      await onSendRef.current(finalContent, pubkeys, mediaTags, {
+        kudos: savedKudos,
+      });
       if (sentDraftKey) {
         drafts.clearDraft(sentDraftKey);
       }
-    } catch {
+    } catch (error) {
       setContent(savedContent);
       contentRef.current = savedContent;
       richText.setContent(savedContent);
       media.setPendingImeta(savedImeta);
+      setIsKudosActive(savedKudos);
+      setSendError(
+        error instanceof Error ? error.message : "Failed to send message.",
+      );
     }
   }, [
     drafts.clearDraft,
@@ -485,6 +499,8 @@ export function MessageComposer({
     richText.clearContent,
     richText.setContent,
     emojiAutocomplete.clearEmojis,
+    isKudosActive,
+    setIsKudosActive,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -688,56 +704,12 @@ export function MessageComposer({
             selectedIndex={mentions.mentionSelectedIndex}
             suggestions={mentions.isMentionOpen ? mentions.suggestions : []}
           />
-          {editTarget ? (
-            <div
-              className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-primary/30 bg-primary/5 px-3 py-2"
-              data-testid="edit-target"
-            >
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Editing message
-                </p>
-                <p className="truncate text-sm text-foreground/80">
-                  {editTarget.body}
-                </p>
-              </div>
-              <Button
-                className="shrink-0"
-                onClick={onCancelEdit}
-                size="sm"
-                type="button"
-                variant="ghost"
-              >
-                Cancel
-              </Button>
-            </div>
-          ) : replyTarget ? (
-            <div
-              className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-border/70 bg-muted/40 px-3 py-2"
-              data-testid="reply-target"
-            >
-              <div className="min-w-0">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Replying to {replyTarget.author}
-                </p>
-                <p className="truncate text-sm text-foreground/80">
-                  {replyTarget.body}
-                </p>
-              </div>
-              {onCancelReply ? (
-                <Button
-                  aria-label="Cancel reply"
-                  className="h-7 w-7 shrink-0 px-0"
-                  onClick={onCancelReply}
-                  size="icon"
-                  type="button"
-                  variant="ghost"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
+          <ComposerContextBanner
+            editTarget={editTarget}
+            onCancelEdit={onCancelEdit}
+            onCancelReply={onCancelReply}
+            replyTarget={replyTarget}
+          />
 
           {media.uploadState.status === "error" ? (
             <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -750,6 +722,23 @@ export function MessageComposer({
                 Dismiss
               </button>
             </div>
+          ) : null}
+
+          {sendError ? (
+            <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              {sendError}
+              <button
+                className="ml-2 underline"
+                onClick={() => setSendError(null)}
+                type="button"
+              >
+                Dismiss
+              </button>
+            </div>
+          ) : null}
+
+          {isKudosActive ? (
+            <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
           ) : null}
 
           {(media.pendingImeta.length > 0 || media.isUploading) && (
@@ -780,12 +769,19 @@ export function MessageComposer({
             formattingDisabled={disabled}
             isEmojiPickerOpen={isEmojiPickerOpen}
             isFormattingOpen={isFormattingOpen}
+            isKudosActive={isKudosActive}
             isSending={isSending}
             isUploading={media.isUploading}
+            kudosDisabled={kudosDisabled}
             onCaptureSelection={handleCaptureSelection}
             onEmojiPickerOpenChange={setIsEmojiPickerOpen}
             onEmojiSelect={insertEmoji}
             onFormattingToggle={handleFormattingToggle}
+            onGiveKudos={() => {
+              setIsEmojiPickerOpen(false);
+              setIsFormattingOpen(false);
+              activateKudos();
+            }}
             onOpenMentionPicker={openMentionPicker}
             onPaperclip={handlePaperclipClick}
             sendDisabled={sendDisabled}

@@ -27,6 +27,7 @@ import {
   useUpdateChannelMutation,
 } from "@/features/channels/hooks";
 import { compareMembersByRole } from "@/features/channels/lib/memberUtils";
+import { ChannelBitcoinGiftsCard } from "@/features/klaim-gifts/ui/ChannelBitcoinGiftsCard";
 import { CreateWorkflowDialog } from "@/features/workflows/ui/CreateWorkflowDialog";
 import type { Channel } from "@/shared/api/types";
 import {
@@ -263,6 +264,15 @@ export function ChannelManagementSheet({
             <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {membersQuery.error.message}
             </p>
+          ) : null}
+
+          {resolvedChannel.channelType !== "dm" &&
+          resolvedChannel.visibility === "private" ? (
+            <ChannelBitcoinGiftsCard
+              canManage={canManageChannel}
+              channel={resolvedChannel}
+              memberPubkeys={members.map((member) => member.pubkey)}
+            />
           ) : null}
 
           {canJoin ? (
