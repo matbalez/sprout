@@ -23,6 +23,16 @@ export type KlaimPayoutResult = {
   detail: string | null;
 };
 
+export type KlaimClaimResult = {
+  ok: boolean;
+  statusCode: number;
+  amountSats: number | null;
+  destination: string | null;
+  destinationKind: string | null;
+  error: string | null;
+  detail: string | null;
+};
+
 export function registerKlaimFaucetChannel(input: {
   campaignId: string;
   channelId: string;
@@ -42,5 +52,12 @@ export function payKlaimFaucetMember(input: {
     channelId: input.channelId,
     nostrPubkey: input.nostrPubkey,
     bolt12: input.bolt12,
+  });
+}
+
+export function claimKlaimCode(input: { code: string; address: string }) {
+  return invokeTauri<KlaimClaimResult>("claim_klaim_code", {
+    code: input.code,
+    address: input.address,
   });
 }

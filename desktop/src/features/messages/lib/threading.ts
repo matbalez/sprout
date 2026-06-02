@@ -76,8 +76,10 @@ export function buildReplyTags(
   rootEventId: string,
   mentionPubkeys: string[] = [],
 ) {
+  const authorLower = authorPubkey.toLowerCase();
   const tags: string[][] = [
-    ["p", authorPubkey],
+    ["actor", authorLower],
+    ["p", authorLower],
     ["h", channelId],
   ];
 

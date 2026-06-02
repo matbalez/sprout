@@ -4,6 +4,7 @@ import type { TimelineMessage } from "@/features/messages/types";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { MessageTips } from "@/features/messages/ui/MessageTips";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
+import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { KIND_STREAM_MESSAGE_DIFF } from "@/shared/constants/kinds";
@@ -30,6 +31,28 @@ function KudosMessageChip() {
   return (
     <span className="mt-0.5 inline-flex shrink-0 items-center rounded-full border border-amber-500/60 bg-amber-300 px-2 py-0.5 text-[11px] font-bold uppercase text-zinc-950 shadow-sm">
       Kudos
+    </span>
+  );
+}
+
+function BountyMessageChip({
+  amountSats,
+  paid,
+}: {
+  amountSats: number;
+  paid: boolean;
+}) {
+  return (
+    <span
+      className={cn(
+        "mt-0.5 inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase shadow-sm",
+        paid
+          ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-200"
+          : "border-emerald-500/60 bg-emerald-300 text-emerald-950 dark:bg-emerald-400/90",
+      )}
+    >
+      Bounty: {formatBountyAmount(amountSats)}
+      {paid ? " paid" : ""}
     </span>
   );
 }
@@ -253,11 +276,24 @@ export const MessageRow = React.memo(
       </div>
     );
 
+    const messageChips = (
+      <>
+        {message.kudos ? <KudosMessageChip /> : null}
+        {message.bounty ? (
+          <BountyMessageChip
+            amountSats={message.bounty.amountSats}
+            paid={message.bounty.paid}
+          />
+        ) : null}
+      </>
+    );
+    const hasMessageChips = message.kudos || message.bounty;
+
     const messageBodyNode = (
       <>
-        {message.kudos ? (
-          <div className="flex min-w-0 items-start gap-2">
-            <KudosMessageChip />
+        {hasMessageChips ? (
+          <div className="flex min-w-0 flex-wrap items-start gap-2">
+            {messageChips}
             <div className="min-w-0 flex-1">{renderBody()}</div>
           </div>
         ) : (
@@ -334,6 +370,9 @@ export const MessageRow = React.memo(
           className={cn(
             "group/message relative rounded-2xl px-2 py-1 transition-colors",
             "flex items-start gap-2.5",
+            message.bounty?.recipientIsCurrentUser
+              ? "border border-emerald-500/25 bg-emerald-500/5"
+              : "",
             highlighted
               ? "-mx-4 rounded-none px-6 before:absolute before:-inset-y-1.5 before:inset-x-0 before:animate-[route-target-highlight-fade_2s_ease-out_forwards] before:bg-primary/10 before:content-[''] motion-reduce:before:animate-none sm:-mx-6 sm:px-8"
               : "",
@@ -462,6 +501,8 @@ export const MessageRow = React.memo(
     prev.message.pending === next.message.pending &&
     prev.message.edited === next.message.edited &&
     prev.message.kudos === next.message.kudos &&
+    prev.message.bounty === next.message.bounty &&
+    prev.message.bountyPayment === next.message.bountyPayment &&
     prev.message.reactions === next.message.reactions &&
     prev.message.tipSummary === next.message.tipSummary &&
     prev.message.tags === next.message.tags &&

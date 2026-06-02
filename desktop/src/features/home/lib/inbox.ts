@@ -2,6 +2,10 @@ import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
+import {
+  parseMessageBountyTags,
+  type MessageBounty,
+} from "@/features/messages/lib/messageBounties";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import type { TimelineReaction } from "@/features/messages/types";
 import type {
@@ -30,6 +34,7 @@ export type InboxItem = {
   isActionRequired: boolean;
   latestActivityAt: number;
   mentionNames: string[];
+  bounty?: InboxBounty | null;
   preview: string;
   senderLabel: string;
   subject: string;
@@ -46,6 +51,11 @@ export type InboxReply = {
   parentId?: string | null;
   reactions?: TimelineReaction[];
   rootId?: string | null;
+  bounty?: InboxBounty | null;
+};
+
+export type InboxBounty = MessageBounty & {
+  recipientIsCurrentUser: boolean;
 };
 
 export type InboxContextMessage = InboxReply & {
@@ -337,6 +347,16 @@ export function buildInboxItems({
       const subject = feedHeadline(item);
       const preview = feedPreview(item);
       const mentionNames = resolveMentionNames(item.tags, profiles) ?? [];
+      const parsedBounty = parseMessageBountyTags(item.tags);
+      const bounty = parsedBounty
+        ? {
+            ...parsedBounty,
+            paid: false,
+            recipientIsCurrentUser:
+              currentPubkey?.trim().toLowerCase() ===
+              parsedBounty.recipientPubkey,
+          }
+        : null;
       const channelLabel = item.channelName.trim() || null;
       const categoryLabel = categoryLabelFor(categories[0] ?? item.category);
 
@@ -351,6 +371,7 @@ export function buildInboxItems({
         isActionRequired: categories.includes("needs_action"),
         latestActivityAt: group.latestActivityAt,
         mentionNames,
+        bounty,
         preview,
         senderLabel,
         subject,

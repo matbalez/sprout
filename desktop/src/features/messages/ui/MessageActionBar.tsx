@@ -1,8 +1,10 @@
 import Picker from "@emoji-mart/react";
 import data from "@emoji-mart/data";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   BellOff,
   BellRing,
+  Coins,
   Copy,
   CornerUpLeft,
   EllipsisVertical,
@@ -15,6 +17,12 @@ import {
 import * as React from "react";
 import { toast } from "sonner";
 
+import { channelMessagesKey } from "@/features/messages/lib/messageQueryKeys";
+import {
+  buildMessageBountyPaidTag,
+  formatBountyConfirmation,
+  formatBountyAmount,
+} from "@/features/messages/lib/messageBounties";
 import { buildMessageLink } from "@/features/messages/lib/messageLink";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { MessageTipAction } from "@/features/messages/ui/MessageTipAction";
@@ -22,6 +30,11 @@ import type {
   TimelineMessage,
   TimelineReaction,
 } from "@/features/messages/types";
+import {
+  getUserWalletBolt12Offer,
+  sendLightningWalletPayment,
+} from "@/features/wallet/api";
+import { sendChannelMessage } from "@/shared/api/tauri";
 import { cn } from "@/shared/lib/cn";
 import {
   AlertDialog,
@@ -54,6 +67,10 @@ function copyToClipboard(text: string, successMessage: string) {
     .catch(() => {
       toast.error("Failed to copy to clipboard");
     });
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }
 
 // ---------------------------------------------------------------------------
@@ -291,10 +308,84 @@ export function MessageActionBar({
   reactionPending?: boolean;
   isFollowingThread?: boolean;
 }) {
+  const queryClient = useQueryClient();
   const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = React.useState(false);
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
+  const bountyPayment = channelId ? message.bountyPayment : undefined;
+  const bountyPaymentTooltip = bountyPayment
+    ? `Pay out ${formatBountyAmount(bountyPayment.amountSats)} bounty`
+    : null;
+  const bountyPaymentMutation = useMutation({
+    mutationFn: async () => {
+      if (!channelId || !bountyPayment) {
+        throw new Error("No bounty payment target available.");
+      }
+
+      const bolt12 = await getUserWalletBolt12Offer(
+        bountyPayment.recipientPubkey,
+      );
+      if (!bolt12) {
+        throw new Error("Bounty recipient has not published a BOLT12 offer.");
+      }
+
+      const payment = await sendLightningWalletPayment(
+        bountyPayment.amountSats,
+        bolt12,
+      );
+      try {
+        await sendChannelMessage(
+          channelId,
+          formatBountyConfirmation({
+            amountSats: bountyPayment.amountSats,
+            recipientLabel: bountyPayment.recipientLabel,
+          }),
+          null,
+          undefined,
+          [bountyPayment.recipientPubkey],
+          undefined,
+          [
+            buildMessageBountyPaidTag({
+              amountSats: bountyPayment.amountSats,
+              bountyMessageId: bountyPayment.bountyMessageId,
+              recipientPubkey: bountyPayment.recipientPubkey,
+              responseMessageId: bountyPayment.responseMessageId,
+            }),
+          ],
+        );
+        return { payment, receiptError: null };
+      } catch (error) {
+        return {
+          payment,
+          receiptError: errorMessage(
+            error,
+            "Failed to annotate the paid bounty.",
+          ),
+        };
+      }
+    },
+    onSuccess: async (result) => {
+      if (bountyPayment) {
+        const amount = formatBountyAmount(bountyPayment.amountSats);
+        if (result.receiptError) {
+          toast.warning(
+            `Paid ${amount}, but could not annotate the bounty: ${result.receiptError}`,
+          );
+        } else {
+          toast.success(`Paid ${amount}`);
+        }
+      }
+      if (channelId) {
+        await queryClient.invalidateQueries({
+          queryKey: channelMessagesKey(channelId),
+        });
+      }
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error, "Failed to pay bounty."));
+    },
+  });
   const hasMoreMenuActions =
     Boolean(onEdit) ||
     Boolean(onDelete) ||
@@ -303,7 +394,12 @@ export function MessageActionBar({
     Boolean(onUnfollowThread) ||
     !message.pending;
 
-  if (!hasReplyAction && !hasReactionAction && !hasMoreMenuActions) {
+  if (
+    !hasReplyAction &&
+    !hasReactionAction &&
+    !bountyPayment &&
+    !hasMoreMenuActions
+  ) {
     return null;
   }
 
@@ -315,12 +411,12 @@ export function MessageActionBar({
   return (
     <div
       className={cn(
-        "max-w-44 overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85 transition-all duration-150 ease-out",
+        "max-w-56 overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85 transition-all duration-150 ease-out",
         "translate-y-0 opacity-100 sm:max-w-0 sm:border-0 sm:shadow-none sm:translate-y-1 sm:opacity-0",
-        "sm:group-hover/message:max-w-44 sm:group-hover/message:border sm:group-hover/message:border-border/70 sm:group-hover/message:shadow-xs sm:group-hover/message:translate-y-0 sm:group-hover/message:opacity-100",
-        "sm:group-focus-within/message:max-w-44 sm:group-focus-within/message:border sm:group-focus-within/message:border-border/70 sm:group-focus-within/message:shadow-xs sm:group-focus-within/message:translate-y-0 sm:group-focus-within/message:opacity-100",
+        "sm:group-hover/message:max-w-56 sm:group-hover/message:border sm:group-hover/message:border-border/70 sm:group-hover/message:shadow-xs sm:group-hover/message:translate-y-0 sm:group-hover/message:opacity-100",
+        "sm:group-focus-within/message:max-w-56 sm:group-focus-within/message:border sm:group-focus-within/message:border-border/70 sm:group-focus-within/message:shadow-xs sm:group-focus-within/message:translate-y-0 sm:group-focus-within/message:opacity-100",
         isReplyingToMessage || isReactionPickerOpen || isDropdownOpen
-          ? "sm:max-w-44 sm:border sm:border-border/70 sm:shadow-xs sm:translate-y-0 sm:opacity-100"
+          ? "sm:max-w-56 sm:border sm:border-border/70 sm:shadow-xs sm:translate-y-0 sm:opacity-100"
           : "",
       )}
       data-testid={`message-action-bar-${message.id}`}
@@ -393,6 +489,33 @@ export function MessageActionBar({
         ) : null}
 
         <MessageTipAction channelId={channelId} message={message} />
+
+        {bountyPayment ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                aria-label="Pay out bounty"
+                className="h-6 gap-1 rounded-full px-2 text-[11px] font-semibold"
+                data-testid={`pay-bounty-${message.id}`}
+                disabled={bountyPaymentMutation.isPending}
+                onClick={() => {
+                  bountyPaymentMutation.mutate();
+                }}
+                size="sm"
+                type="button"
+                variant="ghost"
+              >
+                {bountyPaymentMutation.isPending ? (
+                  <Spinner className="h-3 w-3" />
+                ) : (
+                  <Coins className="h-3 w-3" />
+                )}
+                Pay out
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{bountyPaymentTooltip}</TooltipContent>
+          </Tooltip>
+        ) : null}
 
         {hasReplyAction ? (
           <Tooltip>

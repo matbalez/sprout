@@ -12,6 +12,7 @@ import {
   type ImetaMedia,
   stripImetaMediaLines,
 } from "@/features/messages/lib/imetaMediaMarkdown";
+import { resolveBountyTargetPubkey } from "@/features/messages/lib/messageBounties";
 
 import {
   ALLOWED_MEDIA_TYPES,
@@ -32,6 +33,8 @@ import { getSproutCodeBlockClipboardText } from "@/shared/lib/codeBlockClipboard
 import { cn } from "@/shared/lib/cn";
 import { ChannelAutocomplete } from "./ChannelAutocomplete";
 import { ComposerAttachments, DropZoneOverlay } from "./ComposerAttachments";
+import { ComposerBountyChip } from "./ComposerBountyChip";
+import { ComposerBountyDialog } from "./ComposerBountyDialog";
 import { ComposerContextBanner } from "./ComposerContextBanner";
 import { ComposerKudosChip } from "./ComposerKudosChip";
 import { EmojiAutocomplete } from "./EmojiAutocomplete";
@@ -40,6 +43,7 @@ import {
   type MentionSuggestion,
 } from "./MentionAutocomplete";
 import { MessageComposerToolbar } from "./MessageComposerToolbar";
+import { useComposerBounty } from "./useComposerBounty";
 import { useComposerKudos } from "./useComposerKudos";
 
 type MessageComposerProps = {
@@ -62,7 +66,7 @@ type MessageComposerProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { kudos?: boolean },
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
   ) => Promise<void>;
   placeholder?: string;
   profiles?: UserProfileLookup;
@@ -203,6 +207,17 @@ export function MessageComposer({
     editTargetActive: Boolean(editTarget),
     focusEditor: richText.focus,
   });
+  const {
+    bountyAmountSats,
+    bountyDialog,
+    bountyDisabled,
+    handleAddBounty,
+    setBountyAmountSats,
+  } = useComposerBounty({
+    disabled,
+    editTargetActive: Boolean(editTarget),
+    focusEditor: richText.focus,
+  });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
   React.useEffect(() => {
@@ -228,6 +243,7 @@ export function MessageComposer({
     media.setPendingImeta([]);
     media.setUploadState({ status: "idle" });
     setIsKudosActive(false);
+    setBountyAmountSats(null);
     setSendError(null);
     setIsEmojiPickerOpen(false);
     mentions.clearMentions();
@@ -245,6 +261,7 @@ export function MessageComposer({
   React.useEffect(() => {
     if (editTarget) {
       setIsKudosActive(false);
+      setBountyAmountSats(null);
       // Snapshot the current draft (text + attachments) so the user's
       // in-flight work survives the edit-mode hijack and is restored on
       // edit-cancel/exit.
@@ -447,6 +464,18 @@ export function MessageComposer({
     }
 
     const pubkeys = mentions.extractMentionPubkeys(trimmed);
+    if (bountyAmountSats !== null) {
+      try {
+        resolveBountyTargetPubkey(pubkeys);
+      } catch (error) {
+        setSendError(
+          error instanceof Error
+            ? error.message
+            : "Message bounties require exactly one @mention.",
+        );
+        return;
+      }
+    }
 
     // Send semantics use `undefined` for "no attachments" (no imeta tags
     // emitted on the publish), which is what `buildOutgoingMessage`
@@ -459,6 +488,7 @@ export function MessageComposer({
     const savedContent = trimmed;
     const savedImeta = [...currentPendingImeta];
     const savedKudos = isKudosActive;
+    const savedBountyAmountSats = bountyAmountSats;
 
     setContent("");
     contentRef.current = "";
@@ -468,12 +498,14 @@ export function MessageComposer({
     channelLinks.clearChannels();
     emojiAutocomplete.clearEmojis();
     setIsKudosActive(false);
+    setBountyAmountSats(null);
     setIsEmojiPickerOpen(false);
 
     const sentDraftKey = effectiveDraftKeyRef.current;
     setSendError(null);
     try {
       await onSendRef.current(finalContent, pubkeys, mediaTags, {
+        bountyAmountSats: savedBountyAmountSats,
         kudos: savedKudos,
       });
       if (sentDraftKey) {
@@ -485,6 +517,7 @@ export function MessageComposer({
       richText.setContent(savedContent);
       media.setPendingImeta(savedImeta);
       setIsKudosActive(savedKudos);
+      setBountyAmountSats(savedBountyAmountSats);
       setSendError(
         error instanceof Error ? error.message : "Failed to send message.",
       );
@@ -500,7 +533,9 @@ export function MessageComposer({
     richText.setContent,
     emojiAutocomplete.clearEmojis,
     isKudosActive,
+    bountyAmountSats,
     setIsKudosActive,
+    setBountyAmountSats,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -740,6 +775,12 @@ export function MessageComposer({
           {isKudosActive ? (
             <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
           ) : null}
+          {bountyAmountSats !== null ? (
+            <ComposerBountyChip
+              amountSats={bountyAmountSats}
+              onRemove={() => setBountyAmountSats(null)}
+            />
+          ) : null}
 
           {(media.pendingImeta.length > 0 || media.isUploading) && (
             <div className="mb-2 flex items-center gap-2">
@@ -769,11 +810,18 @@ export function MessageComposer({
             formattingDisabled={disabled}
             isEmojiPickerOpen={isEmojiPickerOpen}
             isFormattingOpen={isFormattingOpen}
+            isBountyActive={bountyAmountSats !== null}
             isKudosActive={isKudosActive}
             isSending={isSending}
             isUploading={media.isUploading}
             kudosDisabled={kudosDisabled}
+            bountyDisabled={bountyDisabled}
             onCaptureSelection={handleCaptureSelection}
+            onAddBounty={() => {
+              setIsEmojiPickerOpen(false);
+              setIsFormattingOpen(false);
+              handleAddBounty();
+            }}
             onEmojiPickerOpenChange={setIsEmojiPickerOpen}
             onEmojiSelect={insertEmoji}
             onFormattingToggle={handleFormattingToggle}
@@ -787,6 +835,16 @@ export function MessageComposer({
             sendDisabled={sendDisabled}
           />
         </form>
+        <ComposerBountyDialog
+          amountValue={bountyDialog.amountValue}
+          error={bountyDialog.error}
+          isWalletLoading={bountyDialog.isWalletLoading}
+          onAmountValueChange={bountyDialog.onAmountValueChange}
+          onOpenChange={bountyDialog.onOpenChange}
+          onSubmit={bountyDialog.onSubmit}
+          open={bountyDialog.open}
+          sendableBalanceSats={bountyDialog.sendableBalanceSats}
+        />
       </div>
     </footer>
   );

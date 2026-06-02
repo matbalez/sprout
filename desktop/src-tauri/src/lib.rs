@@ -670,6 +670,7 @@ pub fn run() {
             send_shared_agent_invocation_payment,
             get_walletbot_messages,
             send_walletbot_command,
+            claim_klaim_code,
             register_klaim_faucet_channel,
             pay_klaim_faucet_member,
         ])

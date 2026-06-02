@@ -75,6 +75,10 @@ type MockBridgeOptions = {
    * `resolve_shared_agent_owner` in the mocked desktop bridge.
    */
   sharedAgentOwners?: Record<string, string | null>;
+  /**
+   * Lowercase target pubkey to BOLT12 offer. Omitted keys resolve to null.
+   */
+  walletBolt12Offers?: Record<string, string | null>;
 };
 
 type BridgeOptions = {

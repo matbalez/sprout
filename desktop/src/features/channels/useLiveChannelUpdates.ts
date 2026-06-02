@@ -2,6 +2,10 @@ import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { channelsQueryKey } from "@/features/channels/hooks";
+import {
+  extractKlaimClaimCode,
+  processKlaimClaimMessage,
+} from "@/features/klaim-gifts/processKlaimClaimMessage";
 import { mergeTimelineCacheMessages } from "@/features/messages/hooks";
 import { channelMessagesKey } from "@/features/messages/lib/messageQueryKeys";
 import {
@@ -14,6 +18,8 @@ import { relayClient } from "@/shared/api/relayClient";
 import {
   CHANNEL_EVENT_KINDS,
   CHANNEL_MESSAGE_EVENT_KINDS,
+  KIND_STREAM_MESSAGE,
+  KIND_STREAM_MESSAGE_V2,
 } from "@/shared/constants/kinds";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 
@@ -42,6 +48,10 @@ const LIVE_SUBSCRIPTION_RETRY_MAX_MS = 30_000;
 // Only "new content" kinds should bump unread state. Shared with the
 // catch-up query in useUnreadChannels so the two paths stay in lockstep.
 const UNREAD_TRIGGER_KINDS = new Set<number>(CHANNEL_MESSAGE_EVENT_KINDS);
+const KLAIM_CLAIM_MESSAGE_KINDS = new Set<number>([
+  KIND_STREAM_MESSAGE,
+  KIND_STREAM_MESSAGE_V2,
+]);
 
 export const EMPTY_SET: ReadonlySet<string> = new Set();
 
@@ -80,6 +90,10 @@ export function useLiveChannelUpdates(
     () => new Set(channels.map((channel) => channel.id)),
     [channels],
   );
+  const liveChannelById = React.useMemo(
+    () => new Map(channels.map((channel) => [channel.id, channel])),
+    [channels],
+  );
   const dmChannelMap = React.useMemo(
     () =>
       new Map(
@@ -90,6 +104,7 @@ export function useLiveChannelUpdates(
     [channels],
   );
   const seenDmEventIdsRef = React.useRef(new Set<string>());
+  const seenKlaimClaimEventIdsRef = React.useRef(new Set<string>());
   const dmSubscriptionStartedAtRef = React.useRef(0);
 
   // Reset subscription timestamp when identity changes.
@@ -155,6 +170,26 @@ export function useLiveChannelUpdates(
         void queryClient.invalidateQueries({ queryKey: channelsQueryKey });
       }
       return;
+    }
+
+    const channel = liveChannelById.get(channelId);
+    if (
+      channel?.channelType === "stream" &&
+      (channel.visibility === "open" || channel.visibility === "private") &&
+      KLAIM_CLAIM_MESSAGE_KINDS.has(event.kind) &&
+      extractKlaimClaimCode(event.content) &&
+      trackSeenEvent(seenKlaimClaimEventIdsRef.current, event.id)
+    ) {
+      void processKlaimClaimMessage({ channelId, event }).then((result) => {
+        if (result.error) {
+          console.warn("Klaim claim message was not paid", {
+            channelId,
+            code: result.code,
+            eventId: event.id,
+            error: result.error,
+          });
+        }
+      });
     }
 
     // Let the caller observe self-authored trigger events (e.g. to track

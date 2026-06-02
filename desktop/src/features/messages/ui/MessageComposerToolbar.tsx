@@ -25,6 +25,7 @@ export const MessageComposerToolbar = React.memo(
     formattingDisabled,
     isEmojiPickerOpen,
     isFormattingOpen,
+    isBountyActive,
     isKudosActive,
     isSending,
     isUploading,
@@ -32,10 +33,12 @@ export const MessageComposerToolbar = React.memo(
     onEmojiPickerOpenChange,
     onEmojiSelect,
     onFormattingToggle,
+    onAddBounty,
     onGiveKudos,
     onOpenMentionPicker,
     onPaperclip,
     kudosDisabled,
+    bountyDisabled,
     sendDisabled,
   }: {
     composerDisabled: boolean;
@@ -44,6 +47,7 @@ export const MessageComposerToolbar = React.memo(
     formattingDisabled: boolean;
     isEmojiPickerOpen: boolean;
     isFormattingOpen: boolean;
+    isBountyActive: boolean;
     isKudosActive: boolean;
     isSending: boolean;
     isUploading: boolean;
@@ -51,10 +55,12 @@ export const MessageComposerToolbar = React.memo(
     onEmojiPickerOpenChange: (open: boolean) => void;
     onEmojiSelect: (emoji: string) => void;
     onFormattingToggle: (pressed: boolean) => void;
+    onAddBounty: () => void;
     onGiveKudos: () => void;
     onOpenMentionPicker: () => void;
     onPaperclip: () => void;
     kudosDisabled: boolean;
+    bountyDisabled: boolean;
     sendDisabled: boolean;
   }) {
     return (
@@ -234,6 +240,32 @@ export const MessageComposerToolbar = React.memo(
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>Give Kudos</TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex">
+                      <Button
+                        aria-label="Add message bounty"
+                        aria-pressed={isBountyActive}
+                        className={cn(
+                          "h-8 w-8 rounded-md p-0 text-sm font-bold",
+                          isBountyActive
+                            ? "bg-amber-300 text-zinc-950 hover:bg-amber-300/90"
+                            : "",
+                        )}
+                        data-testid="message-add-bounty"
+                        disabled={composerDisabled || bountyDisabled}
+                        onClick={onAddBounty}
+                        onMouseDown={onCaptureSelection}
+                        size="icon"
+                        type="button"
+                        variant={isBountyActive ? "secondary" : "ghost"}
+                      >
+                        B
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Message bounty</TooltipContent>
                 </Tooltip>
                 <motion.div
                   initial={{ x: -8, opacity: 0 }}

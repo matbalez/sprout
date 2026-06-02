@@ -232,6 +232,7 @@ export function HomeView({
         isSelected: message.id === selectedItem.id,
         mentionNames:
           resolveMentionNames(message.tags ?? [], feedProfiles) ?? [],
+        bounty: message.bounty ?? null,
         reactions: message.reactions,
       };
     });

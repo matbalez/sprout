@@ -179,6 +179,7 @@ export function InboxDetailPane({
             id: item.id,
             isSelected: true,
             mentionNames: item.mentionNames,
+            bounty: item.bounty ?? null,
           },
           ...pendingReplyMessages,
         ];

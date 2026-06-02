@@ -52,7 +52,7 @@ type MessageThreadPanelProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { kudos?: boolean },
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
   ) => Promise<void>;
   onToggleReaction?: (
     message: TimelineMessage,

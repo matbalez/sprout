@@ -64,13 +64,13 @@ type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { kudos?: boolean },
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
   ) => Promise<void>;
   onSendThreadReply: (
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { kudos?: boolean },
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
   onToggleReaction?: (

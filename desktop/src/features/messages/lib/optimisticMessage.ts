@@ -29,7 +29,12 @@ export function createOptimisticMessage(
       ),
     );
   } else {
-    tags.push(["h", channelId], ["p", identity.pubkey]);
+    const identityPubkey = identity.pubkey.toLowerCase();
+    tags.push(
+      ["h", channelId],
+      ["actor", identityPubkey],
+      ["p", identityPubkey],
+    );
     for (const pubkey of normalizeMentionPubkeys(
       mentionPubkeys,
       identity.pubkey,

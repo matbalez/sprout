@@ -40,6 +40,7 @@ const RECONNECT_BASE_DELAY_MS = 1_000,
  */
 const STALL_CHECK_INTERVAL_MS = 10_000;
 const STALL_IDLE_TIMEOUT_MS = 60_000;
+const PUBKEY_HEX_RE = /^[0-9a-f]{64}$/i;
 
 export class RelayClient {
   private wsId: number | null = null;
@@ -199,10 +200,18 @@ export class RelayClient {
     content: string,
     mentionPubkeys: string[] = [],
     extraTags: string[][] = [],
+    actorPubkey?: string,
   ) {
     await this.ensureConnected();
 
     const tags: string[][] = [["h", channelId]];
+    const normalizedActorPubkey = actorPubkey?.trim().toLowerCase();
+    if (normalizedActorPubkey) {
+      if (!PUBKEY_HEX_RE.test(normalizedActorPubkey)) {
+        throw new Error("Invalid actor pubkey.");
+      }
+      tags.push(["actor", normalizedActorPubkey]);
+    }
     for (const pubkey of mentionPubkeys) {
       tags.push(["p", pubkey]);
     }

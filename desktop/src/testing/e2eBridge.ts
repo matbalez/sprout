@@ -44,6 +44,7 @@ type E2eConfig = {
     oaOwnerIsMe?: boolean;
     relayRole?: "owner" | "admin" | "member" | null;
     sharedAgentOwners?: Record<string, string | null>;
+    walletBolt12Offers?: Record<string, string | null>;
   };
   relayHttpUrl?: string;
   relayWsUrl?: string;
@@ -438,6 +439,8 @@ declare global {
     __SPROUT_E2E_EMIT_MOCK_MESSAGE__?: (input: {
       channelName: string;
       content: string;
+      annotationTags?: string[][];
+      mentionPubkeys?: string[];
       parentEventId?: string | null;
       pubkey?: string;
       kind?: number;
@@ -458,6 +461,7 @@ declare global {
 const DEFAULT_RELAY_HTTP_URL = "http://localhost:3000";
 const DEFAULT_RELAY_WS_URL = "ws://localhost:3000";
 const E2E_IDENTITY_OVERRIDE_STORAGE_KEY = "sprout:e2e-identity-override.v1";
+const HEX_64_RE = /^[0-9a-f]{64}$/i;
 const DEFAULT_MOCK_IDENTITY = {
   pubkey: "deadbeef".repeat(8),
   display_name: "npub1mock...",
@@ -491,6 +495,12 @@ const mockDisplayNames = new Map<string, string>([
 
 function isoMinutesAgo(minutesAgo: number): string {
   return new Date(Date.now() - minutesAgo * 60_000).toISOString();
+}
+
+function mockEventId() {
+  return `${crypto.randomUUID().replace(/-/g, "")}${crypto
+    .randomUUID()
+    .replace(/-/g, "")}`.slice(0, 64);
 }
 
 function cloneMembers(members: RawChannelMember[]): RawChannelMember[] {
@@ -1597,6 +1607,74 @@ function appendMentionTags(
   }
 }
 
+function appendActorTag(tags: string[][], pubkey: string) {
+  tags.push(["actor", pubkey.toLowerCase()]);
+}
+
+function isPositiveIntegerTagValue(value: string | undefined) {
+  return typeof value === "string" && /^[1-9][0-9]*$/.test(value);
+}
+
+function validateMockMessageAnnotationTags(annotationTags: string[][] = []) {
+  for (const annotation of annotationTags) {
+    const [name, feature, version] = annotation;
+    if (name === "sprout" && feature === "kudos" && version === "v1") {
+      if (annotation.length === 3) {
+        continue;
+      }
+      throw new Error(
+        `Unsupported annotation tag: ${JSON.stringify(annotation)}`,
+      );
+    }
+
+    if (name === "sprout" && feature === "message-bounty" && version === "v1") {
+      const [, , , amountSats, recipientPubkey] = annotation;
+      if (
+        annotation.length === 5 &&
+        isPositiveIntegerTagValue(amountSats) &&
+        HEX_64_RE.test(recipientPubkey ?? "")
+      ) {
+        continue;
+      }
+      throw new Error(
+        `Unsupported annotation tag: ${JSON.stringify(annotation)}`,
+      );
+    }
+
+    if (
+      name === "sprout" &&
+      feature === "message-bounty-paid" &&
+      version === "v1"
+    ) {
+      const [
+        ,
+        ,
+        ,
+        bountyMessageId,
+        responseMessageId,
+        amountSats,
+        recipientPubkey,
+      ] = annotation;
+      if (
+        annotation.length === 7 &&
+        HEX_64_RE.test(bountyMessageId ?? "") &&
+        HEX_64_RE.test(responseMessageId ?? "") &&
+        isPositiveIntegerTagValue(amountSats) &&
+        HEX_64_RE.test(recipientPubkey ?? "")
+      ) {
+        continue;
+      }
+      throw new Error(
+        `Unsupported annotation tag: ${JSON.stringify(annotation)}`,
+      );
+    }
+
+    throw new Error(
+      `Unsupported annotation tag: ${JSON.stringify(annotation)}`,
+    );
+  }
+}
+
 function buildTopLevelMessageTags(
   channelId: string,
   mentionPubkeys: string[] | undefined,
@@ -1604,6 +1682,8 @@ function buildTopLevelMessageTags(
   annotationTags: string[][] | undefined,
 ) {
   const tags: string[][] = [["h", channelId]];
+  validateMockMessageAnnotationTags(annotationTags);
+  appendActorTag(tags, selfPubkey);
   appendMentionTags(tags, mentionPubkeys, selfPubkey);
   tags.push(...(annotationTags ?? []));
   return tags;
@@ -1618,9 +1698,12 @@ function buildReplyMessageTags(
   annotationTags: string[][] | undefined,
 ) {
   // Preserve the reply tag ordering that the desktop message hooks already
-  // expect locally: author p, h, mention ps, then thread e-tags.
+  // expect locally: actor, author p, h, mention ps, then thread e-tags.
+  validateMockMessageAnnotationTags(annotationTags);
+  const authorLower = authorPubkey.toLowerCase();
   const tags: string[][] = [
-    ["p", authorPubkey],
+    ["actor", authorLower],
+    ["p", authorLower],
     ["h", channelId],
   ];
   appendMentionTags(tags, mentionPubkeys, authorPubkey);
@@ -1765,14 +1848,22 @@ function emitMockChannelMessage(
   parentEventId?: string | null,
   pubkey?: string,
   kind?: number,
+  mentionPubkeys?: string[],
+  annotationTags?: string[][],
 ) {
   const eventKind = kind ?? 9;
+  const authorPubkey = pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey;
   if (!parentEventId) {
     const event = createMockEvent(
       eventKind,
       content,
-      [["h", channelId]],
-      pubkey,
+      buildTopLevelMessageTags(
+        channelId,
+        mentionPubkeys,
+        authorPubkey,
+        annotationTags,
+      ),
+      authorPubkey,
     );
     recordMockMessage(channelId, event);
     emitMockLiveEvent(channelId, event);
@@ -1789,7 +1880,6 @@ function emitMockChannelMessage(
         rootEventId: null,
       };
   const rootEventId = parentThread.rootEventId ?? parentEventId;
-  const authorPubkey = pubkey ?? DEFAULT_MOCK_IDENTITY.pubkey;
   const event = createMockEvent(
     eventKind,
     content,
@@ -1798,8 +1888,8 @@ function emitMockChannelMessage(
       authorPubkey,
       parentEventId,
       rootEventId,
-      undefined,
-      undefined,
+      mentionPubkeys,
+      annotationTags,
     ),
     authorPubkey,
   );
@@ -1810,7 +1900,7 @@ function emitMockChannelMessage(
 
 function emitMockTypingIndicator(channelId: string, pubkey: string) {
   const event: RelayEvent = {
-    id: crypto.randomUUID().replace(/-/g, ""),
+    id: mockEventId(),
     pubkey,
     created_at: Math.floor(Date.now() / 1000),
     kind: 20002,
@@ -2088,7 +2178,7 @@ function createMockEvent(
   createdAt = Math.floor(Date.now() / 1000),
 ): RelayEvent {
   return {
-    id: crypto.randomUUID().replace(/-/g, ""),
+    id: mockEventId(),
     pubkey,
     created_at: createdAt,
     kind,
@@ -4352,7 +4442,7 @@ async function handleSendChannelMessage(
       : 1;
 
     const event: RelayEvent = {
-      id: crypto.randomUUID().replace(/-/g, ""),
+      id: mockEventId(),
       pubkey: mockPubkey,
       created_at: createdAt,
       kind,
@@ -4711,8 +4801,10 @@ export function maybeInstallE2eTauriMocks() {
   window.__SPROUT_E2E_COMMANDS__ = [];
   window.__SPROUT_E2E_WEBVIEW_ZOOM__ = 1;
   window.__SPROUT_E2E_EMIT_MOCK_MESSAGE__ = ({
+    annotationTags,
     channelName,
     content,
+    mentionPubkeys,
     parentEventId,
     pubkey,
     kind,
@@ -4730,6 +4822,8 @@ export function maybeInstallE2eTauriMocks() {
       parentEventId,
       pubkey,
       kind,
+      mentionPubkeys,
+      annotationTags,
     );
   };
   window.__SPROUT_E2E_EMIT_MOCK_TYPING__ = ({ channelName, pubkey }) => {
@@ -4784,6 +4878,43 @@ export function maybeInstallE2eTauriMocks() {
         return DEFAULT_MOCK_IDENTITY;
       case "get_nsec":
         return "nsec1mock000000000000000000000000000000000000000000000000000000";
+      case "get_lightning_wallet_summary":
+        return {
+          walletSource: "default",
+          hasExistingClientCredential: false,
+          env: "mock",
+          seedPath: "/mock/sprout-wallet-seed",
+          existingClientCredentialPath: "/mock/lexe-client-credential",
+          balanceSats: 50_000,
+          lightningBalanceSats: 50_000,
+          lightningSendableBalanceSats: 50_000,
+          lightningMaxSendableBalanceSats: 50_000,
+          onchainBalanceSats: 0,
+          onchainTrustedBalanceSats: 0,
+          numChannels: 1,
+          numUsableChannels: 1,
+          bolt12Offer: "lno1mockoffer",
+        };
+      case "get_user_wallet_bolt12_offer": {
+        const pubkey = (payload as { pubkey?: string } | null)?.pubkey
+          ?.trim()
+          .toLowerCase();
+        if (!pubkey) {
+          return null;
+        }
+        return activeConfig?.mock?.walletBolt12Offers?.[pubkey] ?? null;
+      }
+      case "send_lightning_wallet_payment": {
+        const amountSats = (payload as { amountSats?: number } | null)
+          ?.amountSats;
+        if (typeof amountSats !== "number") {
+          throw new Error("mock payment requires amountSats");
+        }
+        return {
+          paymentId: `mock-payment-${crypto.randomUUID()}`,
+          amountSats,
+        };
+      }
       case "apply_workspace":
         return;
       case "get_profile":

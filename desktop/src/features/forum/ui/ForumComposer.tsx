@@ -471,13 +471,16 @@ export function ForumComposer({
               ) : undefined
             }
             formattingDisabled={disabled ?? false}
+            isBountyActive={false}
             isEmojiPickerOpen={isEmojiPickerOpen}
             isFormattingOpen={isFormattingOpen}
             isKudosActive={false}
             isSending={isSending ?? false}
             isUploading={media.isUploading}
+            bountyDisabled
             kudosDisabled
             onCaptureSelection={handleToolbarMouseDown}
+            onAddBounty={() => {}}
             onEmojiPickerOpenChange={setIsEmojiPickerOpen}
             onEmojiSelect={insertEmoji}
             onFormattingToggle={handleFormattingToggle}

@@ -3,16 +3,17 @@ import {
   klaimPayoutErrorLabel,
   shouldPostKlaimGiftConfirmation,
 } from "./klaimGiftResults";
+import {
+  formatKlaimGiftConfirmation,
+  resolveKlaimGiftMentionName,
+} from "./klaimGiftReceipt";
 import { payKlaimFaucetMember } from "@/features/klaim-gifts/api";
 import {
   getKlaimGiftConfig,
   isKlaimGiftProcessableStatus,
   markKlaimGiftMember,
 } from "@/features/klaim-gifts/storage";
-import {
-  formatBitcoinAmount,
-  getUserWalletBolt12Offer,
-} from "@/features/wallet/api";
+import { getUserWalletBolt12Offer } from "@/features/wallet/api";
 import { sendChannelMessage } from "@/shared/api/tauri";
 import type { Channel } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
@@ -35,28 +36,19 @@ function emptyResult(): KlaimGiftProcessingResult {
   };
 }
 
-function shortPubkey(pubkey: string) {
-  return `${pubkey.slice(0, 8)}...${pubkey.slice(-4)}`;
-}
-
-function formatGiftConfirmation(input: {
-  amountSats: number;
-  claimsUsed: number | null;
-  maxClaims: number | null;
-  pubkey: string;
-}) {
-  const capacity =
-    typeof input.claimsUsed === "number" && typeof input.maxClaims === "number"
-      ? ` (${input.claimsUsed}/${input.maxClaims} gifts claimed)`
-      : "";
-
-  return `Bitcoin gift sent to @${shortPubkey(input.pubkey)}: ${formatBitcoinAmount(
-    input.amountSats,
-  )}${capacity}.`;
-}
-
 function uniquePubkeys(pubkeys: string[]) {
   return [...new Set(pubkeys.map(normalizePubkey).filter(Boolean))];
+}
+
+function hasReachedGiftCapacity(input: {
+  claimsUsed: number | null;
+  maxClaims: number | null;
+}) {
+  return (
+    typeof input.claimsUsed === "number" &&
+    typeof input.maxClaims === "number" &&
+    input.claimsUsed >= input.maxClaims
+  );
 }
 
 export async function processKlaimGiftMembers(input: {
@@ -78,6 +70,7 @@ export async function processKlaimGiftMembers(input: {
     const memberState = latestConfig?.members[pubkey];
     if (
       !latestConfig?.enabled ||
+      hasReachedGiftCapacity(latestConfig) ||
       (memberState && !isKlaimGiftProcessableStatus(memberState.status))
     ) {
       result.skipped.push(pubkey);
@@ -106,7 +99,7 @@ export async function processKlaimGiftMembers(input: {
       }
 
       const payoutConfig = getKlaimGiftConfig(input.channel.id);
-      if (!payoutConfig?.enabled) {
+      if (!payoutConfig?.enabled || hasReachedGiftCapacity(payoutConfig)) {
         result.skipped.push(pubkey);
         continue;
       }
@@ -131,13 +124,12 @@ export async function processKlaimGiftMembers(input: {
         shouldPostKlaimGiftConfirmation(payout) &&
         payout.amountSats != null
       ) {
+        const mentionName = await resolveKlaimGiftMentionName(pubkey);
         await sendChannelMessage(
           input.channel.id,
-          formatGiftConfirmation({
+          formatKlaimGiftConfirmation({
             amountSats: payout.amountSats,
-            claimsUsed: payout.claimsUsed,
-            maxClaims: payout.maxClaims,
-            pubkey,
+            mentionName,
           }),
           null,
           undefined,

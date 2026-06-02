@@ -282,6 +282,10 @@ pub async fn send_channel_message(
     let media = media_tags.unwrap_or_default();
     let annotations = annotation_tags.unwrap_or_default();
     let kind_num = kind.unwrap_or(sprout_core::kind::KIND_STREAM_MESSAGE);
+    let actor_pubkey = {
+        let keys = state.keys.lock().map_err(|error| error.to_string())?;
+        keys.public_key().to_hex()
+    };
 
     let mut resolved_root: Option<String> = None;
 
@@ -315,6 +319,7 @@ pub async fn send_channel_message(
             events::build_message(
                 channel_uuid,
                 content.trim(),
+                Some(actor_pubkey.as_str()),
                 thread_ref.as_ref(),
                 &mention_refs,
                 &media,

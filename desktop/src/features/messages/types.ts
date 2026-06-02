@@ -22,6 +22,21 @@ export type TimelineTipSummary = {
   }>;
 };
 
+export type TimelineMessageBounty = {
+  amountSats: number;
+  recipientPubkey: string;
+  paid: boolean;
+  recipientIsCurrentUser: boolean;
+};
+
+export type TimelineMessageBountyPayment = {
+  amountSats: number;
+  bountyMessageId: string;
+  recipientLabel: string;
+  recipientPubkey: string;
+  responseMessageId: string;
+};
+
 export type TimelineMessage = {
   id: string;
   createdAt: number;
@@ -47,4 +62,6 @@ export type TimelineMessage = {
   tags?: string[][];
   reactions?: TimelineReaction[];
   tipSummary?: TimelineTipSummary;
+  bounty?: TimelineMessageBounty;
+  bountyPayment?: TimelineMessageBountyPayment;
 };

@@ -60,6 +60,25 @@ pub struct KlaimPayoutResult {
     detail: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct KlaimClaimSuccess {
+    amount_sats: u64,
+    destination: String,
+    destination_kind: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KlaimClaimResult {
+    ok: bool,
+    status_code: u16,
+    amount_sats: Option<u64>,
+    destination: Option<String>,
+    destination_kind: Option<String>,
+    error: Option<String>,
+    detail: Option<String>,
+}
+
 fn error_message_for_status(status: StatusCode, body: &str) -> KlaimErrorBody {
     match serde_json::from_str::<KlaimErrorBody>(body) {
         Ok(parsed) => parsed,
@@ -78,6 +97,66 @@ fn error_message_for_status(status: StatusCode, body: &str) -> KlaimErrorBody {
             claims_used: None,
         },
     }
+}
+
+#[tauri::command]
+pub async fn claim_klaim_code(
+    state: State<'_, AppState>,
+    code: String,
+    address: String,
+) -> Result<KlaimClaimResult, String> {
+    let code = code.trim();
+    let address = address.trim();
+    if code.is_empty() {
+        return Err("Klaim claim code is required.".to_string());
+    }
+    if address.is_empty() {
+        return Err("Klaim claim address is required.".to_string());
+    }
+
+    let response = state
+        .http_client
+        .post(format!("{KLAIM_BASE_URL}/api/claim"))
+        .timeout(Duration::from_secs(180))
+        .json(&serde_json::json!({
+            "code": code,
+            "address": address,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Failed to reach Klaim: {error}"))?;
+
+    let status = response.status();
+    let status_code = status.as_u16();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("Failed to read Klaim response: {error}"))?;
+
+    if status == StatusCode::OK {
+        let parsed: KlaimClaimSuccess = serde_json::from_str(&body)
+            .map_err(|error| format!("Failed to parse Klaim claim response: {error}"))?;
+        return Ok(KlaimClaimResult {
+            ok: true,
+            status_code,
+            amount_sats: Some(parsed.amount_sats),
+            destination: Some(parsed.destination),
+            destination_kind: Some(parsed.destination_kind),
+            error: None,
+            detail: None,
+        });
+    }
+
+    let parsed = error_message_for_status(status, &body);
+    Ok(KlaimClaimResult {
+        ok: false,
+        status_code,
+        amount_sats: None,
+        destination: None,
+        destination_kind: None,
+        error: parsed.error,
+        detail: parsed.detail,
+    })
 }
 
 #[tauri::command]
@@ -271,6 +350,21 @@ mod tests {
 
         assert_eq!(parsed.amount_sats, 2100);
         assert_eq!(parsed.claims_used, 1);
+    }
+
+    #[test]
+    fn claim_success_payloads_ignore_extra_ok_field() {
+        let parsed = serde_json::from_value::<KlaimClaimSuccess>(serde_json::json!({
+            "ok": true,
+            "amount_sats": 200,
+            "destination": "lno1recipient",
+            "destination_kind": "bolt12"
+        }))
+        .expect("extra fields should be ignored");
+
+        assert_eq!(parsed.amount_sats, 200);
+        assert_eq!(parsed.destination, "lno1recipient");
+        assert_eq!(parsed.destination_kind, "bolt12");
     }
 
     #[test]

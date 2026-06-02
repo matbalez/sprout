@@ -5,6 +5,7 @@ import {
   type InboxFilter,
   type InboxItem,
 } from "@/features/home/lib/inbox";
+import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import {
@@ -109,14 +110,22 @@ export function InboxListPane({
               const isSelected = item.id === selectedId;
               const isDone = doneSet.has(item.id);
               const typeLabel = formatInboxTypeLabel(item);
+              const shouldHighlightBounty = Boolean(
+                item.bounty?.recipientIsCurrentUser && !item.bounty.paid,
+              );
 
               return (
                 <button
                   className={cn(
                     "flex w-full items-start gap-2.5 border-l px-5 py-2 text-left transition-colors",
-                    isSelected
-                      ? "border-l-primary bg-muted/30"
-                      : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
+                    shouldHighlightBounty
+                      ? "border-l-emerald-500 bg-emerald-50/80 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/30"
+                      : isSelected
+                        ? "border-l-primary bg-muted/30"
+                        : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
+                    shouldHighlightBounty && isSelected
+                      ? "ring-1 ring-inset ring-emerald-500/30"
+                      : "",
                   )}
                   data-testid={`home-inbox-item-${item.id}`}
                   key={item.id}
@@ -145,6 +154,12 @@ export function InboxListPane({
                           {item.isActionRequired ? (
                             <span className="inline-flex shrink-0 items-center text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-600 dark:text-amber-300">
                               Needs action
+                            </span>
+                          ) : null}
+                          {item.bounty ? (
+                            <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/55 bg-emerald-300 px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-emerald-950 dark:bg-emerald-400/90">
+                              Bounty:{" "}
+                              {formatBountyAmount(item.bounty.amountSats)}
                             </span>
                           ) : null}
                         </div>

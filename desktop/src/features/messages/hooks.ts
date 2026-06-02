@@ -53,6 +53,10 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
 import {
+  buildMessageBountyTag,
+  resolveBountyTargetPubkey,
+} from "@/features/messages/lib/messageBounties";
+import {
   KIND_STREAM_MESSAGE,
   KIND_SYSTEM_MESSAGE,
 } from "@/shared/constants/kinds";
@@ -312,11 +316,13 @@ export function useSendMessageMutation(
       parentEventId?: string | null;
       mediaTags?: string[][];
       kudos?: boolean;
+      bountyAmountSats?: number | null;
     },
     MessageQueryContext | undefined
   >({
     mutationFn: async ({
       content,
+      bountyAmountSats,
       kudos,
       mentionPubkeys,
       parentEventId,
@@ -351,6 +357,10 @@ export function useSendMessageMutation(
       }
 
       const normalizedMentionPubkeys = mentionPubkeys ?? [];
+      const bountyTargetPubkey =
+        typeof bountyAmountSats === "number"
+          ? resolveBountyTargetPubkey(normalizedMentionPubkeys)
+          : null;
       const sharedAgentPaymentTargets = sharedAgentInvocationPayments
         ? await payForSharedAgentInvocations({
             channelId: channel.id,
@@ -363,14 +373,27 @@ export function useSendMessageMutation(
             relayAgents: sharedAgentInvocationPayments.relayAgents,
           })
         : [];
-      const annotationTags = kudos
-        ? await payForKudosMessage({
-            channelId: channel.id,
-            currentPubkey: identity.pubkey,
-            mentionPubkeys: normalizedMentionPubkeys,
-            queryClient,
-          })
-        : [];
+      const annotationTags = [
+        ...(kudos
+          ? await payForKudosMessage({
+              channelId: channel.id,
+              currentPubkey: identity.pubkey,
+              mentionPubkeys: normalizedMentionPubkeys,
+              queryClient,
+            })
+          : []),
+      ];
+      if (typeof bountyAmountSats === "number") {
+        if (!bountyTargetPubkey) {
+          throw new Error("Message bounties require exactly one @mention.");
+        }
+        annotationTags.push(
+          buildMessageBountyTag({
+            amountSats: bountyAmountSats,
+            recipientPubkey: bountyTargetPubkey,
+          }),
+        );
+      }
 
       // Media-bearing messages MUST go through REST so the relay's imeta
       // validation runs. The WebSocket path does not validate imeta tags.
@@ -389,8 +412,8 @@ export function useSendMessageMutation(
           annotationTags,
         );
 
-        // Build tags matching relay-emitted shape: h, author p, mention ps, reply es, imeta.
-        // For replies, buildReplyTags already includes ["p", author] and ["h", channel].
+        // Build tags matching relay-emitted shape: h, actor, author p, mention ps, reply es, imeta.
+        // For replies, buildReplyTags already includes actor, ["p", author], and ["h", channel].
         // For non-replies (media-only), we add them ourselves.
         const replyTags = parentEventId
           ? buildReplyTags(
@@ -402,10 +425,11 @@ export function useSendMessageMutation(
             )
           : [];
         const baseTags = parentEventId
-          ? replyTags // buildReplyTags includes h + author p + mention ps
+          ? replyTags // buildReplyTags includes h + actor + author p + mention ps
           : [
               ["h", channel.id],
-              ["p", identity.pubkey],
+              ["actor", identity.pubkey.toLowerCase()],
+              ["p", identity.pubkey.toLowerCase()],
             ]; // non-reply: add ourselves
 
         const sentMessage = {
@@ -447,6 +471,7 @@ export function useSendMessageMutation(
         content,
         normalizedMentionPubkeys,
         annotationTags,
+        identity.pubkey,
       );
 
       if (kudos) {
@@ -463,6 +488,7 @@ export function useSendMessageMutation(
     },
     onMutate: async ({
       content,
+      bountyAmountSats,
       kudos,
       mentionPubkeys,
       parentEventId,
@@ -477,6 +503,23 @@ export function useSendMessageMutation(
 
       const previousMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
+      const bountyAnnotationTags =
+        typeof bountyAmountSats === "number"
+          ? (() => {
+              try {
+                return [
+                  buildMessageBountyTag({
+                    amountSats: bountyAmountSats,
+                    recipientPubkey: resolveBountyTargetPubkey(
+                      mentionPubkeys ?? [],
+                    ),
+                  }),
+                ];
+              } catch {
+                return [];
+              }
+            })()
+          : [];
       const optimisticMessage = createOptimisticMessage(
         channel.id,
         content.trim(),
@@ -485,7 +528,7 @@ export function useSendMessageMutation(
         mentionPubkeys ?? [],
         parentEventId ?? null,
         mediaTags ?? [],
-        kudos ? [buildKudosMessageTag()] : [],
+        [...(kudos ? [buildKudosMessageTag()] : []), ...bountyAnnotationTags],
       );
 
       queryClient.setQueryData<RelayEvent[]>(

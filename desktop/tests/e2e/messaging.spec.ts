@@ -176,6 +176,110 @@ test("emoji picker inserts emoji into the draft and keeps focus in the composer"
   await expect(input).toHaveText("Ship🚀 now");
 });
 
+test("message bounty button opens amount dialog and adds chip", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  await page.getByTestId("message-add-bounty").click();
+
+  const amountInput = page.getByTestId("message-bounty-amount-input");
+  await expect(amountInput).toBeVisible();
+  await amountInput.fill("210");
+  await page.getByTestId("message-bounty-confirm").click();
+
+  await expect(page.getByText("Bounty: ₿210")).toBeVisible();
+});
+
+test("message bounty reply exposes top-level pay out action", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await expect(page.getByTestId("message-timeline")).toContainText(
+    "Welcome to #general",
+  );
+
+  await page.evaluate((bobPubkey) => {
+    window.__SPROUT_E2E__ = {
+      ...window.__SPROUT_E2E__,
+      mock: {
+        ...window.__SPROUT_E2E__?.mock,
+        walletBolt12Offers: {
+          [bobPubkey]: "lno1mockboboffer",
+        },
+      },
+    };
+  }, TEST_IDENTITIES.bob.pubkey);
+
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          window.__SPROUT_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+            channelName: "general",
+            kind: 9,
+          }) ?? false,
+      ),
+    )
+    .toBe(true);
+
+  const { bountyMessageId, responseMessageId } = await page.evaluate(
+    ({ bobPubkey }) => {
+      const bountyEvent = window.__SPROUT_E2E_EMIT_MOCK_MESSAGE__?.({
+        annotationTags: [["sprout", "message-bounty", "v1", "210", bobPubkey]],
+        channelName: "general",
+        content: "@bob please pick this up",
+        mentionPubkeys: [bobPubkey],
+      });
+      if (!bountyEvent) {
+        throw new Error("Expected mock bounty event.");
+      }
+
+      const responseEvent = window.__SPROUT_E2E_EMIT_MOCK_MESSAGE__?.({
+        channelName: "general",
+        content: "Done with the bounty task.",
+        parentEventId: bountyEvent.id,
+        pubkey: bobPubkey,
+      });
+      if (!responseEvent) {
+        throw new Error("Expected mock bounty response event.");
+      }
+
+      return {
+        bountyMessageId: bountyEvent.id,
+        responseMessageId: responseEvent.id,
+      };
+    },
+    { bobPubkey: TEST_IDENTITIES.bob.pubkey },
+  );
+
+  const timeline = page.getByTestId("message-timeline");
+  const bountyRow = timeline.locator(`[data-message-id="${bountyMessageId}"]`);
+
+  await expect(bountyRow).toContainText("Bounty: ₿210");
+  await timeline.locator(`[data-thread-head-id="${bountyMessageId}"]`).click();
+
+  const threadReplies = page.getByTestId("message-thread-replies");
+  const responseRow = threadReplies.locator(
+    `[data-message-id="${responseMessageId}"]`,
+  );
+  await responseRow.hover();
+
+  const payOutButton = responseRow.getByTestId(
+    `pay-bounty-${responseMessageId}`,
+  );
+  await expect(payOutButton).toBeVisible();
+  await expect(payOutButton).toHaveText("Pay out");
+  await payOutButton.click();
+
+  await expect(timeline).toContainText("paid @bob ₿210 bounty");
+  await expect(bountyRow).toContainText("Bounty: ₿210 paid");
+});
+
 test("empty message cannot be sent", async ({ page }) => {
   await page.goto("/");
   await page.getByTestId("channel-general").click();

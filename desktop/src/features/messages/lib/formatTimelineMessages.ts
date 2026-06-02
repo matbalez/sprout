@@ -13,6 +13,11 @@ import {
   buildTipsByEventId,
   isMessageTipReceiptEvent,
 } from "@/features/messages/lib/messageTips";
+import {
+  parseMessageBountyPaidTags,
+  parseMessageBountyTags,
+  type MessageBounty,
+} from "@/features/messages/lib/messageBounties";
 import { isKudosMessageEvent } from "@/features/messages/lib/messageKudos";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import {
@@ -275,6 +280,39 @@ export function formatTimelineMessages(
     profiles,
   });
 
+  const bountyByEventId = new Map<string, MessageBounty>();
+  for (const event of visibleEvents) {
+    const bounty = parseMessageBountyTags(event.tags);
+    if (!bounty) {
+      continue;
+    }
+
+    bountyByEventId.set(event.id, {
+      ...bounty,
+      paid: false,
+    });
+  }
+
+  const paidBountyIds = new Set<string>();
+  for (const event of events) {
+    if (deletedEventIds.has(event.id)) {
+      continue;
+    }
+
+    const receipt = parseMessageBountyPaidTags(event.tags);
+    if (!receipt) {
+      continue;
+    }
+
+    paidBountyIds.add(receipt.bountyMessageId);
+  }
+  for (const bountyMessageId of paidBountyIds) {
+    const bounty = bountyByEventId.get(bountyMessageId);
+    if (bounty) {
+      bounty.paid = true;
+    }
+  }
+
   const authorPubkeyByEventId = new Map<string, string>();
   const authorLabelByEventId = new Map<string, string>();
   const depthByEventId = new Map<string, number>();
@@ -343,6 +381,50 @@ export function formatTimelineMessages(
     const thread = getThreadReference(event.tags);
     const edit = editsByTargetId.get(event.id);
     const role = roleByPubkey.get(authorPubkey.toLowerCase());
+    const parsedBounty = bountyByEventId.get(event.id);
+    const bounty = parsedBounty
+      ? {
+          ...parsedBounty,
+          recipientIsCurrentUser:
+            currentPubkeyLower === parsedBounty.recipientPubkey,
+        }
+      : undefined;
+    const referencedBountyId =
+      thread.parentId && bountyByEventId.has(thread.parentId)
+        ? thread.parentId
+        : thread.rootId && bountyByEventId.has(thread.rootId)
+          ? thread.rootId
+          : null;
+    const referencedBounty = referencedBountyId
+      ? bountyByEventId.get(referencedBountyId)
+      : null;
+    const referencedBountyEvent = referencedBountyId
+      ? eventsById.get(referencedBountyId)
+      : null;
+    if (
+      referencedBountyEvent &&
+      !authorPubkeyByEventId.has(referencedBountyEvent.id)
+    ) {
+      getAuthorLabel(referencedBountyEvent);
+    }
+    const bountySenderPubkey = referencedBountyId
+      ? authorPubkeyByEventId.get(referencedBountyId)?.toLowerCase()
+      : null;
+    const bountyPayment =
+      referencedBountyId &&
+      referencedBounty &&
+      !referencedBounty.paid &&
+      currentPubkeyLower &&
+      bountySenderPubkey === currentPubkeyLower &&
+      authorPubkey.toLowerCase() === referencedBounty.recipientPubkey
+        ? {
+            amountSats: referencedBounty.amountSats,
+            bountyMessageId: referencedBountyId,
+            recipientLabel: author,
+            recipientPubkey: referencedBounty.recipientPubkey,
+            responseMessageId: event.id,
+          }
+        : undefined;
     return {
       id: event.id,
       createdAt: event.created_at,
@@ -383,6 +465,8 @@ export function formatTimelineMessages(
         return reactions ? [...reactions.values()] : undefined;
       })(),
       tipSummary: tipsByEventId.get(event.id),
+      bounty,
+      bountyPayment,
     };
   });
 }

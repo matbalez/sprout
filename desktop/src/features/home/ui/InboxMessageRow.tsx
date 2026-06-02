@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import type { InboxContextMessage } from "@/features/home/lib/inbox";
+import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
 import type { TimelineMessage } from "@/features/messages/types";
 import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
@@ -21,6 +22,7 @@ function toTimelineMessage(message: InboxDisplayMessage): TimelineMessage {
     body: message.content,
     createdAt: 0,
     depth: message.depth,
+    bounty: message.bounty ?? undefined,
     reactions: message.reactions ?? [],
     time: message.fullTimestampLabel,
   };
@@ -78,7 +80,11 @@ export function InboxMessageRow({
       <article
         className={cn(
           "group/message relative flex items-start gap-2.5 px-2 py-1",
-          !message.isSelected && "hover:bg-muted/20",
+          message.bounty?.recipientIsCurrentUser && !message.bounty.paid
+            ? "rounded-2xl border border-emerald-500/30 bg-emerald-50/80 dark:bg-emerald-950/20"
+            : message.bounty?.recipientIsCurrentUser && message.bounty.paid
+              ? "rounded-2xl border border-emerald-500/25 bg-emerald-500/5"
+              : !message.isSelected && "hover:bg-muted/20",
         )}
         data-testid={
           message.isSelected
@@ -128,6 +134,21 @@ export function InboxMessageRow({
           </div>
 
           <div className="mt-1">
+            {message.bounty ? (
+              <div className="mb-1.5">
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase shadow-sm",
+                    message.bounty.paid
+                      ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-200"
+                      : "border-emerald-500/60 bg-emerald-300 text-emerald-950 dark:bg-emerald-400/90",
+                  )}
+                >
+                  Bounty: {formatBountyAmount(message.bounty.amountSats)}
+                  {message.bounty.paid ? " paid" : ""}
+                </span>
+              </div>
+            ) : null}
             <Markdown
               className="max-w-full text-left text-sm text-foreground"
               content={message.content}

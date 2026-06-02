@@ -242,6 +242,7 @@ pub fn build_remove_member(channel_id: Uuid, target_pubkey: &str) -> Result<Even
 pub fn build_message(
     channel_id: Uuid,
     content: &str,
+    actor_pubkey: Option<&str>,
     thread_ref: Option<&ThreadRef>,
     mentions: &[&str],
     media_tags: &[Vec<String>],
@@ -249,6 +250,11 @@ pub fn build_message(
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
+    if let Some(actor_pubkey) = actor_pubkey {
+        check_pubkey(actor_pubkey)?;
+        let lower = actor_pubkey.to_ascii_lowercase();
+        tags.push(tag(vec!["actor", &lower])?);
+    }
     if let Some(tr) = thread_ref {
         tags.extend(thread_tags(tr)?);
     }
