@@ -14,7 +14,7 @@ use axum::{
 use base64::{engine::general_purpose, Engine as _};
 use lexe::types::command::PayRequest;
 use reqwest::{
-    header::{HeaderName, HeaderValue, AUTHORIZATION, WWW_AUTHENTICATE},
+    header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
     Method, Url,
 };
 use serde::{Deserialize, Serialize};
@@ -122,6 +122,7 @@ struct L402Challenge {
     scheme: String,
     token: String,
     invoice: String,
+    request_path: Option<String>,
 }
 
 struct HttpResponseData {
@@ -316,10 +317,18 @@ async fn paid_fetch(
         ));
     };
 
-    let authorization = format!("{} {}:{}", challenge.scheme, challenge.token, preimage);
-    let paid = request_endpoint(&url, method.clone(), &headers, &body, Some(&authorization))
-        .await
+    let claim_url = l402_claim_url(&url, &challenge)
         .map_err(|error| (StatusCode::BAD_GATEWAY, error, Some(payment.clone())))?;
+    let authorization = format!("{} {}:{}", challenge.scheme, challenge.token, preimage);
+    let paid = request_endpoint(
+        &claim_url,
+        method.clone(),
+        &headers,
+        &body,
+        Some(&authorization),
+    )
+    .await
+    .map_err(|error| (StatusCode::BAD_GATEWAY, error, Some(payment.clone())))?;
     let (body_text, body_base64) = encode_response_body(paid.body);
 
     Ok(PaidFetchBrokerResponse {
@@ -460,9 +469,13 @@ async fn request_endpoint(
 ) -> Result<HttpResponseData, String> {
     let client = safe_http_client(url).await?;
     let mut request = client.request(method.clone(), url.clone());
+    let mut has_content_type = false;
     for (key, value) in headers {
         if key.eq_ignore_ascii_case("authorization") {
             continue;
+        }
+        if key.eq_ignore_ascii_case("content-type") {
+            has_content_type = true;
         }
         let name = HeaderName::from_bytes(key.as_bytes())
             .map_err(|error| format!("invalid header name {key:?}: {error}"))?;
@@ -474,6 +487,9 @@ async fn request_endpoint(
         request = request.header(AUTHORIZATION, authorization);
     }
     if method != Method::GET && method != Method::HEAD && !body.is_empty() {
+        if should_default_json_content_type(&method, body, has_content_type) {
+            request = request.header(CONTENT_TYPE, "application/json");
+        }
         request = request.body(body.to_string());
     }
 
@@ -604,7 +620,82 @@ fn parse_l402_challenge(header: &str) -> Option<L402Challenge> {
         scheme: scheme.to_ascii_uppercase(),
         token,
         invoice,
+        request_path: l402_request_path_from_macaroon(
+            params
+                .get("macaroon")
+                .or_else(|| params.get("token"))
+                .or_else(|| params.get("credential"))?,
+        ),
     })
+}
+
+fn l402_claim_url(original: &Url, challenge: &L402Challenge) -> Result<Url, String> {
+    let Some(request_path) = challenge.request_path.as_deref() else {
+        return Ok(original.clone());
+    };
+    let request_path = request_path.trim();
+    if request_path.is_empty() {
+        return Ok(original.clone());
+    }
+    if !is_valid_l402_request_path(request_path) {
+        return Err(format!(
+            "L402 challenge contained invalid RequestPath caveat: {request_path:?}"
+        ));
+    }
+
+    let mut claim_url = original.clone();
+    if let Some((path, query)) = request_path.split_once('?') {
+        claim_url.set_path(path);
+        claim_url.set_query(if query.is_empty() { None } else { Some(query) });
+    } else {
+        claim_url.set_path(request_path);
+    }
+    Ok(claim_url)
+}
+
+fn l402_request_path_from_macaroon(macaroon: &str) -> Option<String> {
+    let decoded = decode_l402_macaroon(macaroon.trim())?;
+    let needle = b"RequestPath = ";
+    let start = decoded
+        .windows(needle.len())
+        .position(|window| window == needle)?
+        + needle.len();
+    let end = decoded[start..]
+        .iter()
+        .position(|byte| *byte == 0 || *byte == b'\n' || *byte == b'\r')
+        .map(|offset| start + offset)
+        .unwrap_or(decoded.len());
+    let request_path = std::str::from_utf8(&decoded[start..end]).ok()?.trim();
+    if is_valid_l402_request_path(request_path) {
+        Some(request_path.to_string())
+    } else {
+        None
+    }
+}
+
+fn decode_l402_macaroon(macaroon: &str) -> Option<Vec<u8>> {
+    general_purpose::STANDARD
+        .decode(macaroon)
+        .or_else(|_| general_purpose::STANDARD_NO_PAD.decode(macaroon))
+        .or_else(|_| general_purpose::URL_SAFE.decode(macaroon))
+        .or_else(|_| general_purpose::URL_SAFE_NO_PAD.decode(macaroon))
+        .ok()
+}
+
+fn is_valid_l402_request_path(value: &str) -> bool {
+    value.starts_with('/')
+        && !value.starts_with("//")
+        && !value.bytes().any(|byte| byte <= 0x20 || byte == b'#')
+}
+
+fn should_default_json_content_type(method: &Method, body: &str, has_content_type: bool) -> bool {
+    !has_content_type
+        && *method != Method::GET
+        && *method != Method::HEAD
+        && matches!(
+            body.trim_start().as_bytes().first(),
+            Some(b'{') | Some(b'[')
+        )
 }
 
 fn parse_auth_params(input: &str) -> BTreeMap<String, String> {
@@ -774,6 +865,7 @@ mod tests {
         assert_eq!(challenge.scheme, "L402");
         assert_eq!(challenge.token, "abc.def");
         assert_eq!(challenge.invoice, "lnbc1example");
+        assert_eq!(challenge.request_path, None);
     }
 
     #[test]
@@ -784,6 +876,80 @@ mod tests {
         assert_eq!(challenge.scheme, "LSAT");
         assert_eq!(challenge.token, "mac");
         assert_eq!(challenge.invoice, "lnbc1pay");
+    }
+
+    #[test]
+    fn extracts_request_path_from_l402_macaroon() {
+        let macaroon =
+            general_purpose::STANDARD.encode(b"\0RequestPath = /v1/images/generations\0Model = x");
+
+        assert_eq!(
+            l402_request_path_from_macaroon(&macaroon).as_deref(),
+            Some("/v1/images/generations")
+        );
+    }
+
+    #[test]
+    fn parses_challenge_request_path() {
+        let macaroon = general_purpose::STANDARD.encode(b"\0RequestPath = /v1/images/generations");
+        let header = format!(r#"L402 macaroon="{macaroon}", invoice="lnbc1example""#);
+        let challenge = parse_l402_challenge(&header).unwrap();
+
+        assert_eq!(
+            challenge.request_path.as_deref(),
+            Some("/v1/images/generations")
+        );
+    }
+
+    #[test]
+    fn claim_url_uses_request_path_caveat_on_same_origin() {
+        let original =
+            Url::parse("https://llm402.ai/v1/images/generations/Qwen-Image-2.0").unwrap();
+        let challenge = L402Challenge {
+            scheme: "L402".to_string(),
+            token: "mac".to_string(),
+            invoice: "lnbc1example".to_string(),
+            request_path: Some("/v1/images/generations".to_string()),
+        };
+
+        let claim_url = l402_claim_url(&original, &challenge).unwrap();
+
+        assert_eq!(
+            claim_url.as_str(),
+            "https://llm402.ai/v1/images/generations"
+        );
+    }
+
+    #[test]
+    fn claim_url_rejects_non_path_request_caveats() {
+        let original = Url::parse("https://llm402.ai/v1/images/generations").unwrap();
+        let challenge = L402Challenge {
+            scheme: "L402".to_string(),
+            token: "mac".to_string(),
+            invoice: "lnbc1example".to_string(),
+            request_path: Some("https://evil.example/pay".to_string()),
+        };
+
+        assert!(l402_claim_url(&original, &challenge).is_err());
+    }
+
+    #[test]
+    fn defaults_json_content_type_for_json_post_body() {
+        assert!(should_default_json_content_type(
+            &Method::POST,
+            r#"{"model":"qwen-image-2.0"}"#,
+            false
+        ));
+        assert!(!should_default_json_content_type(
+            &Method::POST,
+            r#"{"model":"qwen-image-2.0"}"#,
+            true
+        ));
+        assert!(!should_default_json_content_type(
+            &Method::GET,
+            r#"{"model":"qwen-image-2.0"}"#,
+            false
+        ));
     }
 
     #[test]
