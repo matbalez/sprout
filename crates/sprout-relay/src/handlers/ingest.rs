@@ -15,23 +15,23 @@ use sprout_core::kind::{
     event_kind_u32, is_identity_archive_request_kind, is_parameterized_replaceable,
     is_relay_admin_kind, KIND_AGENT_ENGRAM, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_AUTH,
     KIND_BOOKMARK_LIST, KIND_BOOKMARK_SET, KIND_CANVAS, KIND_CONTACT_LIST, KIND_DELETION,
-    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_FOLLOW_SET, KIND_FORUM_COMMENT,
-    KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-    KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
-    KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
-    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP,
-    KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA,
-    KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
-    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
-    KIND_PROFILE, KIND_REACTION, KIND_READ_STATE, KIND_STREAM_MESSAGE,
-    KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT,
-    KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2,
-    KIND_STREAM_REMINDER, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF,
-    KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
-    RELAY_ADMIN_REMOVE_MEMBER,
+    KIND_DM_ADD_MEMBER, KIND_DM_HIDE, KIND_DM_OPEN, KIND_EMOJI_LIST, KIND_EMOJI_SET,
+    KIND_FOLLOW_SET, KIND_FORUM_COMMENT, KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP,
+    KIND_GIT_ISSUE, KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST,
+    KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE, KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT,
+    KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MESH_LLM_RELAY_STATUS,
+    KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
+    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
+    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
+    KIND_NIP65_RELAY_LIST_METADATA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE, KIND_PROFILE,
+    KIND_REACTION, KIND_READ_STATE, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
+    KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
+    KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEXT_NOTE,
+    KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER,
+    RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
 };
 use sprout_core::verification::verify_event;
 
@@ -162,7 +162,12 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_NIP65_RELAY_LIST_METADATA
         | KIND_BOOKMARK_LIST
         | KIND_FOLLOW_SET
-        | KIND_BOOKMARK_SET => Ok(Scope::UsersWrite),
+        | KIND_BOOKMARK_SET
+        // NIP-30/NIP-51: per-user custom emoji set (30030) and emoji list (10030).
+        // User-owned global state, keyed by (pubkey, kind[, d_tag]); the workspace
+        // palette is the client-side union of every member's own set.
+        | KIND_EMOJI_SET
+        | KIND_EMOJI_LIST => Ok(Scope::UsersWrite),
         KIND_DELETION
         | KIND_REACTION
         | KIND_GIFT_WRAP
@@ -328,6 +333,10 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_BOOKMARK_LIST
             | KIND_FOLLOW_SET
             | KIND_BOOKMARK_SET
+            // NIP-30 custom emoji set (30030) + emoji list (10030): user-owned,
+            // keyed by (pubkey, kind[, d_tag]). A stray `h` tag must not channel-scope them.
+            | KIND_EMOJI_SET
+            | KIND_EMOJI_LIST
             // NIP-AE agent engrams are addressed by (pubkey_a, kind, d_tag); never channel-scoped.
             | KIND_AGENT_ENGRAM
             // NIP-34: git events use `a` tags (repo reference), not `h` tags (channel scope).
@@ -353,6 +362,9 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             // events. A stray `h` tag must not channel-scope them.
             | KIND_IA_ARCHIVE_REQUEST
             | KIND_IA_UNARCHIVE_REQUEST
+            // Mesh-LLM relay status is relay-signed and global. Clients may
+            // subscribe to it, but must not channel-scope or submit it.
+            | KIND_MESH_LLM_RELAY_STATUS
     )
 }
 
@@ -1902,6 +1914,8 @@ mod tests {
             KIND_BOOKMARK_LIST,
             KIND_FOLLOW_SET,
             KIND_BOOKMARK_SET,
+            KIND_EMOJI_SET,
+            KIND_EMOJI_LIST,
             KIND_AGENT_ENGRAM,
         ];
         for kind in migrated {
@@ -1929,6 +1943,15 @@ mod tests {
                 "kind {kind} should require UsersWrite scope"
             );
         }
+    }
+
+    #[test]
+    fn mesh_llm_relay_status_is_global_only_and_relay_only() {
+        assert!(is_global_only_kind(KIND_MESH_LLM_RELAY_STATUS));
+        assert!(sprout_core::kind::is_relay_only_kind(
+            KIND_MESH_LLM_RELAY_STATUS
+        ));
+        assert!(!requires_h_channel_scope(KIND_MESH_LLM_RELAY_STATUS));
     }
 
     #[test]

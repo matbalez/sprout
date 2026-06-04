@@ -21,8 +21,12 @@ export default defineConfig({
       testMatch: [
         "**/smoke.spec.ts",
         "**/channels.spec.ts",
+        "**/badge.spec.ts",
         "**/channel-browser.spec.ts",
         "**/messaging.spec.ts",
+        "**/custom-emoji.spec.ts",
+        "**/custom-emoji-screenshots.spec.ts",
+        "**/file-attachment.spec.ts",
         "**/mentions.spec.ts",
         "**/relay-reconnect.spec.ts",
         "**/workflows.spec.ts",
@@ -43,9 +47,13 @@ export default defineConfig({
         "**/profile.spec.ts",
         "**/tokens.spec.ts",
         "**/persona-env-vars.spec.ts",
+        "**/mesh-compute.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],
+      },
+      expect: {
+        timeout: process.env.CI ? 15_000 : 10_000,
       },
     },
   ],

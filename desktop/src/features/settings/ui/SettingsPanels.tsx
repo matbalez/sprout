@@ -3,6 +3,7 @@ import {
   BellRing,
   Bot,
   Check,
+  Cpu,
   Download,
   Keyboard,
   LayoutTemplate,
@@ -11,6 +12,7 @@ import {
   Moon,
   Search,
   Smartphone,
+  Smile,
   Stethoscope,
   Sun,
   UserRound,
@@ -22,6 +24,7 @@ import type {
   NotificationSettings,
 } from "@/features/notifications/hooks";
 import { RelayMembersSettingsCard } from "@/features/relay-members/ui/RelayMembersSettingsCard";
+import { CustomEmojiSettingsCard } from "@/features/custom-emoji/ui/CustomEmojiSettingsCard";
 import { cn } from "@/shared/lib/cn";
 import {
   ACCENT_COLORS,
@@ -33,6 +36,7 @@ import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
 import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
 import { LightningWalletSettingsCard } from "./LightningWalletSettingsCard";
+import { MeshComputeSettingsCard } from "@/features/mesh-compute/ui/MeshComputeSettingsCard";
 import { MobilePairingCard } from "./MobilePairingCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
@@ -45,9 +49,11 @@ export type SettingsSection =
   | "lightning-wallet"
   | "agents"
   | "channel-templates"
+  | "compute"
   | "appearance"
   | "shortcuts"
   | "relay-members"
+  | "custom-emoji"
   | "mobile"
   | "updates"
   | "doctor";
@@ -76,6 +82,11 @@ export type SettingsPanelProps = {
 
 export const settingsSections: SettingsSectionDescriptor[] = [
   {
+    value: "appearance",
+    label: "Appearance",
+    icon: MonitorCog,
+  },
+  {
     value: "profile",
     label: "Profile",
     icon: UserRound,
@@ -101,9 +112,9 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     icon: LayoutTemplate,
   },
   {
-    value: "appearance",
-    label: "Appearance",
-    icon: MonitorCog,
+    value: "compute",
+    label: "Compute",
+    icon: Cpu,
   },
   {
     value: "shortcuts",
@@ -114,6 +125,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     value: "relay-members",
     label: "Relay Access",
     icon: LockKeyhole,
+  },
+  {
+    value: "custom-emoji",
+    label: "Custom Emoji",
+    icon: Smile,
   },
   {
     value: "mobile",
@@ -294,12 +310,16 @@ export function renderSettingsSection(
       return <PreventSleepSettingsCard />;
     case "channel-templates":
       return <ChannelTemplatesSettingsCard />;
+    case "compute":
+      return <MeshComputeSettingsCard />;
     case "appearance":
       return <ThemeSettingsCard />;
     case "shortcuts":
       return <KeyboardShortcutsCard />;
     case "relay-members":
       return <RelayMembersSettingsCard currentPubkey={props.currentPubkey} />;
+    case "custom-emoji":
+      return <CustomEmojiSettingsCard />;
     case "mobile":
       return <MobilePairingCard currentPubkey={props.currentPubkey} />;
     case "updates":

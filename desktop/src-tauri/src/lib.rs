@@ -4,6 +4,8 @@ mod events;
 mod huddle;
 mod managed_agents;
 mod media_proxy;
+#[cfg(feature = "mesh-llm")]
+mod mesh_llm;
 mod migration;
 mod models;
 pub mod nostr_convert;
@@ -12,6 +14,77 @@ mod relay;
 mod templates;
 mod util;
 mod wallet;
+
+#[cfg(not(feature = "mesh-llm"))]
+mod mesh_llm_stubs {
+    use tauri::State;
+
+    use crate::app_state::AppState;
+
+    type CmdResult<T> = Result<T, String>;
+
+    #[tauri::command]
+    pub async fn mesh_availability(_state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_start_node(
+        _app: tauri::AppHandle,
+        _state: State<'_, AppState>,
+        _request: serde_json::Value,
+    ) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_ensure_client_node(
+        _state: State<'_, AppState>,
+        _request: serde_json::Value,
+    ) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_stop_node(_state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_node_status(_state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_installed_models(
+        _state: State<'_, AppState>,
+    ) -> CmdResult<Vec<serde_json::Value>> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub fn mesh_agent_preset(_request: serde_json::Value) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_dial_endpoint_addr(
+        _state: State<'_, AppState>,
+        _request: serde_json::Value,
+    ) -> CmdResult<serde_json::Value> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+
+    #[tauri::command]
+    pub async fn mesh_status_report_payload(
+        _state: State<'_, AppState>,
+    ) -> CmdResult<Option<serde_json::Value>> {
+        Err("mesh-llm feature not enabled".to_string())
+    }
+}
+
+#[cfg(not(feature = "mesh-llm"))]
+use mesh_llm_stubs::*;
 
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
 use commands::*;
@@ -154,7 +227,7 @@ fn shutdown_managed_agents(app: &tauri::AppHandle) -> Result<(), String> {
     // in their own process groups by sprout-acp, so group-kills above only
     // reach the harness, not the workers. Scan all user processes and kill any
     // known agent binaries that are still running.
-    managed_agents::sweep_system_agent_processes(&[]);
+    managed_agents::sweep_system_agent_processes(&managed_agents::current_instance_id(app), &[]);
 
     if changed {
         save_managed_agents(app, &records)?;
@@ -513,9 +586,9 @@ pub fn run() {
 
             // Keep launch-time agent restoration off the synchronous setup path
             // so the frontend can mount and reveal the window promptly.
-            tauri::async_runtime::spawn_blocking(move || {
+            tauri::async_runtime::spawn(async move {
                 if let Err(error) =
-                    restore_managed_agents_on_launch(&app_handle, shutdown_started.as_ref())
+                    restore_managed_agents_on_launch(&app_handle, shutdown_started.as_ref()).await
                 {
                     eprintln!("sprout-desktop: failed to restore managed agents: {error}");
                 }
@@ -582,6 +655,7 @@ pub fn run() {
             pick_and_upload_media,
             upload_media_bytes,
             download_image,
+            download_file,
             list_relay_members,
             get_my_relay_membership,
             add_relay_member,
@@ -602,6 +676,15 @@ pub fn run() {
             delete_managed_agent,
             get_managed_agent_log,
             get_agent_models,
+            mesh_availability,
+            mesh_start_node,
+            mesh_ensure_client_node,
+            mesh_dial_endpoint_addr,
+            mesh_status_report_payload,
+            mesh_stop_node,
+            mesh_node_status,
+            mesh_installed_models,
+            mesh_agent_preset,
             update_managed_agent,
             discover_backend_providers,
             probe_backend_provider,

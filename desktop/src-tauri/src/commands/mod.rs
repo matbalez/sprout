@@ -12,6 +12,9 @@ mod identity_archive;
 mod klaim_gifts;
 mod media;
 mod media_download;
+mod media_transcode;
+#[cfg(feature = "mesh-llm")]
+mod mesh_llm;
 mod messages;
 pub mod pairing;
 mod personas;
@@ -36,6 +39,8 @@ pub use identity_archive::*;
 pub use klaim_gifts::*;
 pub use media::*;
 pub use media_download::*;
+#[cfg(feature = "mesh-llm")]
+pub use mesh_llm::*;
 pub use messages::*;
 pub use pairing::*;
 pub use personas::*;

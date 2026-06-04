@@ -728,6 +728,7 @@ export async function sendChannelMessage(
   mentionPubkeys?: string[],
   kind?: number,
   annotationTags?: string[][],
+  emojiTags?: string[][],
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -736,6 +737,7 @@ export async function sendChannelMessage(
       content,
       parentEventId,
       mediaTags: mediaTags ?? null,
+      emojiTags: emojiTags ?? null,
       mentionPubkeys: mentionPubkeys ?? null,
       kind: kind ?? null,
       annotationTags: annotationTags ?? null,
@@ -762,6 +764,8 @@ export type BlobDescriptor = {
   thumb?: string;
   duration?: number;
   image?: string;
+  /** Original filename for generic (non-media) file attachments. */
+  filename?: string;
 };
 
 export async function uploadMedia(
@@ -780,8 +784,9 @@ export async function pickAndUploadMedia(): Promise<BlobDescriptor[]> {
 
 export async function uploadMediaBytes(
   data: number[],
+  filename?: string,
 ): Promise<BlobDescriptor> {
-  return invokeTauri<BlobDescriptor>("upload_media_bytes", { data });
+  return invokeTauri<BlobDescriptor>("upload_media_bytes", { data, filename });
 }
 
 export async function editMessage(
@@ -789,12 +794,14 @@ export async function editMessage(
   eventId: string,
   content: string,
   mediaTags?: string[][],
+  emojiTags?: string[][],
 ): Promise<void> {
   await invokeTauri("edit_message", {
     channelId,
     eventId,
     content,
     mediaTags: mediaTags ?? [],
+    emojiTags: emojiTags ?? [],
   });
 }
 
@@ -805,8 +812,9 @@ export async function deleteMessage(eventId: string): Promise<void> {
 export async function addReaction(
   eventId: string,
   emoji: string,
+  emojiUrl?: string,
 ): Promise<void> {
-  await invokeTauri("add_reaction", { eventId, emoji });
+  await invokeTauri("add_reaction", { eventId, emoji, emojiUrl });
 }
 
 export async function removeReaction(

@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.3.10
+
+34ac3ba1d18 fix(desktop): harden relay mesh connect p-tag (#834)
+b3aefae152e fix(desktop): scroll activity panel to bottom on open (#848)
+a13691b6207 Polish desktop profile menu interactions (#836)
+0d9b8148f86 fix(desktop): outline thread hover targets (#845)
+b3be9ecba70 fix(desktop): keep message actions hover-only (#844)
+db46c425463 fix(desktop): let inbox composer fill available width (#841)
+2a0572c0d8e fix: use immutable commit-SHA URLs in screenshot PR comments (#842)
+3b78dc5690b feat(mobile+desktop): two-tier Slack-style app icon badge (#802)
+0c225f4d7d3 chore: simplify file-size check to a flat 1000-line limit (#839)
+d8b602a3595 fix(desktop): robust emoji picker — unify picker + fix custom emoji in editing, status, reactions (#837)
+06bc67fd342 feat(desktop): reusable screenshot workflow for agents (#826)
+9f0c22a43a6 desktop(mesh-llm): let a serving node route a different model (#833)
+
+
+## v0.3.9
+
+82ae85f79a9 fix: native arbitrary-file download + image context-menu flash (#830)
+7797ae77f64 fix(desktop): custom emoji reaction rendering + picker autofocus (#831)
+33cfc852932 Mesh-LLM v1: relay-gated direct-iroh inference between users (WAN) (#822)
+
+
+## v0.3.8
+
+
+
+## v0.3.7
+
+2349421304d feat: custom emoji — user-owned NIP-30 sets with a client-side union (#816)
+7a12e50518e Install sprout-cli skill at repo root + fix desktop clippy (#818)
+2ea3fd88d23 fix(desktop): use public re-export path for ensure_client_node_for_model (#824)
+fb514c8918d refactor(desktop): feature-gate mesh-llm-sdk behind optional Cargo feature (#823)
+b72eee365f0 fix(desktop): align workflow read/save commands to the frontend contract (#820)
+5b572d6f5e9 fix(desktop): disable mesh-llm auto-build to prevent git config corruption (#819)
+192388a3cbf fix(desktop): clear clippy lints in agents/mesh_llm commands (#817)
+41a3fc1589b fix(desktop): let channel members add members and bots without admin (#815)
+a25ca5d1bfb Desktop #806 follow-ups: panel/inbox fixes + top-bar backdrop (#814)
+5bed17a1173 Fix desktop right-side panel chrome overlap (#806)
+ede8ddb425c Sprout × mesh-llm: in-process mesh node (serve/consume) + relay admission (#798)
+6481428e2b9 fix(desktop): resolve flaky integration tests via project-level assertion timeout (#812)
+
+
+## v0.3.6
+
+5cbedb180af feat(mobile): add channel sections with relay sync (#800)
+753d0fe264d feat(desktop): sync channel sections across devices via Nostr (#792)
+2b052eb465f feat(media): support arbitrary file types with download cards (#810)
+247ac523915 feat(desktop): add user-defined channel sections to sidebar (#789)
+d810608d859 feat(desktop): keyboard shortcuts — ⌘⇧N new channel + ↑-to-edit last message (#809)
+39911e42859 fix(desktop): scope agent sweep to the owning app instance (#808)
+f2c266bac23 fix(desktop): route notification clicks to thread context (#790)
+33e37de6e37 chore(deps): update all non-major dependencies (#804)
+5670ffc6a6e fix(deps): re-pin isomorphic-git patch to 1.38.3 (#807)
+033d92f103e chore(deps): update dependency @tanstack/react-query to v5.100.14 (#805)
+bc23620fcfa Fix desktop glass chrome and inbox previews (#793)
+9b9cf461278 refactor(just): slim down mobile-dev to just run Flutter (#801)
+2a03851527f refactor: consolidate infra management into justfile + add mobile-dev (#797)
+
+
 ## v0.3.5
 
 b820420909d feat(mobile): Pulse polish — flat feed, compose page, shared filter chips, like + accent fixes (#796)

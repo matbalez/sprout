@@ -4,6 +4,8 @@ type SettingsSection =
   | "profile"
   | "notifications"
   | "agents"
+  | "channel-templates"
+  | "compute"
   | "appearance"
   | "shortcuts"
   | "tokens"
@@ -19,10 +21,14 @@ export async function openProfileMenu(page: Page) {
 
 export async function openSettings(page: Page, section?: SettingsSection) {
   await openProfileMenu(page);
-  await page.getByTestId("profile-popover-settings").click();
+  if (section === "profile") {
+    await page.getByTestId("profile-popover-profile").click();
+  } else {
+    await page.getByTestId("profile-popover-settings").click();
+  }
   await expect(page.getByTestId("settings-view")).toBeVisible();
 
-  if (section) {
+  if (section && section !== "profile") {
     await page.getByTestId(`settings-nav-${section}`).click();
   }
 }

@@ -30,12 +30,14 @@ import { usePresenceQuery } from "@/features/presence/hooks";
 import { useMyRelayMembershipQuery } from "@/features/relay-members/hooks";
 import { useUserStatusQuery } from "@/features/user-status/hooks";
 import { getUserWalletBolt12Offer } from "@/features/wallet/api";
+import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 import { PresenceBadge } from "@/features/presence/ui/PresenceBadge";
 import { BotIdenticon } from "@/features/messages/ui/BotIdenticon";
 import { ProfilePaymentForm } from "@/features/profile/ui/ProfilePaymentForm";
 import { useAgentSession } from "@/shared/context/AgentSessionContext";
 import { useEscapeKey } from "@/shared/hooks/useEscapeKey";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
+import { THREAD_PANEL_MIN_WIDTH_PX } from "@/shared/hooks/useThreadPanelWidth";
 import { cn } from "@/shared/lib/cn";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { Button } from "@/shared/ui/button";
@@ -43,16 +45,26 @@ import {
   OverlayPanelBackdrop,
   PANEL_BASE_CLASS,
   PANEL_OVERLAY_CLASS,
+  PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS,
 } from "@/shared/ui/OverlayPanelBackdrop";
 
 type UserProfilePanelProps = {
   canResetWidth: boolean;
   currentPubkey?: string;
+  isSinglePanelView?: boolean;
   onClose: () => void;
   onOpenDm?: (pubkeys: string[]) => void;
   onResetWidth: () => void;
   onResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
   pubkey: string;
+  /**
+   * When true, the panel sits beside a sibling pane managed by a single-panel
+   * width controller (ChannelScreen). The width is clamped so the sibling keeps
+   * at least THREAD_PANEL_MIN_WIDTH_PX. Standalone/floating mounts (e.g. Pulse)
+   * have no such sibling, so they omit this and use the configured width
+   * directly — otherwise `calc(100% - 300px)` would wrongly shrink the panel.
+   */
+  splitPaneClamp?: boolean;
   widthPx: number;
 };
 
@@ -86,15 +98,18 @@ function truncatePubkey(pubkey: string) {
 export function UserProfilePanel({
   canResetWidth,
   currentPubkey,
+  isSinglePanelView = false,
   onClose,
   onOpenDm,
   onResetWidth,
   onResizeStart,
   pubkey,
+  splitPaneClamp = false,
   widthPx,
 }: UserProfilePanelProps) {
   const isOverlay = useIsThreadPanelOverlay();
-  useEscapeKey(onClose, isOverlay);
+  const isFloatingOverlay = isOverlay && !isSinglePanelView;
+  useEscapeKey(onClose, isOverlay || isSinglePanelView);
 
   const profileQuery = useUserProfileQuery(pubkey);
   const relayAgentsQuery = useRelayAgentsQuery({ enabled: true });
@@ -196,20 +211,26 @@ export function UserProfilePanel({
 
   return (
     <>
-      {isOverlay && <OverlayPanelBackdrop onClose={onClose} />}
+      {isFloatingOverlay && <OverlayPanelBackdrop onClose={onClose} />}
       <aside
         className={cn(
           PANEL_BASE_CLASS,
-          !isOverlay && "pt-11",
-          isOverlay && PANEL_OVERLAY_CLASS,
+          isSinglePanelView && "border-l-0",
+          isFloatingOverlay && PANEL_OVERLAY_CLASS,
         )}
         data-testid="user-profile-panel"
-        style={{ width: `${widthPx}px` }}
+        style={{
+          width: isSinglePanelView
+            ? "100%"
+            : splitPaneClamp
+              ? `min(${widthPx}px, calc(100% - ${THREAD_PANEL_MIN_WIDTH_PX}px))`
+              : `${widthPx}px`,
+        }}
       >
-        {!isOverlay && (
+        {!isOverlay && !isSinglePanelView && (
           <button
             aria-label="Resize profile panel"
-            className="group absolute inset-y-0 left-0 z-20 w-3 -translate-x-1/2 cursor-col-resize"
+            className="peer/profile-resize group/profile-resize absolute inset-y-0 left-0 z-40 w-3 -translate-x-1/2 cursor-col-resize"
             data-testid="user-profile-resize-handle"
             onDoubleClick={canResetWidth ? onResetWidth : undefined}
             onPointerDown={onResizeStart}
@@ -220,27 +241,52 @@ export function UserProfilePanel({
             }
             type="button"
           >
-            <span className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent transition-colors group-hover:bg-border/80" />
+            <span className="absolute bottom-0 left-1/2 top-10 w-px -translate-x-1/2 bg-transparent transition-colors group-hover/profile-resize:bg-border/80 group-focus-visible/profile-resize:bg-border/80" />
           </button>
         )}
 
-        <div className="flex items-center gap-3 px-4 py-3">
-          <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold tracking-tight">Profile</h2>
+        {!isOverlay ? (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 z-40 h-[76px] bg-background/80 backdrop-blur-md after:absolute after:left-0 after:right-0 after:top-10 after:h-px after:bg-border/35 supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55"
+          />
+        ) : null}
+
+        <div
+          className={cn(
+            "flex cursor-default select-none items-center",
+            isSinglePanelView
+              ? `relative ${PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS} -mb-[76px] min-h-[76px] shrink-0 gap-[10px] bg-transparent pb-[4px] pl-[16px] pr-[8px] pt-[42px] sm:pl-[24px] sm:pr-[12px]`
+              : isOverlay
+                ? "relative z-50 min-h-[44px] shrink-0 gap-3 bg-background/80 px-3 py-[6px] backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55"
+                : "absolute inset-x-0 top-[42px] z-50 min-h-[32px] gap-3 bg-transparent px-3 py-[4px] after:absolute after:bottom-0 after:-left-px after:top-0 after:w-px after:bg-border/45 after:transition-colors peer-hover/profile-resize:after:bg-border/80 peer-focus-visible/profile-resize:after:bg-border/80",
+          )}
+          data-tauri-drag-region
+        >
+          <div className="flex min-w-0 items-center gap-1.5">
+            <h2 className="translate-y-px text-sm font-semibold leading-5 tracking-tight">
+              Profile
+            </h2>
           </div>
           <Button
             aria-label="Close profile"
+            className="ml-auto h-4 w-4 rounded-full text-foreground hover:bg-muted/60 hover:text-foreground"
             data-testid="user-profile-panel-close"
             onClick={onClose}
             size="icon"
             type="button"
             variant="ghost"
           >
-            <X className="h-4 w-4" />
+            <X className="h-2.5 w-2.5" />
           </Button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-y-auto px-4 pb-6",
+            !isFloatingOverlay && "pt-[76px]",
+          )}
+        >
           <div className="flex flex-col items-center gap-4 pt-4">
             {/* Avatar */}
             {profile?.avatarUrl ? (
@@ -294,7 +340,10 @@ export function UserProfilePanel({
             {userStatus ? (
               <p className="text-center text-sm text-muted-foreground">
                 {userStatus.emoji ? (
-                  <span className="mr-1">{userStatus.emoji}</span>
+                  <StatusEmoji
+                    className="mr-1 h-3.5 w-3.5"
+                    value={userStatus.emoji}
+                  />
                 ) : null}
                 {userStatus.text}
               </p>

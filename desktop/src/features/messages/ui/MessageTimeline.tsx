@@ -13,12 +13,12 @@ import { useLoadOlderOnScroll } from "./useLoadOlderOnScroll";
 import { useTimelineScrollManager } from "./useTimelineScrollManager";
 
 type MessageTimelineProps = {
+  activeReplyTargetId?: string | null;
   channelId?: string | null;
   messages: TimelineMessage[];
   isLoading?: boolean;
   emptyTitle?: string;
   emptyDescription?: string;
-  activeReplyTargetId?: string | null;
   currentPubkey?: string;
   fetchOlder?: () => Promise<void>;
   hasOlderMessages?: boolean;
@@ -53,12 +53,12 @@ type MessageTimelineProps = {
 };
 
 export const MessageTimeline = React.memo(function MessageTimeline({
+  activeReplyTargetId = null,
   channelId,
   messages,
   isLoading = false,
   emptyTitle = "No messages yet",
   emptyDescription = "Send the first message to start the thread.",
-  activeReplyTargetId = null,
   currentPubkey,
   fetchOlder,
   hasOlderMessages = true,
@@ -149,7 +149,10 @@ export const MessageTimeline = React.memo(function MessageTimeline({
           onScroll={syncScrollState}
           ref={scrollContainerRef}
         >
-          <div className="flex w-full flex-col gap-2 pt-12" ref={contentRef}>
+          <div
+            className="flex w-full flex-col gap-2 pt-[76px]"
+            ref={contentRef}
+          >
             <div ref={topSentinelRef} aria-hidden className="h-px" />
 
             {isFetchingOlder ? (

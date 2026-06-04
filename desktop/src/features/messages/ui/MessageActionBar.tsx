@@ -1,5 +1,3 @@
-import Picker from "@emoji-mart/react";
-import data from "@emoji-mart/data";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   BellOff,
@@ -24,6 +22,7 @@ import {
   formatBountyAmount,
 } from "@/features/messages/lib/messageBounties";
 import { buildMessageLink } from "@/features/messages/lib/messageLink";
+import { EmojiPicker } from "@/features/custom-emoji/ui/EmojiPicker";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { MessageTipAction } from "@/features/messages/ui/MessageTipAction";
 import type {
@@ -411,12 +410,12 @@ export function MessageActionBar({
   return (
     <div
       className={cn(
-        "max-w-56 overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85 transition-all duration-150 ease-out",
-        "translate-y-0 opacity-100 sm:max-w-0 sm:border-0 sm:shadow-none sm:translate-y-1 sm:opacity-0",
-        "sm:group-hover/message:max-w-56 sm:group-hover/message:border sm:group-hover/message:border-border/70 sm:group-hover/message:shadow-xs sm:group-hover/message:translate-y-0 sm:group-hover/message:opacity-100",
-        "sm:group-focus-within/message:max-w-56 sm:group-focus-within/message:border sm:group-focus-within/message:border-border/70 sm:group-focus-within/message:shadow-xs sm:group-focus-within/message:translate-y-0 sm:group-focus-within/message:opacity-100",
+        "overflow-hidden rounded-full border border-border/70 bg-background/95 shadow-xs backdrop-blur-sm supports-[backdrop-filter]:bg-background/85 transition-opacity duration-150 ease-out",
+        "opacity-100 sm:pointer-events-none sm:opacity-0",
+        "sm:group-hover/message:pointer-events-auto sm:group-hover/message:opacity-100",
+        "sm:group-focus-within/message:pointer-events-auto sm:group-focus-within/message:opacity-100",
         isReplyingToMessage || isReactionPickerOpen || isDropdownOpen
-          ? "sm:max-w-56 sm:border sm:border-border/70 sm:shadow-xs sm:translate-y-0 sm:opacity-100"
+          ? "sm:pointer-events-auto sm:opacity-100"
           : "",
       )}
       data-testid={`message-action-bar-${message.id}`}
@@ -466,23 +465,18 @@ export function MessageActionBar({
                   </p>
                 </div>
               ) : null}
-              <Picker
-                data={data}
-                onEmojiSelect={(emoji: { native: string }) => {
+              <EmojiPicker
+                autoFocus
+                onSelect={(value) => {
                   if (!onReactionSelect) {
                     return;
                   }
-
-                  void onReactionSelect(emoji.native).finally(() => {
+                  // `value` is already a `native` glyph or a `:shortcode:` for
+                  // custom emoji; the toggle mutation resolves the URL.
+                  void onReactionSelect(value).finally(() => {
                     setIsReactionPickerOpen(false);
                   });
                 }}
-                theme="auto"
-                previewPosition="none"
-                skinTonePosition="search"
-                set="native"
-                maxFrequentRows={2}
-                perLine={8}
               />
             </PopoverContent>
           </Popover>

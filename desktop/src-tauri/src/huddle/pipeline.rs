@@ -269,14 +269,22 @@ pub(crate) fn spawn_transcription_task(
                 .clone();
 
             let p_tags: Vec<&str> = agent_pubkeys.iter().map(|s| s.as_str()).collect();
-            let builder =
-                match events::build_message(channel_uuid, &t, None, None, &p_tags, &[], &[]) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        eprintln!("sprout-desktop: STT build_message: {e}");
-                        continue;
-                    }
-                };
+            let builder = match events::build_message(
+                channel_uuid,
+                &t,
+                None,
+                None,
+                &p_tags,
+                &[],
+                &[],
+                &[],
+            ) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("sprout-desktop: STT build_message: {e}");
+                    continue;
+                }
+            };
             let event = match builder.sign_with_keys(&keys) {
                 Ok(e) => e,
                 Err(e) => {

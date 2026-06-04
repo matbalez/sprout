@@ -8,6 +8,8 @@ import {
 import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
+import { Markdown } from "@/shared/ui/markdown";
+import { TopChromeBackdrop } from "@/shared/ui/TopChromeBackdrop";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,15 +48,12 @@ export function InboxListPane({
 
   return (
     <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background/60">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 top-0 z-40 h-[76px] bg-background/45 backdrop-blur-xl supports-[backdrop-filter]:bg-background/35"
-      />
-      <div className="absolute inset-x-0 top-[42px] z-50 min-h-[32px] px-5 py-[4px]">
+      <TopChromeBackdrop className="h-[76px]" />
+      <div className="absolute inset-x-0 top-[42px] z-40 min-h-[32px] px-5 py-[4px]">
         <div className="flex min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-[6px]">
             <Inbox className="h-[14px] w-[14px] shrink-0 text-muted-foreground" />
-            <h2 className="truncate text-sm font-semibold leading-5 tracking-tight">
+            <h2 className="translate-y-px truncate text-sm font-semibold leading-5 tracking-tight">
               Inbox
             </h2>
           </div>
@@ -121,7 +120,7 @@ export function InboxListPane({
                     shouldHighlightBounty
                       ? "border-l-emerald-500 bg-emerald-50/80 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/30"
                       : isSelected
-                        ? "border-l-primary bg-muted/30"
+                        ? "border-l-transparent bg-muted/30"
                         : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
                     shouldHighlightBounty && isSelected
                       ? "ring-1 ring-inset ring-emerald-500/30"
@@ -174,16 +173,22 @@ export function InboxListPane({
                       </span>
                     </div>
 
-                    <p
+                    <div
                       className={cn(
-                        "mt-0.5 line-clamp-2 text-sm leading-5",
+                        "mt-0.5 line-clamp-2 text-sm leading-5 [&_*]:inline [&_a]:font-medium [&_a]:text-current [&_br]:hidden [&_p]:inline",
                         isDone
                           ? "font-normal text-muted-foreground"
                           : "font-semibold text-foreground",
                       )}
                     >
-                      {item.preview}
-                    </p>
+                      <Markdown
+                        className="inline max-w-full text-inherit"
+                        content={item.preview}
+                        interactive={false}
+                        mentionNames={item.mentionNames}
+                        tight
+                      />
+                    </div>
 
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <span

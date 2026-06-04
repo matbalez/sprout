@@ -7,23 +7,24 @@ import type { ChannelSuggestion } from "@/features/messages/lib/useChannelLinks"
 import { useDrafts } from "@/features/messages/lib/useDrafts";
 import { useEmojiAutocomplete } from "@/features/messages/lib/useEmojiAutocomplete";
 import type { EmojiSuggestion } from "@/features/messages/lib/useEmojiAutocomplete";
+import { useCustomEmoji } from "@/features/custom-emoji/hooks";
+import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
   buildOutgoingMessage,
   type ImetaMedia,
+  mergeOutgoingTags,
   stripImetaMediaLines,
 } from "@/features/messages/lib/imetaMediaMarkdown";
 import { resolveBountyTargetPubkey } from "@/features/messages/lib/messageBounties";
 
-import {
-  ALLOWED_MEDIA_TYPES,
-  useMediaUpload,
-} from "@/features/messages/lib/useMediaUpload";
+import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import {
   hasMentionClipboardHtml,
   normalizeMentionClipboardHtml,
 } from "@/features/messages/lib/normalizeMentionClipboard";
+import { CUSTOM_EMOJI_NODE_NAME } from "@/features/messages/lib/customEmojiNode";
 import {
   type AutocompleteEdit,
   useRichTextEditor,
@@ -61,6 +62,15 @@ type MessageComposerProps = {
   isSending?: boolean;
   onCancelEdit?: () => void;
   onCancelReply?: () => void;
+  /**
+   * Invoked when the user presses ↑ in an empty composer that is not already
+   * in edit mode. The owner should locate the most recent message authored by
+   * the current user within this composer's scope (main timeline, DM, or
+   * thread) and enter edit mode for it. Return `true` if a target was found
+   * and edit mode was entered, so the composer can swallow the keystroke;
+   * return `false` to let the arrow key fall through normally.
+   */
+  onEditLastOwnMessage?: () => boolean;
   onEditSave?: (content: string, mediaTags?: string[][]) => Promise<void>;
   onSend: (
     content: string,
@@ -91,6 +101,7 @@ export function MessageComposer({
   isSending = false,
   onCancelEdit,
   onCancelReply,
+  onEditLastOwnMessage,
   onEditSave,
   onSend,
   placeholder,
@@ -125,7 +136,8 @@ export function MessageComposer({
   } | null>(null);
   const mentions = useMentions(channelId, undefined, profiles);
   const channelLinks = useChannelLinks();
-  const emojiAutocomplete = useEmojiAutocomplete();
+  const customEmoji = useCustomEmoji();
+  const emojiAutocomplete = useEmojiAutocomplete(customEmoji);
   const notifyTyping = useTypingBroadcast(
     channelId,
     typingParentEventId,
@@ -141,12 +153,14 @@ export function MessageComposer({
   const isUploadingRef = React.useRef(media.isUploading);
   const onSendRef = React.useRef(onSend);
   const onEditSaveRef = React.useRef(onEditSave);
+  const onEditLastOwnMessageRef = React.useRef(onEditLastOwnMessage);
   const editTargetRef = React.useRef(editTarget);
   disabledRef.current = disabled;
   isSendingRef.current = isSending;
   isUploadingRef.current = media.isUploading;
   onSendRef.current = onSend;
   onEditSaveRef.current = onEditSave;
+  onEditLastOwnMessageRef.current = onEditLastOwnMessage;
   editTargetRef.current = editTarget;
 
   const isAutocompleteOpenRef = React.useRef(false);
@@ -178,7 +192,15 @@ export function MessageComposer({
     editable: !disabled,
     mentionNames: mentions.knownNames,
     channelNames: channelLinks.knownChannelNames,
+    customEmoji,
     onSubmit: () => submitMessageRef.current(),
+    onEditLastOwnMessage: () => {
+      // Never re-enter edit from an empty edit (e.g. image-only edit whose
+      // text body is empty) — `editTarget` means we're already editing.
+      if (editTargetRef.current) return false;
+      const handler = onEditLastOwnMessageRef.current;
+      return handler ? handler() : false;
+    },
     isAutocompleteOpen: isAutocompleteOpenRef,
     onUpdate: ({ markdown, text }) => {
       setContent(markdown);
@@ -324,6 +346,7 @@ export function MessageComposer({
         edit.replaceFromOffset,
         edit.replaceToOffset,
         edit.insertText,
+        edit.customEmojiShortcode,
       );
     },
     [richText.replacePlainTextRange],
@@ -369,11 +392,37 @@ export function MessageComposer({
   const insertEmoji = React.useCallback(
     (emoji: string) => {
       if (!richText.editor) return;
-      richText.editor.chain().focus().insertContent(emoji).run();
+      // A `:shortcode:` for a known custom emoji becomes a selectable atom
+      // node (same as the input rule / autocomplete), so it can be selected,
+      // copied, and deleted as one unit. Everything else (native unicode)
+      // inserts as plain content.
+      const match = /^:([^:\s]+):$/.exec(emoji);
+      const shortcode = match?.[1]?.toLowerCase();
+      const known =
+        shortcode &&
+        customEmoji.some((e) => e.shortcode.toLowerCase() === shortcode);
+      if (known && shortcode) {
+        richText.editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: CUSTOM_EMOJI_NODE_NAME,
+            attrs: {
+              shortcode,
+              src:
+                customEmoji.find((e) => e.shortcode.toLowerCase() === shortcode)
+                  ?.url ?? "",
+            },
+          })
+          .insertContent(" ")
+          .run();
+      } else {
+        richText.editor.chain().focus().insertContent(emoji).run();
+      }
       setIsEmojiPickerOpen(false);
       mentions.clearMentions();
     },
-    [richText.editor, mentions.clearMentions],
+    [richText.editor, mentions.clearMentions, customEmoji],
   );
 
   // ── @ mention picker (toolbar button) ───────────────────────────────
@@ -429,6 +478,17 @@ export function MessageComposer({
         currentPendingImeta,
       );
 
+      // NIP-30: attach `["emoji", shortcode, url]` tags for custom emoji in the
+      // edited body, exactly like the send path. Without this an edited message
+      // ships with no emoji tags, so the receiver can't resolve a `:shortcode:`
+      // and renders the literal text. `?? []` preserves edit semantics (a
+      // defined-but-empty media set means "wipe attachments").
+      const outgoingTags =
+        mergeOutgoingTags(
+          mediaTags,
+          buildCustomEmojiTags(finalContent, customEmoji),
+        ) ?? [];
+
       const savedContent = trimmed;
       const savedImeta = [...currentPendingImeta];
       setContent("");
@@ -441,7 +501,7 @@ export function MessageComposer({
       setIsEmojiPickerOpen(false);
 
       try {
-        await onEditSaveRef.current(finalContent, mediaTags ?? []);
+        await onEditSaveRef.current(finalContent, outgoingTags);
       } catch {
         setContent(savedContent);
         contentRef.current = savedContent;
@@ -485,6 +545,13 @@ export function MessageComposer({
       currentPendingImeta,
     );
 
+    // NIP-30: attach ["emoji", shortcode, url] tags for custom emoji in the
+    // final content, so the event is self-contained.
+    const outgoingTags = mergeOutgoingTags(
+      mediaTags,
+      buildCustomEmojiTags(finalContent, customEmoji),
+    );
+
     const savedContent = trimmed;
     const savedImeta = [...currentPendingImeta];
     const savedKudos = isKudosActive;
@@ -504,7 +571,7 @@ export function MessageComposer({
     const sentDraftKey = effectiveDraftKeyRef.current;
     setSendError(null);
     try {
-      await onSendRef.current(finalContent, pubkeys, mediaTags, {
+      await onSendRef.current(finalContent, pubkeys, outgoingTags, {
         bountyAmountSats: savedBountyAmountSats,
         kudos: savedKudos,
       });
@@ -524,6 +591,7 @@ export function MessageComposer({
     }
   }, [
     drafts.clearDraft,
+    customEmoji,
     media.pendingImetaRef,
     media.setPendingImeta,
     mentions.extractMentionPubkeys,
@@ -608,11 +676,12 @@ export function MessageComposer({
       editorProps: {
         ...richText.editor.options.editorProps,
         handlePaste: (_view, event) => {
-          // --- Media paste ---
+          // --- File paste ---
+          // Any actual file (image, video, document, …) pastes as an
+          // attachment. String/text items have kind "string", so plain-text
+          // and code-block paste fall through to the handlers below.
           const items = Array.from(event.clipboardData?.items ?? []);
-          const mediaItem = items.find((item) =>
-            ALLOWED_MEDIA_TYPES.includes(item.type),
-          );
+          const mediaItem = items.find((item) => item.kind === "file");
           if (mediaItem) {
             const file = mediaItem.getAsFile();
             if (file) {
@@ -705,7 +774,7 @@ export function MessageComposer({
       />
       <div className="relative flex w-full flex-col gap-3">
         <form
-          className="relative isolate rounded-2xl border border-border/50 bg-background/70 px-3 pb-2 pt-3 shadow-[0_4px_24px_rgba(0,0,0,0.08)] backdrop-blur-xl supports-[backdrop-filter]:bg-background/55 dark:shadow-[0_4px_24px_rgba(0,0,0,0.35)] sm:px-4"
+          className="relative isolate rounded-2xl border border-border/50 bg-background/80 px-3 pb-2 pt-3 shadow-none backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55 sm:px-4"
           data-testid="message-composer"
           onDragEnter={media.handleDragEnter}
           onDragLeave={media.handleDragLeave}
