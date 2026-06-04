@@ -13,6 +13,8 @@ pub(crate) const EXISTING_OFFER_FILE_NAME: &str = "existing_bolt12_offer.txt";
 pub(crate) const WALLET_SOURCE_FILE_NAME: &str = "wallet_source.txt";
 pub(crate) const EXISTING_CLIENT_CREDENTIAL_FILE_NAME: &str = "lexe_client_credential.txt";
 pub(crate) const MESSAGES_FILE_NAME: &str = "walletbot_messages.json";
+pub(crate) const AGENT_PAYMENT_ANNOTATIONS_FILE_NAME: &str = "agent_payment_annotations.json";
+pub(crate) const AGENT_PAYMENT_SETTINGS_FILE_NAME: &str = "agent_payment_settings.json";
 pub(crate) const WALLETBOT_WELCOME: &str = "WalletBot is local to this Sprout app.\n\nAvailable commands:\n- help\n- get balance\n- get BOLT12\n- fund wallet\n- get transactions\n- create invoice for ₿1,000\n- send ₿500 to <payment target>";
 pub(crate) const DEFAULT_TRANSACTION_LIMIT: usize = 20;
 pub(crate) const MAX_TRANSACTION_LIMIT: usize = 100;
@@ -124,6 +126,47 @@ pub struct WalletTransaction {
     pub personal_note: Option<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    pub agent_payment: Option<WalletAgentPaymentAnnotation>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAgentPaymentAnnotation {
+    pub payment_id: String,
+    pub agent_pubkey: Option<String>,
+    pub agent_name: Option<String>,
+    pub protocol: String,
+    pub endpoint: Option<String>,
+    pub endpoint_host: Option<String>,
+    pub endpoint_path: Option<String>,
+    pub consent_event_id: Option<String>,
+    pub status: String,
+    pub status_message: Option<String>,
+    pub amount_sats: Option<u64>,
+    pub fees_sats: Option<u64>,
+    pub payment_hash: Option<String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletAgentPaymentSettings {
+    pub default_agents_to_lexe: bool,
+}
+
+impl Default for WalletAgentPaymentSettings {
+    fn default() -> Self {
+        Self {
+            default_agents_to_lexe: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct AgentPaymentBrokerConfig {
+    pub base_url: String,
+    pub token: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

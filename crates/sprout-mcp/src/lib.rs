@@ -67,7 +67,7 @@
 //! list drifts. The default toolset covers messaging, threads, search, feed,
 //! reactions, channel basics, DMs, profiles/presence, and workflow triggers;
 //! opt-in toolsets add channel admin, canvas, workflow admin, forums, social,
-//! and media.
+//! media, and payments.
 //!
 //! ## Example Configuration (Claude Desktop)
 //!
@@ -93,6 +93,8 @@
 // are re-exported by `sprout-test-client`. Changes to these types are a breaking
 // change for the test harness.
 
+/// Agent payment tools backed by the Sprout desktop wallet broker.
+pub(crate) mod payments;
 /// WebSocket client for the Sprout relay (NIP-42 auth, subscriptions, reconnect).
 pub mod relay_client;
 /// MCP tool implementations backed by the relay client.

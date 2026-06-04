@@ -430,6 +430,19 @@ pub fn run() {
             resolve_persisted_identity(&app_handle, &state)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+            match spawn_agent_payment_broker(app_handle.clone()) {
+                Ok(config) => {
+                    if let Ok(mut guard) = state.agent_payment_broker.lock() {
+                        *guard = Some(config);
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "sprout-desktop: failed to start agent payment wallet broker: {error}"
+                    );
+                }
+            }
+
             let wallet_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = prewarm_lightning_wallet(wallet_handle).await {
@@ -659,6 +672,8 @@ pub fn run() {
             set_prevent_sleep_active,
             get_lightning_wallet_summary,
             get_lightning_wallet_source_config,
+            get_lightning_wallet_agent_payment_settings,
+            set_lightning_wallet_agent_payment_settings,
             set_lightning_wallet_source,
             refresh_lightning_wallet,
             reveal_lightning_wallet_seed,

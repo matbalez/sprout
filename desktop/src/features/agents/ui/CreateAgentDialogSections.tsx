@@ -305,14 +305,14 @@ export function CreateAgentRuntimeFields({
           autoComplete="off"
           id="agent-mcp-toolsets"
           onChange={(event) => onMcpToolsetsChange(event.target.value)}
-          placeholder="default,canvas,forums,dms,media"
+          placeholder="payments"
           value={mcpToolsets}
         />
         <p className="text-xs text-muted-foreground">
           Comma-separated list of toolsets to expose via SPROUT_TOOLSETS.
           Available: default, channel_admin, dms, canvas, workflow_admin,
-          identity, forums, social, media. Leave blank for default toolsets
-          (default, canvas, forums, dms, media).
+          identity, forums, social, media, payments. Leave blank to use the
+          wallet default.
         </p>
       </div>
 

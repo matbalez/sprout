@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,9 +10,11 @@ use tauri::{AppHandle, Manager};
 use crate::app_state::AppState;
 
 use super::types::{
-    WalletBotMessage, WalletSource, WalletSourceConfig, EXISTING_CLIENT_CREDENTIAL_FILE_NAME,
-    EXISTING_LEXE_DATA_DIR_NAME, EXISTING_OFFER_FILE_NAME, LEXE_DATA_DIR_NAME, MESSAGES_FILE_NAME,
-    OFFER_FILE_NAME, SEED_FILE_NAME, WALLETBOT_WELCOME, WALLET_DIR_NAME, WALLET_SOURCE_FILE_NAME,
+    WalletAgentPaymentAnnotation, WalletAgentPaymentSettings, WalletBotMessage, WalletSource,
+    WalletSourceConfig, AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME,
+    EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME, EXISTING_OFFER_FILE_NAME,
+    LEXE_DATA_DIR_NAME, MESSAGES_FILE_NAME, OFFER_FILE_NAME, SEED_FILE_NAME, WALLETBOT_WELCOME,
+    WALLET_DIR_NAME, WALLET_SOURCE_FILE_NAME,
 };
 
 #[derive(Clone)]
@@ -25,6 +28,8 @@ pub(crate) struct WalletStorage {
     pub wallet_source_path: PathBuf,
     pub existing_client_credential_path: PathBuf,
     pub messages_path: PathBuf,
+    pub agent_payment_annotations_path: PathBuf,
+    pub agent_payment_settings_path: PathBuf,
 }
 
 impl WalletStorage {
@@ -43,6 +48,8 @@ impl WalletStorage {
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
+            agent_payment_annotations_path: root_dir.join(AGENT_PAYMENT_ANNOTATIONS_FILE_NAME),
+            agent_payment_settings_path: root_dir.join(AGENT_PAYMENT_SETTINGS_FILE_NAME),
             root_dir,
         })
     }
@@ -222,6 +229,54 @@ pub(crate) fn save_walletbot_messages(
     write_atomic_text(&storage.messages_path, &content)
 }
 
+pub(crate) fn load_agent_payment_annotations(
+    storage: &WalletStorage,
+) -> Result<BTreeMap<String, WalletAgentPaymentAnnotation>, String> {
+    storage.ensure_dirs()?;
+    match std::fs::read_to_string(&storage.agent_payment_annotations_path) {
+        Ok(content) => {
+            serde_json::from_str::<BTreeMap<String, WalletAgentPaymentAnnotation>>(&content)
+                .map_err(|error| format!("parse agent payment annotations: {error}"))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!("read agent payment annotations: {error}")),
+    }
+}
+
+pub(crate) fn save_agent_payment_annotation(
+    storage: &WalletStorage,
+    annotation: WalletAgentPaymentAnnotation,
+) -> Result<(), String> {
+    let mut annotations = load_agent_payment_annotations(storage)?;
+    annotations.insert(annotation.payment_id.clone(), annotation);
+    let content = serde_json::to_string_pretty(&annotations)
+        .map_err(|error| format!("serialize agent payment annotations: {error}"))?;
+    write_atomic_text(&storage.agent_payment_annotations_path, &content)
+}
+
+pub(crate) fn load_agent_payment_settings(
+    storage: &WalletStorage,
+) -> Result<WalletAgentPaymentSettings, String> {
+    storage.ensure_dirs()?;
+    match std::fs::read_to_string(&storage.agent_payment_settings_path) {
+        Ok(content) => serde_json::from_str::<WalletAgentPaymentSettings>(&content)
+            .map_err(|error| format!("parse agent payment settings: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(WalletAgentPaymentSettings::default())
+        }
+        Err(error) => Err(format!("read agent payment settings: {error}")),
+    }
+}
+
+pub(crate) fn save_agent_payment_settings(
+    storage: &WalletStorage,
+    settings: &WalletAgentPaymentSettings,
+) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(settings)
+        .map_err(|error| format!("serialize agent payment settings: {error}"))?;
+    write_atomic_text(&storage.agent_payment_settings_path, &content)
+}
+
 pub(crate) fn write_atomic_text(path: &Path, content: &str) -> Result<(), String> {
     use atomic_write_file::AtomicWriteFile;
 
@@ -304,6 +359,8 @@ mod tests {
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
+            agent_payment_annotations_path: root_dir.join(AGENT_PAYMENT_ANNOTATIONS_FILE_NAME),
+            agent_payment_settings_path: root_dir.join(AGENT_PAYMENT_SETTINGS_FILE_NAME),
             root_dir,
         }
     }
@@ -353,5 +410,32 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn agent_payment_settings_default_agents_to_lexe() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        let settings = load_agent_payment_settings(&storage).unwrap();
+
+        assert!(settings.default_agents_to_lexe);
+    }
+
+    #[test]
+    fn agent_payment_settings_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+        let settings = WalletAgentPaymentSettings {
+            default_agents_to_lexe: false,
+        };
+
+        save_agent_payment_settings(&storage, &settings).unwrap();
+
+        assert!(
+            !load_agent_payment_settings(&storage)
+                .unwrap()
+                .default_agents_to_lexe
+        );
     }
 }

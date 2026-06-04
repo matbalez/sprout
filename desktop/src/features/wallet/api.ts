@@ -46,6 +46,29 @@ export type WalletTransaction = {
   personalNote: string | null;
   createdAtMs: number;
   updatedAtMs: number;
+  agentPayment: WalletAgentPaymentAnnotation | null;
+};
+
+export type WalletAgentPaymentAnnotation = {
+  paymentId: string;
+  agentPubkey: string | null;
+  agentName: string | null;
+  protocol: string;
+  endpoint: string | null;
+  endpointHost: string | null;
+  endpointPath: string | null;
+  consentEventId: string | null;
+  status: string;
+  statusMessage: string | null;
+  amountSats: number | null;
+  feesSats: number | null;
+  paymentHash: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+};
+
+export type WalletAgentPaymentSettings = {
+  defaultAgentsToLexe: boolean;
 };
 
 export type WalletBotMessage = {
@@ -151,6 +174,21 @@ export function refreshLightningWallet() {
 
 export function getLightningWalletSourceConfig() {
   return invokeTauri<WalletSourceConfig>("get_lightning_wallet_source_config");
+}
+
+export function getLightningWalletAgentPaymentSettings() {
+  return invokeTauri<WalletAgentPaymentSettings>(
+    "get_lightning_wallet_agent_payment_settings",
+  );
+}
+
+export function setLightningWalletAgentPaymentSettings(input: {
+  defaultAgentsToLexe: boolean;
+}) {
+  return invokeTauri<WalletAgentPaymentSettings>(
+    "set_lightning_wallet_agent_payment_settings",
+    input,
+  );
 }
 
 export function setLightningWalletSource(input: {

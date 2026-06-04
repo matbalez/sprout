@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{
     managed_agents::{
@@ -12,6 +12,22 @@ use crate::{
 };
 
 type RespondToEnv = (Vec<(&'static str, String)>, Vec<&'static str>);
+
+const DEFAULT_MANAGED_AGENT_MCP_TOOLSETS: &str = "payments";
+const OPT_OUT_MANAGED_AGENT_MCP_TOOLSETS: &str = "none";
+
+fn toolsets_request_payments(toolsets: &str) -> bool {
+    let mut requested = false;
+    for token in toolsets.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (name, mode) = token.split_once(':').unwrap_or((token, "rw"));
+        match name {
+            "none" => requested = false,
+            "all" | "payments" => requested = mode != "ro",
+            _ => {}
+        }
+    }
+    requested
+}
 
 /// Binary name fragments for all known agent/harness processes that Sprout
 /// may spawn. Used by `process_belongs_to_us()` and the orphan sweep to
@@ -787,6 +803,22 @@ pub fn spawn_agent_child(
     let resolved_agent_command = resolve_command(&record.agent_command)
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| record.agent_command.clone());
+    let default_agents_to_lexe = crate::wallet::default_agents_to_lexe_payments(app)
+        .unwrap_or_else(|error| {
+            eprintln!(
+                "sprout-desktop: failed to load agent payment settings; defaulting Lexe payments on: {error}"
+            );
+            true
+        });
+    let effective_mcp_toolsets =
+        record
+            .mcp_toolsets
+            .as_deref()
+            .unwrap_or(if default_agents_to_lexe {
+                DEFAULT_MANAGED_AGENT_MCP_TOOLSETS
+            } else {
+                OPT_OUT_MANAGED_AGENT_MCP_TOOLSETS
+            });
 
     // Augment PATH for DMG launches so child processes can find:
     //   - sprout CLI via ~/.local/bin symlink
@@ -825,8 +857,22 @@ pub fn spawn_agent_child(
     command.env("RUST_LOG", child_rust_log_filter());
     command.env("SPROUT_PRIVATE_KEY", &record.private_key_nsec);
     command.env("SPROUT_RELAY_URL", &record.relay_url);
+    command.env("SPROUT_AGENT_NAME", &record.name);
+    command.env("SPROUT_AGENT_PUBKEY", &record.pubkey);
     command.env("SPROUT_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("SPROUT_ACP_AGENT_ARGS", agent_args.join(","));
+    if toolsets_request_payments(effective_mcp_toolsets) {
+        if let Ok(guard) = app
+            .state::<crate::app_state::AppState>()
+            .agent_payment_broker
+            .lock()
+        {
+            if let Some(config) = guard.as_ref() {
+                command.env("SPROUT_WALLET_BROKER_URL", &config.base_url);
+                command.env("SPROUT_WALLET_BROKER_TOKEN", &config.token);
+            }
+        }
+    }
     match &resolved_mcp_command {
         Some(mcp_cmd) => {
             command.env("SPROUT_ACP_MCP_COMMAND", mcp_cmd);
@@ -903,11 +949,7 @@ pub fn spawn_agent_child(
     } else {
         command.env_remove("SPROUT_ACP_MODEL");
     }
-    if let Some(toolsets) = &record.mcp_toolsets {
-        command.env("SPROUT_TOOLSETS", toolsets);
-    } else {
-        command.env("SPROUT_TOOLSETS", "default,canvas,forums,dms,media");
-    }
+    command.env("SPROUT_TOOLSETS", effective_mcp_toolsets);
     command.env_remove("SPROUT_ACP_PRIVATE_KEY");
     command.env_remove("SPROUT_ACP_API_TOKEN");
     command.env_remove("SPROUT_API_TOKEN");
@@ -1141,7 +1183,35 @@ mod tests {
     fn goose_has_no_mcp_hooks() {
         let p = known_acp_provider("goose").expect("should resolve");
         assert!(!p.mcp_hooks);
-        assert_eq!(p.mcp_command, None);
+        assert_eq!(p.mcp_command, Some("sprout-mcp-server"));
+    }
+
+    #[test]
+    fn external_acp_providers_use_sprout_mcp_server() {
+        for command in ["goose", "claude-agent-acp", "claude-code-acp", "codex-acp"] {
+            let p = known_acp_provider(command).expect("should resolve known provider");
+            assert!(!p.mcp_hooks, "{command} should not enable hook tools");
+            assert_eq!(
+                p.mcp_command,
+                Some("sprout-mcp-server"),
+                "{command} should receive Sprout MCP"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_agent_mcp_toolset_default_is_payments_only() {
+        assert_eq!(super::DEFAULT_MANAGED_AGENT_MCP_TOOLSETS, "payments");
+    }
+
+    #[test]
+    fn payment_toolset_detection_respects_none_and_ro() {
+        assert!(super::toolsets_request_payments("payments"));
+        assert!(super::toolsets_request_payments("default,all"));
+        assert!(super::toolsets_request_payments("none,payments"));
+        assert!(!super::toolsets_request_payments("none"));
+        assert!(!super::toolsets_request_payments("payments,none"));
+        assert!(!super::toolsets_request_payments("payments:ro"));
     }
 
     #[test]

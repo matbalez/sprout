@@ -39,6 +39,10 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     "SPROUT_API_TOKEN",
     "SPROUT_ACP_PRIVATE_KEY",
     "SPROUT_ACP_API_TOKEN",
+    "SPROUT_WALLET_BROKER_URL",
+    "SPROUT_WALLET_BROKER_TOKEN",
+    "SPROUT_AGENT_NAME",
+    "SPROUT_AGENT_PUBKEY",
     // Relay URL: overriding would let a malicious config redirect the
     // agent to an attacker-controlled relay.
     "SPROUT_RELAY_URL",

@@ -44,6 +44,7 @@ created: 2026-01-15
 - **`.scratch/` is disposable** — don't rely on it across sessions
 - **Never push without approval** — do not `git push` to any remote
 - **Stay on task** — only stage files relevant to your current work
+- **Agent payments** — when a user authorizes a Lightning or L402 payment, use Sprout's connected Lexe wallet through the Sprout payment MCP tools (`paid_fetch` or `pay_lightning_invoice`). Do not initialize another wallet, inspect wallet credential files, print wallet credentials, or route user-funded payments through unrelated wallet software.
 
 <!-- BEGIN SPROUT MANAGED — regenerated automatically, do not edit below -->
 ## Active Agents

@@ -1,6 +1,6 @@
 use lexe::types::{bitcoin::Amount, payment::Payment};
 
-use super::types::WalletTransaction;
+use super::types::{WalletAgentPaymentAnnotation, WalletTransaction};
 
 pub(crate) fn amount_from_sats(amount_sats: u64) -> Result<Amount, String> {
     Amount::try_from_sats_u64(amount_sats)
@@ -27,7 +27,10 @@ fn format_grouped_u64(value: u64) -> String {
     output.chars().rev().collect()
 }
 
-pub(crate) fn wallet_transaction(payment: &Payment) -> WalletTransaction {
+pub(crate) fn wallet_transaction_with_annotation(
+    payment: &Payment,
+    agent_payment: Option<WalletAgentPaymentAnnotation>,
+) -> WalletTransaction {
     WalletTransaction {
         id: payment.index.to_string(),
         rail: payment.rail.to_string(),
@@ -41,6 +44,7 @@ pub(crate) fn wallet_transaction(payment: &Payment) -> WalletTransaction {
         personal_note: payment.personal_note.clone(),
         created_at_ms: payment.created_at.to_millis(),
         updated_at_ms: payment.updated_at.to_millis(),
+        agent_payment,
     }
 }
 

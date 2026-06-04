@@ -20,6 +20,7 @@ function transaction(overrides = {}) {
     personalNote: null,
     createdAtMs: 0,
     updatedAtMs: 0,
+    agentPayment: null,
     ...overrides,
   };
 }
@@ -67,6 +68,44 @@ describe("wallet transaction display", () => {
         }),
       ),
       ["Sprout message tip"],
+    );
+  });
+
+  it("shows agent payment annotations before wallet notes", () => {
+    const annotation = {
+      paymentId: "payment-1",
+      agentPubkey: "a".repeat(64),
+      agentName: "Supercoder",
+      protocol: "L402",
+      endpoint: "https://api.example.com/paid",
+      endpointHost: "api.example.com",
+      endpointPath: "/paid",
+      consentEventId: "b".repeat(64),
+      status: "completed",
+      statusMessage: "paid",
+      amountSats: 21,
+      feesSats: 1,
+      paymentHash: "c".repeat(64),
+      createdAtMs: 0,
+      updatedAtMs: 1,
+    };
+
+    assert.equal(
+      formatWalletTransactionTitle(transaction({ agentPayment: annotation })),
+      "agent L402 payment",
+    );
+
+    assert.deepEqual(
+      walletTransactionNotes(
+        transaction({
+          agentPayment: annotation,
+          personalNote: "Sprout agent L402 payment",
+        }),
+      ),
+      [
+        "Agent: Supercoder · L402: api.example.com/paid",
+        "Sprout agent L402 payment",
+      ],
     );
   });
 });

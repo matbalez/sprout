@@ -667,35 +667,35 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_clears_mcp_command_for_goose() {
+    fn reconcile_sets_mcp_command_for_goose() {
         let dir = tempfile::tempdir().unwrap();
         write_agents_json(
             dir.path(),
             &serde_json::json!([{
                 "name": "Scout",
                 "agent_command": "goose",
-                "mcp_command": "sprout-mcp-server"
+                "mcp_command": ""
             }]),
         );
         reconcile_mcp_commands_in_file(&dir.path().join("agents/managed-agents.json"));
         let records = read_agents_json(dir.path());
-        assert_eq!(records[0]["mcp_command"], "");
+        assert_eq!(records[0]["mcp_command"], "sprout-mcp-server");
     }
 
     #[test]
-    fn reconcile_clears_mcp_command_for_claude() {
+    fn reconcile_sets_mcp_command_for_claude() {
         let dir = tempfile::tempdir().unwrap();
         write_agents_json(
             dir.path(),
             &serde_json::json!([{
                 "name": "Claude Agent",
                 "agent_command": "claude-agent-acp",
-                "mcp_command": "sprout-mcp-server"
+                "mcp_command": ""
             }]),
         );
         reconcile_mcp_commands_in_file(&dir.path().join("agents/managed-agents.json"));
         let records = read_agents_json(dir.path());
-        assert_eq!(records[0]["mcp_command"], "");
+        assert_eq!(records[0]["mcp_command"], "sprout-mcp-server");
     }
 
     #[test]
@@ -785,8 +785,14 @@ mod tests {
         );
         reconcile_mcp_commands_in_file(&dir.path().join("agents/managed-agents.json"));
         let records = read_agents_json(dir.path());
-        assert_eq!(records[0]["mcp_command"], "", "goose should be cleared");
-        assert_eq!(records[1]["mcp_command"], "", "claude should be cleared");
+        assert_eq!(
+            records[0]["mcp_command"], "sprout-mcp-server",
+            "goose should use sprout-mcp-server"
+        );
+        assert_eq!(
+            records[1]["mcp_command"], "sprout-mcp-server",
+            "claude should use sprout-mcp-server"
+        );
         assert_eq!(
             records[2]["mcp_command"], "sprout-dev-mcp",
             "sprout-agent preserved"
@@ -795,7 +801,10 @@ mod tests {
             records[3]["mcp_command"], "my-mcp",
             "custom agent untouched"
         );
-        assert_eq!(records[4]["mcp_command"], "", "codex should be cleared");
+        assert_eq!(
+            records[4]["mcp_command"], "sprout-mcp-server",
+            "codex should use sprout-mcp-server"
+        );
     }
 
     #[test]

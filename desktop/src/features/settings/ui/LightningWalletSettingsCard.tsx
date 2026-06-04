@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Bot,
   Copy,
   Eye,
   EyeOff,
@@ -16,11 +17,13 @@ import { toast } from "sonner";
 
 import {
   formatBitcoinAmount,
+  getLightningWalletAgentPaymentSettings,
   getLightningWalletSummary,
   getLightningWalletSourceConfig,
   getLightningWalletTransactions,
   refreshLightningWallet,
   revealLightningWalletSeed,
+  setLightningWalletAgentPaymentSettings,
   setLightningWalletSource,
   type WalletSource,
   type WalletSourceConfig,
@@ -32,6 +35,7 @@ import {
 } from "@/features/wallet/transactions";
 import { Button } from "@/shared/ui/button";
 import { Spinner } from "@/shared/ui/spinner";
+import { Switch } from "@/shared/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/shared/ui/tabs";
 import { Textarea } from "@/shared/ui/textarea";
 
@@ -40,6 +44,10 @@ const walletSourceQueryKey = ["lightning-wallet", "source"] as const;
 const walletTransactionsQueryKey = [
   "lightning-wallet",
   "transactions",
+] as const;
+const walletAgentPaymentSettingsQueryKey = [
+  "lightning-wallet",
+  "agent-payment-settings",
 ] as const;
 
 function errorMessage(error: unknown) {
@@ -285,6 +293,57 @@ function WalletSourceSettings({
   );
 }
 
+function AgentPaymentSettings({
+  checked,
+  error,
+  isLoading,
+  isPending,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  error: unknown;
+  isLoading: boolean;
+  isPending: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="mt-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <label
+            className="flex items-center gap-2 text-sm font-medium"
+            htmlFor="default-agents-to-lexe-switch"
+          >
+            <Bot className="h-4 w-4" />
+            Default agents to using Lexe for payments
+          </label>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Expose Sprout Lexe payment tools to managed agents unless an agent
+            has its own MCP toolset override.
+          </p>
+        </div>
+        {isLoading ? (
+          <Spinner className="h-4 w-4 shrink-0" />
+        ) : (
+          <Switch
+            checked={checked}
+            data-testid="wallet-default-agents-to-lexe-toggle"
+            disabled={isPending}
+            id="default-agents-to-lexe-switch"
+            onCheckedChange={onCheckedChange}
+          />
+        )}
+      </div>
+      {error ? (
+        <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(error)}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function LightningWalletSettingsCard() {
   const queryClient = useQueryClient();
   const [sourceDraft, setSourceDraft] = useState<WalletSource>("default");
@@ -298,6 +357,11 @@ export function LightningWalletSettingsCard() {
   const sourceConfigQuery = useQuery({
     queryKey: walletSourceQueryKey,
     queryFn: getLightningWalletSourceConfig,
+    staleTime: 30_000,
+  });
+  const agentPaymentSettingsQuery = useQuery({
+    queryKey: walletAgentPaymentSettingsQueryKey,
+    queryFn: getLightningWalletAgentPaymentSettings,
     staleTime: 30_000,
   });
   const transactionsQuery = useQuery({
@@ -340,8 +404,20 @@ export function LightningWalletSettingsCard() {
       );
     },
   });
+  const agentPaymentSettingsMutation = useMutation({
+    mutationFn: setLightningWalletAgentPaymentSettings,
+    onSuccess: (settings) => {
+      queryClient.setQueryData(walletAgentPaymentSettingsQueryKey, settings);
+      toast.success(
+        settings.defaultAgentsToLexe
+          ? "Agents default to Lexe payments"
+          : "Agents no longer default to Lexe payments",
+      );
+    },
+  });
   const summary = summaryQuery.data;
   const sourceConfig = sourceConfigQuery.data;
+  const agentPaymentSettings = agentPaymentSettingsQuery.data;
 
   useEffect(() => {
     if (sourceConfig) {
@@ -425,6 +501,18 @@ export function LightningWalletSettingsCard() {
         onSourceChange={handleSourceChange}
         seedPhrase={isSeedVisible ? seedMutation.data : undefined}
         sourceDraft={sourceDraft}
+      />
+
+      <AgentPaymentSettings
+        checked={agentPaymentSettings?.defaultAgentsToLexe ?? true}
+        error={
+          agentPaymentSettingsQuery.error ?? agentPaymentSettingsMutation.error
+        }
+        isLoading={agentPaymentSettingsQuery.isPending}
+        isPending={agentPaymentSettingsMutation.isPending}
+        onCheckedChange={(defaultAgentsToLexe) =>
+          agentPaymentSettingsMutation.mutate({ defaultAgentsToLexe })
+        }
       />
 
       <div className="mt-4">

@@ -2656,6 +2656,19 @@ fn build_mcp_servers(config: &Config) -> Vec<McpServer> {
                     });
                 }
             }
+            // Forward the desktop wallet broker connection so payment MCP
+            // tools can request payments from the active Sprout wallet without
+            // receiving wallet credentials.
+            for name in ["SPROUT_WALLET_BROKER_URL", "SPROUT_WALLET_BROKER_TOKEN"] {
+                if let Ok(value) = std::env::var(name) {
+                    if !value.is_empty() {
+                        env.push(EnvVar {
+                            name: name.into(),
+                            value,
+                        });
+                    }
+                }
+            }
             env
         },
     }]
@@ -2879,6 +2892,32 @@ mod build_mcp_servers_tests {
             !has_auth_tag,
             "empty SPROUT_AUTH_TAG should not be forwarded"
         );
+    }
+
+    #[test]
+    fn session_new_mcp_server_forwards_wallet_broker_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("SPROUT_WALLET_BROKER_URL", "http://127.0.0.1:12345");
+        std::env::set_var("SPROUT_WALLET_BROKER_TOKEN", "test-token");
+        let config = test_config();
+        let servers = build_mcp_servers(&config);
+        std::env::remove_var("SPROUT_WALLET_BROKER_URL");
+        std::env::remove_var("SPROUT_WALLET_BROKER_TOKEN");
+
+        let server = &servers[0];
+        let broker_url = server
+            .env
+            .iter()
+            .find(|e| e.name == "SPROUT_WALLET_BROKER_URL");
+        let broker_token = server
+            .env
+            .iter()
+            .find(|e| e.name == "SPROUT_WALLET_BROKER_TOKEN");
+        assert_eq!(
+            broker_url.map(|e| e.value.as_str()),
+            Some("http://127.0.0.1:12345")
+        );
+        assert_eq!(broker_token.map(|e| e.value.as_str()), Some("test-token"));
     }
 
     #[test]

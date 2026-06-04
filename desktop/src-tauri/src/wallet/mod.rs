@@ -1,4 +1,5 @@
 mod balance;
+mod broker;
 mod discovery;
 mod format;
 mod parser;
@@ -17,10 +18,11 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::app_state::AppState;
 
 use balance::wallet_balances;
+pub use broker::spawn_agent_payment_broker;
 use discovery::{resolve_bolt12_offer_for_pubkey, resolve_send_payable};
 use format::{
     amount_from_sats, format_amount, format_bolt12_offer_message, format_payment,
-    wallet_transaction,
+    wallet_transaction_with_annotation,
 };
 use parser::parse_wallet_command;
 use runtime::{
@@ -28,14 +30,15 @@ use runtime::{
     reset_cached_wallet_if_credentials_missing, spawn_current_profile_bolt12_offer_sync,
 };
 use storage::{
-    current_pubkey, load_existing_client_credential, load_root_seed, load_wallet_source,
-    load_walletbot_messages, new_walletbot_message, save_existing_client_credential,
+    current_pubkey, load_agent_payment_annotations, load_agent_payment_settings,
+    load_existing_client_credential, load_root_seed, load_wallet_source, load_walletbot_messages,
+    new_walletbot_message, save_agent_payment_settings, save_existing_client_credential,
     save_wallet_source, save_walletbot_messages, walletbot_pubkey, WalletStorage,
 };
 pub use tips::{send_message_kudos, send_message_tip, send_shared_agent_invocation_payment};
 pub use types::{
-    WalletBotMessage, WalletPaymentResult, WalletRuntimeState, WalletSourceConfig, WalletSummary,
-    WalletTransaction,
+    AgentPaymentBrokerConfig, WalletAgentPaymentSettings, WalletBotMessage, WalletPaymentResult,
+    WalletRuntimeState, WalletSourceConfig, WalletSummary, WalletTransaction,
 };
 use types::{
     WalletBotMessagesPayload, WalletCommand, WalletSource, DEFAULT_TRANSACTION_LIMIT,
@@ -75,6 +78,30 @@ pub async fn refresh_lightning_wallet(
 #[tauri::command]
 pub fn get_lightning_wallet_source_config(app: AppHandle) -> Result<WalletSourceConfig, String> {
     WalletStorage::from_app(&app)?.wallet_source_config()
+}
+
+#[tauri::command]
+pub fn get_lightning_wallet_agent_payment_settings(
+    app: AppHandle,
+) -> Result<WalletAgentPaymentSettings, String> {
+    load_agent_payment_settings(&WalletStorage::from_app(&app)?)
+}
+
+#[tauri::command]
+pub fn set_lightning_wallet_agent_payment_settings(
+    default_agents_to_lexe: bool,
+    app: AppHandle,
+) -> Result<WalletAgentPaymentSettings, String> {
+    let storage = WalletStorage::from_app(&app)?;
+    let settings = WalletAgentPaymentSettings {
+        default_agents_to_lexe,
+    };
+    save_agent_payment_settings(&storage, &settings)?;
+    Ok(settings)
+}
+
+pub(crate) fn default_agents_to_lexe_payments(app: &AppHandle) -> Result<bool, String> {
+    Ok(load_agent_payment_settings(&WalletStorage::from_app(app)?)?.default_agents_to_lexe)
 }
 
 #[tauri::command]
@@ -141,7 +168,16 @@ pub async fn get_lightning_wallet_transactions(
     let response = wallet
         .list_payments(&PaymentFilter::All, Some(Order::Desc), Some(limit), None)
         .map_err(|error| format!("list Lexe payments: {error}"))?;
-    Ok(response.payments.iter().map(wallet_transaction).collect())
+    let storage = WalletStorage::from_app(&app)?;
+    let annotations = load_agent_payment_annotations(&storage)?;
+    Ok(response
+        .payments
+        .iter()
+        .map(|payment| {
+            let annotation = annotations.get(&payment.index.to_string()).cloned();
+            wallet_transaction_with_annotation(payment, annotation)
+        })
+        .collect())
 }
 
 #[tauri::command]

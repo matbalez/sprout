@@ -104,7 +104,7 @@ pub struct ManagedAgentRecord {
     #[serde(default)]
     pub model: Option<String>,
     /// Comma-separated toolset string forwarded as SPROUT_TOOLSETS to the MCP subprocess.
-    /// When None, the MCP server uses its own default ("default" toolset).
+    /// When None, managed agents get the payment tools only.
     #[serde(default)]
     pub mcp_toolsets: Option<String>,
     /// Environment variables injected at spawn time. Layered as: desktop

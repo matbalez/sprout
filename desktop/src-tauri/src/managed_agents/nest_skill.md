@@ -14,6 +14,15 @@ version: 1
 
 `SPROUT_RELAY_URL` defaults to `http://localhost:3000`. Override only if explicitly instructed.
 
+## Agent Payments
+
+When the user authorizes a Lightning or L402 payment, use Sprout's connected Lexe wallet through the Sprout payment MCP tools:
+
+- `paid_fetch` for payment-gated HTTP endpoints that return an L402/LSAT challenge.
+- `pay_lightning_invoice` for BOLT11 invoices, BOLT12 offers, Lightning addresses, or other Lexe-supported payables.
+
+Do not initialize another wallet, inspect wallet credential files, print wallet credentials, or route user-funded payments through unrelated wallet software.
+
 Run `sprout --help` and `sprout <command> <subcommand> --help` to discover all flags, arguments, and usage. This skill documents only what `--help` cannot tell you.
 
 ## Output Contracts

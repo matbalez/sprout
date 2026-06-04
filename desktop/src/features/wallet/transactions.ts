@@ -29,6 +29,14 @@ function isBolt12Payment(tx: WalletTransaction) {
 }
 
 export function formatWalletTransactionTitle(tx: WalletTransaction) {
+  if (tx.agentPayment) {
+    const protocol = tx.agentPayment.protocol.trim().toUpperCase();
+    if (protocol === "L402" || protocol === "LSAT") {
+      return "agent L402 payment";
+    }
+    return "agent Lightning payment";
+  }
+
   const direction = tx.direction.trim().toLowerCase();
 
   if (isBolt12Payment(tx)) {
@@ -46,9 +54,30 @@ export function formatWalletTransactionTitle(tx: WalletTransaction) {
 
 export function walletTransactionNotes(tx: WalletTransaction) {
   const notes = [
+    displayAgentPaymentNote(tx),
     displayPaymentNote(tx.message),
     displayPaymentNote(tx.personalNote),
   ].filter((note): note is string => Boolean(note));
 
   return [...new Set(notes)];
+}
+
+function displayAgentPaymentNote(tx: WalletTransaction) {
+  const annotation = tx.agentPayment;
+  if (!annotation) {
+    return null;
+  }
+
+  const agent = normalizedPaymentField(annotation.agentName);
+  const host = normalizedPaymentField(annotation.endpointHost);
+  const path = normalizedPaymentField(annotation.endpointPath);
+  const endpoint = host
+    ? `${host}${path && path !== "/" ? path : ""}`
+    : normalizedPaymentField(annotation.endpoint);
+  const protocol = normalizedPaymentField(annotation.protocol) ?? "Lightning";
+
+  return [
+    agent ? `Agent: ${agent}` : "Agent payment",
+    endpoint ? `${protocol}: ${endpoint}` : protocol,
+  ].join(" · ");
 }

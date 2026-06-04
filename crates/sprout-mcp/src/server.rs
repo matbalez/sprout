@@ -3066,6 +3066,30 @@ on send_message to upload and attach in one step."
             Err(e) => format!("Error: {e}"),
         }
     }
+
+    /// Fetch an L402/LSAT payment-gated endpoint using the connected Sprout Lexe wallet.
+    #[tool(
+        name = "paid_fetch",
+        description = "Fetch an HTTP(S) endpoint. If it returns an L402/LSAT payment challenge, Sprout pays the invoice from the user's connected Lexe wallet, retries with the payment proof, and returns the response plus local receipt metadata. Use this when the user asks you to access a payment-gated endpoint or authorizes a Lightning/L402 payment. Do not initialize another wallet, inspect wallet credential files, or send credentials to the endpoint."
+    )]
+    pub async fn paid_fetch(
+        &self,
+        Parameters(p): Parameters<crate::payments::PaidFetchParams>,
+    ) -> String {
+        crate::payments::paid_fetch(p).await
+    }
+
+    /// Pay a Lightning invoice or payable using the connected Sprout Lexe wallet.
+    #[tool(
+        name = "pay_lightning_invoice",
+        description = "Pay a BOLT11 invoice, BOLT12 offer, Lightning address, or other Lexe-supported payable from the user's connected Sprout Lexe wallet. Use only when the user has authorized the payment. This is the correct Sprout agent payment path; do not initialize another wallet or inspect wallet credential files."
+    )]
+    pub async fn pay_lightning_invoice(
+        &self,
+        Parameters(p): Parameters<crate::payments::PayLightningInvoiceParams>,
+    ) -> String {
+        crate::payments::pay_lightning_invoice(p).await
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -3080,7 +3104,8 @@ impl ServerHandler for SproutMcpServer {
                 "Sprout MCP server — interact with the Sprout relay. \
                  Send messages, read channel history, create channels, \
                  manage canvases, create and manage workflows, \
-                 and read your personalized home feed."
+                 read your personalized home feed, and, when enabled by Sprout desktop, \
+                 pay authorized Lightning/L402 requests through the user's connected Lexe wallet."
                     .to_string(),
             )
     }

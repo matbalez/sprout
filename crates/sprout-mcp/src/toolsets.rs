@@ -27,6 +27,7 @@
 //! | `identity`      | 1     |
 //! | `forums`        | 1     |
 //! | `social`        | 5     |
+//! | `payments`      | 2     |
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -105,6 +106,9 @@ pub const ALL_TOOLS: &[(&str, &str, bool)] = &[
     ("get_contact_list", "social", true),
     // ── media ────────────────────────────────────────────────────────────────
     ("upload_file", "media", false),
+    // ── payments ─────────────────────────────────────────────────────────────
+    ("paid_fetch", "payments", false),
+    ("pay_lightning_invoice", "payments", false),
 ];
 
 /// Tools planned but not yet implemented. These will be added to ALL_TOOLS
@@ -169,6 +173,7 @@ const KNOWN_TOOLSETS: &[&str] = &[
     "identity",
     "forums",
     "social",
+    "payments",
 ];
 
 // ---------------------------------------------------------------------------
@@ -383,8 +388,8 @@ mod tests {
     }
 
     #[test]
-    fn all_tools_count_is_49() {
-        assert_eq!(ALL_TOOLS.len(), 49);
+    fn all_tools_count_is_51() {
+        assert_eq!(ALL_TOOLS.len(), 51);
     }
 
     #[test]
@@ -402,22 +407,30 @@ mod tests {
     }
 
     #[test]
+    fn payments_toolset_contains_only_payment_tools() {
+        let tools = tools_in_toolset("payments").unwrap();
+        let names: Vec<_> = tools.iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["paid_fetch", "pay_lightning_invoice"]);
+    }
+
+    #[test]
     fn tools_in_toolset_unknown_returns_none() {
         assert!(tools_in_toolset("bogus").is_none());
     }
 
     #[test]
     fn all_toolsets_returns_correct_count() {
-        // ALL_TOOLS covers: default, channel_admin, dms, canvas, workflow_admin, identity, forums, social, media
+        // ALL_TOOLS covers: default, channel_admin, dms, canvas, workflow_admin, identity, forums, social, media, payments
         // (realtime has no implemented tools yet)
         let defs = all_toolsets();
-        assert_eq!(defs.len(), 9);
+        assert_eq!(defs.len(), 10);
         let names: Vec<_> = defs.iter().map(|d| d.name).collect();
         assert!(names.contains(&"default"));
         assert!(names.contains(&"canvas"));
         assert!(names.contains(&"forums"));
         assert!(names.contains(&"social"));
         assert!(names.contains(&"media"));
+        assert!(names.contains(&"payments"));
     }
 
     // ── Cross-check: ALL_TOOLS integrity ────────────────────────────────────
