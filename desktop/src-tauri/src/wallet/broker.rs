@@ -118,11 +118,35 @@ struct AgentPaymentContext {
     wait_timeout_secs: Option<u64>,
 }
 
+#[derive(Debug)]
 struct L402Challenge {
     scheme: String,
     token: String,
     invoice: String,
     request_path: Option<String>,
+}
+
+#[derive(Debug)]
+enum PaidChallenge {
+    LegacyL402(L402Challenge),
+    HttpPaymentLightningCharge(HttpPaymentChallenge),
+}
+
+#[derive(Debug)]
+struct HttpPaymentChallenge {
+    id: String,
+    realm: String,
+    method: String,
+    intent: String,
+    request: String,
+    amount_sats: u64,
+    invoice: String,
+    payment_hash: Option<String>,
+    network: Option<String>,
+    expires: Option<String>,
+    description: Option<String>,
+    digest: Option<String>,
+    opaque: Option<String>,
 }
 
 struct HttpResponseData {
@@ -273,28 +297,28 @@ async fn paid_fetch(
         });
     }
 
-    let challenge = parse_l402_from_headers(&initial.headers).ok_or_else(|| {
-        (
-            StatusCode::BAD_GATEWAY,
-            "HTTP 402 response did not include a usable L402/LSAT challenge".to_string(),
-            None,
-        )
-    })?;
+    let challenge = parse_paid_challenge_from_headers(&initial.headers)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error, None))?
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_GATEWAY,
+                "HTTP 402 response did not include a usable L402/LSAT or Payment challenge"
+                    .to_string(),
+                None,
+            )
+        })?;
+    let invoice = challenge.invoice().to_string();
 
     let context = AgentPaymentContext {
-        protocol: "L402",
+        protocol: challenge.protocol(),
         endpoint: Some(url.to_string()),
         agent_pubkey: request.agent_pubkey,
         agent_name: request.agent_name,
         consent_event_id: request.consent_event_id,
-        description: Some(format!(
-            "Sprout agent L402 payment for {}{}",
-            url.host_str().unwrap_or("unknown-host"),
-            url.path()
-        )),
+        description: Some(challenge.payment_description(&url)),
         wait_timeout_secs: request.wait_timeout_secs,
     };
-    let payment = submit_agent_payment(app_handle, challenge.invoice.clone(), None, context)
+    let payment = submit_agent_payment(app_handle, invoice, None, context)
         .await
         .map_err(|error| (StatusCode::BAD_GATEWAY, error, None))?;
 
@@ -317,9 +341,12 @@ async fn paid_fetch(
         ));
     };
 
-    let claim_url = l402_claim_url(&url, &challenge)
+    let claim_url = challenge
+        .claim_url(&url)
         .map_err(|error| (StatusCode::BAD_GATEWAY, error, Some(payment.clone())))?;
-    let authorization = format!("{} {}:{}", challenge.scheme, challenge.token, preimage);
+    let authorization = challenge
+        .authorization(&payment, &preimage)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error, Some(payment.clone())))?;
     let paid = request_endpoint(
         &claim_url,
         method.clone(),
@@ -329,19 +356,15 @@ async fn paid_fetch(
     )
     .await
     .map_err(|error| (StatusCode::BAD_GATEWAY, error, Some(payment.clone())))?;
-    let (body_text, body_base64) = encode_response_body(paid.body);
 
-    Ok(PaidFetchBrokerResponse {
-        url: url.to_string(),
-        method: method_text,
-        initial_status: initial.status,
-        status: paid.status,
-        headers: paid.response_headers,
-        body_text,
-        body_base64,
-        payment: Some(payment),
-        l402_scheme: Some(challenge.scheme),
-    })
+    Ok(paid_fetch_response_from_paid_response(
+        &url,
+        method_text,
+        initial.status,
+        paid,
+        payment,
+        challenge.scheme_name().to_string(),
+    ))
 }
 
 async fn submit_agent_payment(
@@ -583,16 +606,32 @@ async fn read_limited_body(mut response: reqwest::Response) -> Result<Vec<u8>, S
     Ok(body)
 }
 
-fn parse_l402_from_headers(headers: &HeaderMap) -> Option<L402Challenge> {
+fn parse_paid_challenge_from_headers(headers: &HeaderMap) -> Result<Option<PaidChallenge>, String> {
+    let mut first_error = None;
     for value in headers.get_all(WWW_AUTHENTICATE) {
         let Ok(header) = value.to_str() else {
             continue;
         };
         if let Some(challenge) = parse_l402_challenge(header) {
-            return Some(challenge);
+            return Ok(Some(PaidChallenge::LegacyL402(challenge)));
+        }
+        match parse_payment_auth_challenge(header) {
+            Ok(Some(challenge)) => {
+                return Ok(Some(PaidChallenge::HttpPaymentLightningCharge(challenge)))
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
         }
     }
-    None
+    if let Some(error) = first_error {
+        Err(error)
+    } else {
+        Ok(None)
+    }
 }
 
 fn parse_l402_challenge(header: &str) -> Option<L402Challenge> {
@@ -627,6 +666,332 @@ fn parse_l402_challenge(header: &str) -> Option<L402Challenge> {
                 .or_else(|| params.get("credential"))?,
         ),
     })
+}
+
+fn parse_payment_auth_challenge(header: &str) -> Result<Option<HttpPaymentChallenge>, String> {
+    let trimmed = header.trim();
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let Some(scheme) = parts.next().map(str::trim) else {
+        return Ok(None);
+    };
+    if !scheme.eq_ignore_ascii_case("Payment") {
+        return Ok(None);
+    }
+
+    let params = parse_auth_params(parts.next().unwrap_or_default());
+    let required = |key: &str| {
+        params
+            .get(key)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Payment challenge missing required {key:?} parameter"))
+    };
+
+    let id = required("id")?.to_string();
+    let realm = required("realm")?.to_string();
+    let method = required("method")?.to_string();
+    let intent = required("intent")?.to_string();
+    let request = required("request")?.to_string();
+
+    if !method.eq_ignore_ascii_case("lightning") {
+        return Err(format!(
+            "unsupported Payment challenge method {method:?}; only lightning is supported"
+        ));
+    }
+    if !intent.eq_ignore_ascii_case("charge") {
+        return Err(format!(
+            "unsupported Payment challenge intent {intent:?}; only charge is supported"
+        ));
+    }
+
+    reject_expired_payment_challenge(params.get("expires").map(String::as_str), now_ms())?;
+
+    let decoded_request = decode_base64url(&request)
+        .map_err(|error| format!("decode Payment challenge request: {error}"))?;
+    let payment_request: PaymentAuthRequest = serde_json::from_slice(&decoded_request)
+        .map_err(|error| format!("parse Payment challenge request JSON: {error}"))?;
+    if !payment_request.currency.eq_ignore_ascii_case("sat") {
+        return Err(format!(
+            "unsupported Payment challenge currency {:?}; only sat is supported",
+            payment_request.currency
+        ));
+    }
+    let amount_sats = parse_payment_amount_sats(&payment_request.amount)?;
+    let invoice = payment_request.method_details.invoice.trim().to_string();
+    if invoice.is_empty() {
+        return Err("Payment challenge request methodDetails.invoice is empty".to_string());
+    }
+
+    Ok(Some(HttpPaymentChallenge {
+        id,
+        realm,
+        method: "lightning".to_string(),
+        intent: "charge".to_string(),
+        request,
+        amount_sats,
+        invoice,
+        payment_hash: clean_optional(payment_request.method_details.payment_hash.as_deref()),
+        network: clean_optional(payment_request.method_details.network.as_deref()),
+        expires: clean_optional(params.get("expires").map(String::as_str)),
+        description: clean_optional(params.get("description").map(String::as_str)),
+        digest: clean_optional(params.get("digest").map(String::as_str)),
+        opaque: clean_optional(params.get("opaque").map(String::as_str)),
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaymentAuthRequest {
+    amount: serde_json::Value,
+    currency: String,
+    method_details: PaymentAuthMethodDetails,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaymentAuthMethodDetails {
+    invoice: String,
+    payment_hash: Option<String>,
+    network: Option<String>,
+}
+
+impl PaidChallenge {
+    fn invoice(&self) -> &str {
+        match self {
+            PaidChallenge::LegacyL402(challenge) => &challenge.invoice,
+            PaidChallenge::HttpPaymentLightningCharge(challenge) => &challenge.invoice,
+        }
+    }
+
+    fn protocol(&self) -> &'static str {
+        match self {
+            PaidChallenge::LegacyL402(_) => "L402",
+            PaidChallenge::HttpPaymentLightningCharge(_) => "http-payment",
+        }
+    }
+
+    fn scheme_name(&self) -> &str {
+        match self {
+            PaidChallenge::LegacyL402(challenge) => &challenge.scheme,
+            PaidChallenge::HttpPaymentLightningCharge(_) => "Payment",
+        }
+    }
+
+    fn payment_description(&self, url: &Url) -> String {
+        match self {
+            PaidChallenge::LegacyL402(_) => format!(
+                "Sprout agent L402 payment for {}{}",
+                url.host_str().unwrap_or("unknown-host"),
+                url.path()
+            ),
+            PaidChallenge::HttpPaymentLightningCharge(challenge) => {
+                challenge.description.clone().unwrap_or_else(|| {
+                    let network = challenge
+                        .network
+                        .as_deref()
+                        .map(|network| format!(" on {network}"))
+                        .unwrap_or_default();
+                    format!(
+                        "Sprout agent HTTP Payment Auth lightning charge of {} sats{} for {}{}",
+                        challenge.amount_sats,
+                        network,
+                        url.host_str().unwrap_or("unknown-host"),
+                        url.path()
+                    )
+                })
+            }
+        }
+    }
+
+    fn claim_url(&self, original: &Url) -> Result<Url, String> {
+        match self {
+            PaidChallenge::LegacyL402(challenge) => l402_claim_url(original, challenge),
+            PaidChallenge::HttpPaymentLightningCharge(_) => Ok(original.clone()),
+        }
+    }
+
+    fn authorization(
+        &self,
+        payment: &AgentPaymentResult,
+        preimage: &str,
+    ) -> Result<String, String> {
+        match self {
+            PaidChallenge::LegacyL402(challenge) => Ok(format!(
+                "{} {}:{}",
+                challenge.scheme, challenge.token, preimage
+            )),
+            PaidChallenge::HttpPaymentLightningCharge(challenge) => {
+                challenge.authorization(payment, preimage)
+            }
+        }
+    }
+}
+
+impl HttpPaymentChallenge {
+    fn authorization(
+        &self,
+        payment: &AgentPaymentResult,
+        preimage: &str,
+    ) -> Result<String, String> {
+        validate_payment_auth_preimage(self.payment_hash.as_deref(), payment, preimage)?;
+
+        let mut challenge = BTreeMap::new();
+        insert_auth_field(&mut challenge, "id", Some(self.id.as_str()));
+        insert_auth_field(&mut challenge, "realm", Some(self.realm.as_str()));
+        insert_auth_field(&mut challenge, "method", Some(self.method.as_str()));
+        insert_auth_field(&mut challenge, "intent", Some(self.intent.as_str()));
+        insert_auth_field(&mut challenge, "request", Some(self.request.as_str()));
+        insert_auth_field(&mut challenge, "description", self.description.as_deref());
+        insert_auth_field(&mut challenge, "digest", self.digest.as_deref());
+        insert_auth_field(&mut challenge, "expires", self.expires.as_deref());
+        insert_auth_field(&mut challenge, "opaque", self.opaque.as_deref());
+
+        let mut payload = BTreeMap::new();
+        payload.insert("preimage".to_string(), preimage.to_string());
+
+        let mut credential = BTreeMap::new();
+        credential.insert("challenge".to_string(), challenge);
+        credential.insert("payload".to_string(), payload);
+
+        let canonical_json = serde_json::to_vec(&credential)
+            .map_err(|error| format!("serialize Payment credential: {error}"))?;
+        Ok(format!(
+            "Payment {}",
+            general_purpose::URL_SAFE_NO_PAD.encode(canonical_json)
+        ))
+    }
+}
+
+fn insert_auth_field(map: &mut BTreeMap<String, String>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        map.insert(key.to_string(), value.to_string());
+    }
+}
+
+fn paid_fetch_response_from_paid_response(
+    url: &Url,
+    method: String,
+    initial_status: u16,
+    paid: HttpResponseData,
+    payment: AgentPaymentResult,
+    scheme: String,
+) -> PaidFetchBrokerResponse {
+    let (body_text, body_base64) = encode_response_body(paid.body);
+    // Return the provider response as-is, including 4xx/5xx statuses. Some paid
+    // endpoints consume a proof before returning an upstream error, so the broker
+    // must not hide the paid response behind another payment attempt.
+    PaidFetchBrokerResponse {
+        url: url.to_string(),
+        method,
+        initial_status,
+        status: paid.status,
+        headers: paid.response_headers,
+        body_text,
+        body_base64,
+        payment: Some(payment),
+        l402_scheme: Some(scheme),
+    }
+}
+
+fn decode_base64url(value: &str) -> Result<Vec<u8>, String> {
+    let value = value.trim();
+    general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .or_else(|_| general_purpose::URL_SAFE.decode(value))
+        .map_err(|error| error.to_string())
+}
+
+fn parse_payment_amount_sats(value: &serde_json::Value) -> Result<u64, String> {
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .ok_or_else(|| "Payment challenge amount must be a positive integer".to_string()),
+        serde_json::Value::String(value) => value.trim().parse::<u64>().map_err(|error| {
+            format!("Payment challenge amount must be a positive integer: {error}")
+        }),
+        _ => Err("Payment challenge amount must be a string or integer".to_string()),
+    }
+}
+
+fn reject_expired_payment_challenge(expires: Option<&str>, now_ms: u64) -> Result<(), String> {
+    let Some(expires) = expires.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let expires_ms = parse_payment_expires_ms(expires)?;
+    if expires_ms <= now_ms {
+        Err("Payment challenge is expired".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_payment_expires_ms(expires: &str) -> Result<u64, String> {
+    if let Ok(value) = expires.parse::<u64>() {
+        return if value > 10_000_000_000 {
+            Ok(value)
+        } else {
+            value
+                .checked_mul(1000)
+                .ok_or_else(|| "Payment challenge expires timestamp overflowed".to_string())
+        };
+    }
+
+    let parsed = chrono::DateTime::parse_from_rfc3339(expires)
+        .map_err(|error| format!("invalid Payment challenge expires timestamp: {error}"))?;
+    let millis = parsed.timestamp_millis();
+    if millis < 0 {
+        Err("Payment challenge expires timestamp is before unix epoch".to_string())
+    } else {
+        Ok(millis as u64)
+    }
+}
+
+fn validate_payment_auth_preimage(
+    challenge_payment_hash: Option<&str>,
+    payment: &AgentPaymentResult,
+    preimage: &str,
+) -> Result<(), String> {
+    let preimage_bytes = decode_hex_32(preimage, "Payment preimage")?;
+    let actual_hash = sha256_hex(&preimage_bytes);
+    let Some(expected_hash) = challenge_payment_hash else {
+        return Ok(());
+    };
+    let expected_hash = normalize_hex_32(expected_hash, "Payment challenge paymentHash")?;
+
+    if let Some(payment_hash) = payment.payment_hash.as_deref() {
+        let payment_hash = normalize_hex_32(payment_hash, "Lexe payment hash")?;
+        if payment_hash != expected_hash {
+            return Err(format!(
+                "Lexe payment hash did not match Payment challenge paymentHash: expected {expected_hash}, got {payment_hash}"
+            ));
+        }
+    }
+    if actual_hash != expected_hash {
+        return Err(format!(
+            "Payment preimage does not match challenge paymentHash: expected {expected_hash}, got {actual_hash}"
+        ));
+    }
+    Ok(())
+}
+
+fn decode_hex_32(value: &str, label: &str) -> Result<Vec<u8>, String> {
+    let normalized = normalize_hex_32(value, label)?;
+    hex::decode(normalized).map_err(|error| format!("{label} is not valid hex: {error}"))
+}
+
+fn normalize_hex_32(value: &str, label: &str) -> Result<String, String> {
+    let normalized = value.trim().trim_start_matches("0x").to_ascii_lowercase();
+    if normalized.len() != 64 || !normalized.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{label} must be a 32-byte hex string"));
+    }
+    Ok(normalized)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+
+    hex::encode(sha2::Sha256::digest(bytes))
 }
 
 fn l402_claim_url(original: &Url, challenge: &L402Challenge) -> Result<Url, String> {
@@ -955,5 +1320,162 @@ mod tests {
     #[test]
     fn ignores_non_l402_challenge() {
         assert!(parse_l402_challenge(r#"Basic realm="x""#).is_none());
+    }
+
+    #[test]
+    fn parses_payment_auth_lightning_charge_challenge() {
+        let payment_hash = "0e5751c026e543b2e8ab2eb06099daa1d1e5df47778f7787faab45cdc2f9f7cd";
+        let request = payment_auth_request(Some(payment_hash));
+        let header = format!(
+            r#"Payment id="pay_123", realm="8218a705feb1", method="lightning", intent="charge", request="{request}", description="PPQ Data: X (Twitter) User Tweets", expires="2999-01-01T00:00:00Z""#
+        );
+
+        let challenge = parse_payment_auth_challenge(&header).unwrap().unwrap();
+
+        assert_eq!(challenge.id, "pay_123");
+        assert_eq!(challenge.realm, "8218a705feb1");
+        assert_eq!(challenge.method, "lightning");
+        assert_eq!(challenge.intent, "charge");
+        assert_eq!(challenge.amount_sats, 19);
+        assert_eq!(challenge.invoice, "lnbc1ppqexample");
+        assert_eq!(challenge.payment_hash.as_deref(), Some(payment_hash));
+        assert_eq!(challenge.network.as_deref(), Some("mainnet"));
+        assert_eq!(
+            challenge.description.as_deref(),
+            Some("PPQ Data: X (Twitter) User Tweets")
+        );
+    }
+
+    #[test]
+    fn payment_auth_credential_uses_sorted_json_and_preimage_payload() {
+        let preimage = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let payment_hash = sha256_hex(&hex::decode(preimage).unwrap());
+        let request = payment_auth_request(Some(&payment_hash));
+        let header = format!(
+            r#"Payment id="pay_123", realm="8218a705feb1", method="lightning", intent="charge", request="{request}", description="PPQ Data: X (Twitter) User Tweets", expires="2999-01-01T00:00:00Z""#
+        );
+        let challenge = parse_payment_auth_challenge(&header).unwrap().unwrap();
+        let payment = test_payment(Some(payment_hash), Some(preimage.to_string()));
+
+        let authorization = challenge.authorization(&payment, preimage).unwrap();
+        let encoded = authorization.strip_prefix("Payment ").unwrap();
+        let decoded =
+            String::from_utf8(general_purpose::URL_SAFE_NO_PAD.decode(encoded).unwrap()).unwrap();
+
+        assert_eq!(
+            decoded,
+            format!(
+                r#"{{"challenge":{{"description":"PPQ Data: X (Twitter) User Tweets","expires":"2999-01-01T00:00:00Z","id":"pay_123","intent":"charge","method":"lightning","realm":"8218a705feb1","request":"{request}"}},"payload":{{"preimage":"{preimage}"}}}}"#
+            )
+        );
+    }
+
+    #[test]
+    fn payment_auth_rejects_unsupported_method_and_intent() {
+        let request = payment_auth_request(None);
+        let unsupported_method = format!(
+            r#"Payment id="pay_123", realm="8218a705feb1", method="card", intent="charge", request="{request}""#
+        );
+        let unsupported_intent = format!(
+            r#"Payment id="pay_123", realm="8218a705feb1", method="lightning", intent="refund", request="{request}""#
+        );
+
+        assert!(parse_payment_auth_challenge(&unsupported_method)
+            .unwrap_err()
+            .contains("unsupported Payment challenge method"));
+        assert!(parse_payment_auth_challenge(&unsupported_intent)
+            .unwrap_err()
+            .contains("unsupported Payment challenge intent"));
+    }
+
+    #[test]
+    fn payment_auth_rejects_expired_challenge_before_decoding_invoice() {
+        let header = r#"Payment id="pay_123", realm="8218a705feb1", method="lightning", intent="charge", request="not-base64", expires="2000-01-01T00:00:00Z""#;
+
+        assert_eq!(
+            parse_payment_auth_challenge(header).unwrap_err(),
+            "Payment challenge is expired"
+        );
+    }
+
+    #[test]
+    fn payment_auth_rejects_mismatched_payment_hash() {
+        let preimage = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let payment_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let request = payment_auth_request(Some(payment_hash));
+        let header = format!(
+            r#"Payment id="pay_123", realm="8218a705feb1", method="lightning", intent="charge", request="{request}""#
+        );
+        let challenge = parse_payment_auth_challenge(&header).unwrap().unwrap();
+        let payment = test_payment(Some(payment_hash.to_string()), Some(preimage.to_string()));
+
+        assert!(challenge
+            .authorization(&payment, preimage)
+            .unwrap_err()
+            .contains("Payment preimage does not match challenge paymentHash"));
+    }
+
+    #[test]
+    fn provider_5xx_after_payment_is_returned_without_retry_error() {
+        let url = Url::parse("https://api.ppq.ai/v1/tweets").unwrap();
+        let mut response_headers = BTreeMap::new();
+        response_headers.insert("content-type".to_string(), "application/json".to_string());
+        let paid = HttpResponseData {
+            status: 502,
+            headers: HeaderMap::new(),
+            response_headers,
+            body: br#"{"error":"upstream_error"}"#.to_vec(),
+        };
+        let payment = test_payment(None, Some("00".repeat(32)));
+
+        let response = paid_fetch_response_from_paid_response(
+            &url,
+            "POST".to_string(),
+            402,
+            paid,
+            payment,
+            "Payment".to_string(),
+        );
+
+        assert_eq!(response.initial_status, 402);
+        assert_eq!(response.status, 502);
+        assert_eq!(response.l402_scheme.as_deref(), Some("Payment"));
+        assert_eq!(
+            response.body_text.as_deref(),
+            Some(r#"{"error":"upstream_error"}"#)
+        );
+        assert_eq!(
+            response
+                .payment
+                .as_ref()
+                .map(|payment| payment.payment_id.as_str()),
+            Some("payment_1")
+        );
+    }
+
+    fn payment_auth_request(payment_hash: Option<&str>) -> String {
+        let payment_hash_json = payment_hash
+            .map(|payment_hash| format!(r#","paymentHash":"{payment_hash}""#))
+            .unwrap_or_default();
+        let request = format!(
+            r#"{{"amount":"19","currency":"sat","methodDetails":{{"invoice":"lnbc1ppqexample","network":"mainnet"{payment_hash_json}}}}}"#
+        );
+        general_purpose::URL_SAFE_NO_PAD.encode(request)
+    }
+
+    fn test_payment(payment_hash: Option<String>, preimage: Option<String>) -> AgentPaymentResult {
+        AgentPaymentResult {
+            payment_id: "payment_1".to_string(),
+            status: "completed".to_string(),
+            status_message: "completed".to_string(),
+            amount_sats: Some(19),
+            fees_sats: 0,
+            payment_hash,
+            preimage,
+            offer_id: None,
+            created_at_ms: 1,
+            finalized_at_ms: Some(2),
+            lexe_error: None,
+        }
     }
 }
