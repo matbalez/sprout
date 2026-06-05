@@ -21,7 +21,10 @@ import {
   unarchiveChannel,
   updateChannel,
 } from "@/shared/api/tauri";
-import { withWalletBotChannel } from "@/features/wallet/api";
+import {
+  sendChannelPayment,
+  withWalletBotChannel,
+} from "@/features/wallet/api";
 import type {
   AddChannelMembersInput,
   Channel,
@@ -43,6 +46,37 @@ const channelTypeOrder = {
   forum: 1,
   dm: 2,
 } as const;
+
+export async function payForChannelAction(
+  channel: Channel,
+  purpose: "join" | "post",
+): Promise<string | null> {
+  const policy = channel.paymentPolicy;
+  const required =
+    purpose === "join"
+      ? policy?.joinPaymentRequired
+      : policy?.postPaymentRequired;
+  if (!policy || !required) {
+    return null;
+  }
+
+  const amountSats =
+    purpose === "join"
+      ? policy.joinAmountBaseUnits
+      : policy.postAmountBaseUnits;
+  const result = await sendChannelPayment({
+    channelId: channel.id,
+    metadataEventId: channel.metadataEventId,
+    recipientPubkey: policy.paymentRecipientPubkey,
+    bolt12Offer: policy.paymentRecipientBolt12Offer,
+    amountSats,
+    purpose,
+  });
+  if (!result.receiptAccepted || !result.receiptEventId) {
+    throw new Error(result.receiptError ?? "Payment receipt was not accepted.");
+  }
+  return result.receiptEventId;
+}
 
 function sortChannels(channels: Channel[]) {
   const uniqueChannels = new Map<string, Channel>();
@@ -398,8 +432,10 @@ export function useRemoveChannelMemberMutation(channelId: string | null) {
   });
 }
 
-export function useJoinChannelMutation(channelId: string | null) {
+export function useJoinChannelMutation(channel: Channel | string | null) {
   const queryClient = useQueryClient();
+  const channelId =
+    typeof channel === "string" ? channel : (channel?.id ?? null);
 
   return useMutation({
     mutationFn: async () => {
@@ -407,7 +443,11 @@ export function useJoinChannelMutation(channelId: string | null) {
         throw new Error("No channel selected.");
       }
 
-      await joinChannel(channelId);
+      const paymentReceiptEventId =
+        typeof channel === "string" || channel === null
+          ? null
+          : await payForChannelAction(channel, "join");
+      await joinChannel(channelId, paymentReceiptEventId ?? undefined);
     },
     onSettled: async () => {
       await invalidateChannelState(queryClient, channelId);

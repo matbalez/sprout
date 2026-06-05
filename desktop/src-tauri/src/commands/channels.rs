@@ -1,14 +1,95 @@
+use std::collections::HashMap;
+
+use nostr::EventId;
 use tauri::State;
 
 use crate::{
     app_state::AppState,
     events,
-    models::{ChannelDetailInfo, ChannelInfo, ChannelMembersResponse},
+    models::{ChannelDetailInfo, ChannelInfo, ChannelMembersResponse, ChannelPaymentPolicyInfo},
     nostr_convert,
     relay::{query_relay, submit_event},
 };
 
 // ── Reads (pure-nostr via /query) ────────────────────────────────────────────
+
+const CHANNEL_PAYMENT_POLICY_CONTENT: &str = "sprout-paid-channel-policy:v1";
+
+fn first_tag_value<'a>(event: &'a nostr::Event, name: &str) -> Option<&'a str> {
+    event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        (parts.len() >= 2 && parts[0] == name).then(|| parts[1].as_str())
+    })
+}
+
+async fn fetch_channel_payment_policies(
+    state: &AppState,
+    metadata_events: &[nostr::Event],
+) -> Result<HashMap<String, ChannelPaymentPolicyInfo>, String> {
+    let metadata_event_ids: Vec<String> = metadata_events
+        .iter()
+        .map(|event| event.id.to_hex())
+        .collect();
+    if metadata_event_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let policy_events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [7],
+            "#e": metadata_event_ids,
+            "limit": 5000,
+        })],
+    )
+    .await?;
+
+    let mut newest_by_metadata_id: HashMap<String, (u64, ChannelPaymentPolicyInfo)> =
+        HashMap::new();
+    for event in policy_events {
+        if event.content != CHANNEL_PAYMENT_POLICY_CONTENT {
+            continue;
+        }
+        let Some(metadata_event_id) = first_tag_value(&event, "e") else {
+            continue;
+        };
+        let Some(policy) = nostr_convert::payment_policy_from_event(&event) else {
+            continue;
+        };
+        let created_at = event.created_at.as_secs();
+        let entry = newest_by_metadata_id
+            .entry(metadata_event_id.to_string())
+            .or_insert_with(|| (created_at, policy.clone()));
+        if created_at >= entry.0 {
+            *entry = (created_at, policy);
+        }
+    }
+
+    Ok(newest_by_metadata_id
+        .into_iter()
+        .map(|(metadata_id, (_, policy))| (metadata_id, policy))
+        .collect())
+}
+
+fn apply_payment_policy(
+    mut channel: ChannelInfo,
+    policies: &HashMap<String, ChannelPaymentPolicyInfo>,
+) -> ChannelInfo {
+    if channel.payment_policy.is_none() {
+        channel.payment_policy = policies.get(&channel.metadata_event_id).cloned();
+    }
+    channel
+}
+
+fn apply_detail_payment_policy(
+    mut channel: ChannelDetailInfo,
+    policies: &HashMap<String, ChannelPaymentPolicyInfo>,
+) -> ChannelDetailInfo {
+    if channel.payment_policy.is_none() {
+        channel.payment_policy = policies.get(&channel.metadata_event_id).cloned();
+    }
+    channel
+}
 
 #[tauri::command]
 pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>, String> {
@@ -87,6 +168,12 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
     )
     .await?;
 
+    let mut all_meta_events = meta_events.clone();
+    all_meta_events.extend(open_meta_events.iter().cloned());
+    let payment_policies = fetch_channel_payment_policies(&state, &all_meta_events)
+        .await
+        .unwrap_or_default();
+
     // Merge: member channels (marked as member) + open channels (not yet joined).
     let member_d_tags: std::collections::HashSet<String> = meta_events
         .iter()
@@ -105,7 +192,7 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
     let mut channels = Vec::with_capacity(meta_events.len() + open_meta_events.len());
     for ev in &meta_events {
         if let Ok(info) = nostr_convert::channel_info_from_event(ev, None, Some(true)) {
-            channels.push(info);
+            channels.push(apply_payment_policy(info, &payment_policies));
         }
     }
     for ev in &open_meta_events {
@@ -124,7 +211,7 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
             }
         }
         if let Ok(info) = nostr_convert::channel_info_from_event(ev, None, Some(false)) {
-            channels.push(info);
+            channels.push(apply_payment_policy(info, &payment_policies));
         }
     }
 
@@ -210,11 +297,14 @@ pub async fn get_channel_details(
     )
     .await?;
 
-    events
+    let event = events
         .first()
-        .map(nostr_convert::channel_detail_from_event)
-        .transpose()?
-        .ok_or_else(|| "channel not found".to_string())
+        .ok_or_else(|| "channel not found".to_string())?;
+    let payment_policies = fetch_channel_payment_policies(&state, std::slice::from_ref(event))
+        .await
+        .unwrap_or_default();
+    let detail = nostr_convert::channel_detail_from_event(event)?;
+    Ok(apply_detail_payment_policy(detail, &payment_policies))
 }
 
 #[tauri::command]
@@ -287,6 +377,9 @@ pub async fn create_channel(
     visibility: String,
     description: Option<String>,
     ttl_seconds: Option<i32>,
+    paid_join_amount: Option<u64>,
+    paid_post_amount: Option<u64>,
+    payment_bolt12_offer: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ChannelInfo, String> {
     let channel_uuid = uuid::Uuid::new_v4();
@@ -307,6 +400,9 @@ pub async fn create_channel(
         ct,
         description.as_deref(),
         ttl_seconds,
+        paid_join_amount,
+        paid_post_amount,
+        payment_bolt12_offer.as_deref(),
     )?;
     submit_event(builder, &state).await?;
 
@@ -322,11 +418,47 @@ pub async fn create_channel(
     )
     .await?;
 
-    events
+    let mut channel = events
         .first()
         .map(|ev| nostr_convert::channel_info_from_event(ev, None, None))
         .transpose()?
-        .ok_or_else(|| "channel created but metadata not yet available".to_string())
+        .ok_or_else(|| "channel created but metadata not yet available".to_string())?;
+
+    let join_amount = paid_join_amount.unwrap_or(0);
+    let post_amount = paid_post_amount.unwrap_or(0);
+    if join_amount > 0 || post_amount > 0 {
+        let offer = payment_bolt12_offer
+            .as_deref()
+            .map(str::trim)
+            .filter(|offer| !offer.is_empty())
+            .ok_or_else(|| "paid channels require a BOLT12 offer".to_string())?;
+        let recipient_pubkey = {
+            let keys = state.keys.lock().map_err(|e| e.to_string())?;
+            keys.public_key().to_hex()
+        };
+        let metadata_event_id = EventId::from_hex(&channel.metadata_event_id)
+            .map_err(|error| format!("invalid channel metadata event id: {error}"))?;
+        let policy_builder = events::build_channel_payment_policy(
+            channel_uuid,
+            metadata_event_id,
+            &recipient_pubkey,
+            paid_join_amount,
+            paid_post_amount,
+            offer,
+        )?;
+        submit_event(policy_builder, &state).await?;
+        channel.payment_policy = Some(ChannelPaymentPolicyInfo {
+            join_payment_required: join_amount > 0,
+            join_amount_base_units: join_amount,
+            post_payment_required: post_amount > 0,
+            post_amount_base_units: post_amount,
+            payment_recipient_pubkey: recipient_pubkey,
+            payment_recipient_bolt12_offer: offer.to_string(),
+            payment_rail: "lexe-bolt12".to_string(),
+        });
+    }
+
+    Ok(channel)
 }
 
 #[tauri::command]
@@ -350,11 +482,14 @@ pub async fn update_channel(
     )
     .await?;
 
-    events
+    let event = events
         .first()
-        .map(nostr_convert::channel_detail_from_event)
-        .transpose()?
-        .ok_or_else(|| "channel updated but metadata not yet available".to_string())
+        .ok_or_else(|| "channel updated but metadata not yet available".to_string())?;
+    let payment_policies = fetch_channel_payment_policies(&state, std::slice::from_ref(event))
+        .await
+        .unwrap_or_default();
+    let detail = nostr_convert::channel_detail_from_event(event)?;
+    Ok(apply_detail_payment_policy(detail, &payment_policies))
 }
 
 #[tauri::command]
@@ -477,9 +612,13 @@ pub async fn change_channel_member_role(
 }
 
 #[tauri::command]
-pub async fn join_channel(channel_id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn join_channel(
+    channel_id: String,
+    payment_receipt_event_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     let uuid = parse_channel_uuid(&channel_id)?;
-    let builder = events::build_join(uuid)?;
+    let builder = events::build_join(uuid, payment_receipt_event_id.as_deref())?;
     submit_event(builder, &state).await?;
     Ok(())
 }

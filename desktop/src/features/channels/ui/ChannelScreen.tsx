@@ -134,7 +134,7 @@ export function ChannelScreen({
   const toggleReactionMutation = useToggleReactionMutation();
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
   const editMessageMutation = useEditMessageMutation(activeChannel);
-  const joinChannelMutation = useJoinChannelMutation(activeChannelId);
+  const joinChannelMutation = useJoinChannelMutation(activeChannel);
   const resolvedMessages = React.useMemo(() => {
     const currentMessages = messagesQuery.data ?? [];
     if (!activeChannel || targetMessageEvents.length === 0) {

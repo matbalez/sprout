@@ -75,7 +75,7 @@ type ChannelBrowserDialogProps = {
   channelTypeFilter?: "stream" | "forum";
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onJoinChannel: (channelId: string) => Promise<void>;
+  onJoinChannel: (channel: Channel) => Promise<void>;
   onSelectChannel: (channelId: string) => void;
 };
 
@@ -174,13 +174,13 @@ export function ChannelBrowserDialog({
     });
   }, [allItems]);
 
-  async function handleJoin(channelId: string) {
-    setJoiningChannelId(channelId);
+  async function handleJoin(channel: Channel) {
+    setJoiningChannelId(channel.id);
 
     try {
-      await onJoinChannel(channelId);
+      await onJoinChannel(channel);
       onOpenChange(false);
-      onSelectChannel(channelId);
+      onSelectChannel(channel.id);
     } catch {
       setJoiningChannelId(null);
     }
@@ -288,7 +288,7 @@ export function ChannelBrowserDialog({
                           isSelected={flatIndex === selectedIndex}
                           key={channel.id}
                           onJoin={() => {
-                            void handleJoin(channel.id);
+                            void handleJoin(channel);
                           }}
                           onMouseEnter={() => setSelectedIndex(flatIndex)}
                           onSelect={() => handleSelect(channel)}
@@ -350,6 +350,9 @@ function ChannelCard({
   onMouseEnter: () => void;
   onSelect: () => void;
 }) {
+  const joinPrice = channel.paymentPolicy?.joinPaymentRequired
+    ? channel.paymentPolicy.joinAmountBaseUnits
+    : null;
   return (
     <button
       className={
@@ -379,6 +382,11 @@ function ChannelCard({
             <Badge variant="secondary">{channel.channelType}</Badge>
             {channel.archivedAt ? (
               <Badge variant="warning">archived</Badge>
+            ) : null}
+            {joinPrice ? (
+              <Badge variant="secondary">
+                Join ₿{new Intl.NumberFormat("en-US").format(joinPrice)}
+              </Badge>
             ) : null}
             <div className="ml-auto flex items-center gap-3">
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -410,7 +418,7 @@ function ChannelCard({
             variant="default"
           >
             <LogIn className="mr-1.5 h-3.5 w-3.5" />
-            {isJoining ? "Joining..." : "Join"}
+            {isJoining ? "Joining..." : joinPrice ? "Pay & Join" : "Join"}
           </Button>
         ) : null}
       </div>

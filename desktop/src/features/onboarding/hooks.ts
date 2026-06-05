@@ -15,7 +15,9 @@ async function autoJoinDefaultChannel(
     const channels = await getChannels();
     const target = channels.find(
       (channel) =>
-        channel.name === DEFAULT_AUTO_JOIN_CHANNEL_NAME && !channel.isMember,
+        channel.name === DEFAULT_AUTO_JOIN_CHANNEL_NAME &&
+        !channel.isMember &&
+        !channel.paymentPolicy?.joinPaymentRequired,
     );
     if (!target) {
       return;

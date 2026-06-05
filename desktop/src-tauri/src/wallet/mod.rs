@@ -35,7 +35,10 @@ use storage::{
     new_walletbot_message, save_agent_payment_settings, save_existing_client_credential,
     save_wallet_source, save_walletbot_messages, walletbot_pubkey, WalletStorage,
 };
-pub use tips::{send_message_kudos, send_message_tip, send_shared_agent_invocation_payment};
+pub use tips::{
+    send_channel_payment, send_message_kudos, send_message_tip,
+    send_shared_agent_invocation_payment,
+};
 pub use types::{
     AgentPaymentBrokerConfig, WalletAgentPaymentSettings, WalletBotMessage, WalletPaymentResult,
     WalletRuntimeState, WalletSourceConfig, WalletSummary, WalletTransaction,

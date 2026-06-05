@@ -8,13 +8,84 @@ use super::{
     discovery::resolve_bolt12_offer_for_pubkey,
     send_payment,
     storage::current_pubkey,
-    types::{MessageTipResult, WalletPaymentResult},
+    types::{ChannelPaymentResult, MessageTipResult, WalletPaymentResult},
 };
 
 const MESSAGE_TIP_AMOUNT_SATS: u64 = 10;
 const MESSAGE_KUDOS_AMOUNT_SATS: u64 = 210;
 const SHARED_AGENT_INVOCATION_AMOUNT_SATS: u64 = 50;
 const LEXE_PAYER_MESSAGE_MAX_CHARS: usize = 200;
+
+#[tauri::command]
+pub async fn send_channel_payment(
+    channel_id: String,
+    metadata_event_id: String,
+    recipient_pubkey: String,
+    bolt12_offer: String,
+    amount_sats: u64,
+    purpose: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ChannelPaymentResult, String> {
+    let channel_uuid =
+        Uuid::parse_str(&channel_id).map_err(|_| format!("invalid channel UUID: {channel_id}"))?;
+    let metadata_event_id = EventId::from_hex(&metadata_event_id)
+        .map_err(|error| format!("invalid channel metadata event id: {error}"))?;
+    let recipient = PublicKey::from_hex(&recipient_pubkey)
+        .map_err(|error| format!("invalid recipient pubkey: {error}"))?;
+    let recipient_pubkey = recipient.to_hex();
+    let purpose = purpose.trim().to_string();
+    match purpose.as_str() {
+        "join" | "post" => {}
+        other => return Err(format!("invalid channel payment purpose: {other}")),
+    }
+    if amount_sats == 0 {
+        return Err("channel payment amount must be greater than zero".to_string());
+    }
+    if bolt12_offer.trim().is_empty() {
+        return Err("channel payment requires a BOLT12 offer".to_string());
+    }
+
+    let nonce = Uuid::new_v4().simple().to_string();
+    let payer_message = channel_payment_payer_message(channel_uuid, &purpose, &nonce, amount_sats);
+    let payment = send_payment(
+        app,
+        &state,
+        amount_sats,
+        bolt12_offer.trim().to_string(),
+        Some(payer_message),
+        format!("Sprout paid channel {purpose}"),
+    )
+    .await?;
+
+    let receipt = events::build_channel_payment_receipt(
+        channel_uuid,
+        metadata_event_id,
+        &recipient_pubkey,
+        amount_sats,
+        &purpose,
+        &nonce,
+    )?;
+
+    match submit_event(receipt, &state).await {
+        Ok(result) => Ok(ChannelPaymentResult {
+            payment_id: payment.payment_id,
+            amount_sats,
+            nonce,
+            receipt_event_id: Some(result.event_id),
+            receipt_accepted: true,
+            receipt_error: None,
+        }),
+        Err(error) => Ok(ChannelPaymentResult {
+            payment_id: payment.payment_id,
+            amount_sats,
+            nonce,
+            receipt_event_id: None,
+            receipt_accepted: false,
+            receipt_error: Some(error),
+        }),
+    }
+}
 
 #[tauri::command]
 pub async fn send_message_kudos(
@@ -149,6 +220,19 @@ fn message_tip_payer_message(channel_id: Uuid, message_id: EventId, tip_id: &str
     let tip_id = tip_id.replace('-', "");
     let message =
         format!("sprout-tip:v1:{channel_id}:{message_id}:{tip_id}:{MESSAGE_TIP_AMOUNT_SATS}");
+    debug_assert!(message.chars().count() <= LEXE_PAYER_MESSAGE_MAX_CHARS);
+    message
+}
+
+fn channel_payment_payer_message(
+    channel_id: Uuid,
+    purpose: &str,
+    nonce: &str,
+    amount_sats: u64,
+) -> String {
+    let channel_id = channel_id.simple().to_string();
+    let nonce = nonce.replace('-', "");
+    let message = format!("sprout-channel:v1:{channel_id}:{purpose}:{nonce}:{amount_sats}");
     debug_assert!(message.chars().count() <= LEXE_PAYER_MESSAGE_MAX_CHARS);
     message
 }

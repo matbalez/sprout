@@ -8,9 +8,11 @@
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
 
+mod channel_payments;
 mod message_annotations;
 mod message_tips;
 
+pub use channel_payments::{build_channel_payment_policy, build_channel_payment_receipt};
 use message_annotations::annotation_tags;
 pub use message_tips::build_message_tip_receipt;
 
@@ -19,7 +21,6 @@ use sprout_core::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use uuid::Uuid;
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
 /// Maximum content size — matches sprout-sdk (64 KiB).
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
 
@@ -114,6 +115,13 @@ fn emoji_tags(emoji_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), Str
     Ok(())
 }
 
+fn payment_tag(payment_receipt_event_id: Option<&str>, tags: &mut Vec<Tag>) -> Result<(), String> {
+    if let Some(payment_receipt_event_id) = payment_receipt_event_id {
+        tags.push(tag(vec!["payment", payment_receipt_event_id, "post"])?);
+    }
+    Ok(())
+}
+
 /// Validate a hex pubkey is exactly 64 hex characters.
 fn check_pubkey(pubkey: &str) -> Result<(), String> {
     if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -135,6 +143,9 @@ pub fn build_create_channel(
     channel_type: &str,
     about: Option<&str>,
     ttl_seconds: Option<i32>,
+    paid_join_amount: Option<u64>,
+    paid_post_amount: Option<u64>,
+    payment_bolt12_offer: Option<&str>,
 ) -> Result<EventBuilder, String> {
     let mut tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -148,12 +159,34 @@ pub fn build_create_channel(
     if let Some(ttl) = ttl_seconds {
         tags.push(tag(vec!["ttl", &ttl.to_string()])?);
     }
+    let join_amount = paid_join_amount.unwrap_or(0);
+    let post_amount = paid_post_amount.unwrap_or(0);
+    if join_amount > 0 || post_amount > 0 {
+        let offer = payment_bolt12_offer
+            .map(str::trim)
+            .filter(|offer| !offer.is_empty())
+            .ok_or("paid channels require a BOLT12 offer")?;
+        if join_amount > 0 {
+            tags.push(tag(vec!["paid_join", &join_amount.to_string()])?);
+        }
+        if post_amount > 0 {
+            tags.push(tag(vec!["paid_post", &post_amount.to_string()])?);
+        }
+        tags.push(tag(vec!["payment_bolt12_offer", offer])?);
+        tags.push(tag(vec!["payment_rail", "lexe-bolt12"])?);
+    }
     Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
 }
 
 /// Kind 9021 — join channel.
-pub fn build_join(channel_id: Uuid) -> Result<EventBuilder, String> {
-    let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
+pub fn build_join(
+    channel_id: Uuid,
+    payment_receipt_event_id: Option<&str>,
+) -> Result<EventBuilder, String> {
+    let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
+    if let Some(payment_receipt_event_id) = payment_receipt_event_id {
+        tags.push(tag(vec!["payment", payment_receipt_event_id, "join"])?);
+    }
     Ok(EventBuilder::new(Kind::Custom(9021), "").tags(tags))
 }
 
@@ -265,6 +298,7 @@ pub fn build_message(
     media_tags: &[Vec<String>],
     annotations: &[Vec<String>],
     custom_emoji_tags: &[Vec<String>],
+    payment_receipt_event_id: Option<&str>,
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -280,6 +314,7 @@ pub fn build_message(
     imeta_tags(media_tags, &mut tags)?;
     annotation_tags(annotations, &mut tags)?;
     emoji_tags(custom_emoji_tags, &mut tags)?;
+    payment_tag(payment_receipt_event_id, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
 }
 
@@ -289,11 +324,13 @@ pub fn build_forum_post(
     content: &str,
     mentions: &[&str],
     media_tags: &[Vec<String>],
+    payment_receipt_event_id: Option<&str>,
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
+    payment_tag(payment_receipt_event_id, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(45001), content).tags(tags))
 }
 
@@ -304,12 +341,14 @@ pub fn build_forum_comment(
     thread_ref: &ThreadRef,
     mentions: &[&str],
     media_tags: &[Vec<String>],
+    payment_receipt_event_id: Option<&str>,
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     tags.extend(thread_tags(thread_ref)?);
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
+    payment_tag(payment_receipt_event_id, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(45003), content).tags(tags))
 }
 

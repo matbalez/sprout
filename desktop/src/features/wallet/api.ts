@@ -93,6 +93,15 @@ export type MessageTipResult = {
   receiptError: string | null;
 };
 
+export type ChannelPaymentResult = {
+  paymentId: string;
+  amountSats: number;
+  nonce: string;
+  receiptEventId: string | null;
+  receiptAccepted: boolean;
+  receiptError: string | null;
+};
+
 export type WalletBotMessagesPayload = {
   messages: WalletBotMessage[];
 };
@@ -107,6 +116,7 @@ export function isWalletBotChannel(channel: Channel | null | undefined) {
 
 export function walletBotChannel(): Channel {
   return {
+    metadataEventId: "walletbot",
     id: WALLETBOT_CHANNEL_ID,
     name: "WalletBot",
     channelType: "dm",
@@ -123,6 +133,7 @@ export function walletBotChannel(): Channel {
     isMember: true,
     ttlSeconds: null,
     ttlDeadline: null,
+    paymentPolicy: null,
   };
 }
 
@@ -237,6 +248,17 @@ export function sendMessageTip(input: {
   recipientPubkey: string;
 }) {
   return invokeTauri<MessageTipResult>("send_message_tip", input);
+}
+
+export function sendChannelPayment(input: {
+  channelId: string;
+  metadataEventId: string;
+  recipientPubkey: string;
+  bolt12Offer: string;
+  amountSats: number;
+  purpose: "join" | "post";
+}) {
+  return invokeTauri<ChannelPaymentResult>("send_channel_payment", input);
 }
 
 export function sendSharedAgentInvocationPayment(input: {

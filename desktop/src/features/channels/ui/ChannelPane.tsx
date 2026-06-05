@@ -399,11 +399,11 @@ export const ChannelPane = React.memo(function ChannelPane({
                       ? "Archived channels are read-only."
                       : isWalletBotActive
                         ? "Message WalletBot"
-                      : activeChannel?.channelType === "forum"
-                        ? "Forum posting is not wired in this pass."
-                        : activeChannel
-                          ? `Message #${activeChannel.name}`
-                          : "Select a channel"
+                        : activeChannel?.channelType === "forum"
+                          ? "Forum posting is not wired in this pass."
+                          : activeChannel
+                            ? `Message #${activeChannel.name}`
+                            : "Select a channel"
                   }
                   showTopBorder={false}
                 />

@@ -14,6 +14,9 @@ use serde_json::{json, Value};
 
 use crate::models::*;
 
+mod payment_policy;
+pub use payment_policy::payment_policy_from_event;
+
 // ── Tag helpers ─────────────────────────────────────────────────────────────
 
 /// Find the first tag whose name matches `name` and return its first value.
@@ -120,8 +123,10 @@ pub fn channel_info_from_event(
     // Ephemeral channel TTL — relay emits ["ttl", "<seconds>"] and ["ttl_deadline", "<iso>"].
     let ttl_seconds = first_tag_value(event, "ttl").and_then(|v| v.parse::<i32>().ok());
     let ttl_deadline = first_tag_value(event, "ttl_deadline").map(str::to_string);
+    let payment_policy = payment_policy_from_event(event);
 
     Ok(ChannelInfo {
+        metadata_event_id: event.id.to_hex(),
         id,
         name,
         channel_type,
@@ -138,6 +143,7 @@ pub fn channel_info_from_event(
         is_member: is_member.unwrap_or(true),
         ttl_seconds,
         ttl_deadline,
+        payment_policy,
     })
 }
 
@@ -179,6 +185,7 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
     };
 
     Ok(ChannelDetailInfo {
+        metadata_event_id: event.id.to_hex(),
         id,
         name,
         channel_type,
@@ -200,6 +207,7 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
         nip29_group_id: None,
         ttl_seconds: first_tag_value(event, "ttl").and_then(|v| v.parse::<i32>().ok()),
         ttl_deadline: first_tag_value(event, "ttl_deadline").map(str::to_string),
+        payment_policy: payment_policy_from_event(event),
     })
 }
 

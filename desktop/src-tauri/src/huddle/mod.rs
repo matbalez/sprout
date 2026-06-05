@@ -190,6 +190,9 @@ pub async fn start_huddle(
             "stream",
             None,
             Some(3600),
+            None,
+            None,
+            None,
         )?;
         submit_event(create_builder, &state).await?;
         channel_was_created = true;

@@ -26,6 +26,8 @@ type CreateChannelDialogProps = {
     visibility: ChannelVisibility;
     ttlSeconds?: number;
     templateId?: string;
+    paidJoinAmount?: number;
+    paidPostAmount?: number;
   }) => Promise<void>;
 };
 
@@ -44,6 +46,10 @@ export function CreateChannelDialog({
   const [description, setDescription] = React.useState("");
   const [visibility, setVisibility] = React.useState<ChannelVisibility>("open");
   const [ephemeral, setEphemeral] = React.useState(false);
+  const [paidJoinEnabled, setPaidJoinEnabled] = React.useState(false);
+  const [paidPostEnabled, setPaidPostEnabled] = React.useState(false);
+  const [paidJoinAmount, setPaidJoinAmount] = React.useState("");
+  const [paidPostAmount, setPaidPostAmount] = React.useState("");
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = React.useState<
     string | null
@@ -63,6 +69,10 @@ export function CreateChannelDialog({
     setDescription("");
     setVisibility("open");
     setEphemeral(false);
+    setPaidJoinEnabled(false);
+    setPaidPostEnabled(false);
+    setPaidJoinAmount("");
+    setPaidPostAmount("");
     setErrorMessage(null);
     setSelectedTemplateId(null);
 
@@ -108,12 +118,37 @@ export function CreateChannelDialog({
     setErrorMessage(null);
 
     try {
+      const parsePaidAmount = (
+        enabled: boolean,
+        value: string,
+        label: string,
+      ) => {
+        if (!enabled) return undefined;
+        const amount = Number(value);
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
+          throw new Error(`${label} must be a whole ₿ amount greater than 0.`);
+        }
+        return amount;
+      };
+      const parsedPaidJoinAmount = parsePaidAmount(
+        paidJoinEnabled,
+        paidJoinAmount,
+        "Join price",
+      );
+      const parsedPaidPostAmount = parsePaidAmount(
+        paidPostEnabled,
+        paidPostAmount,
+        "Post price",
+      );
+
       await onCreate({
         name: trimmedName,
         description: description.trim() || undefined,
         visibility,
         ttlSeconds: ephemeral ? EPHEMERAL_TTL_SECONDS : undefined,
         templateId: selectedTemplateId ?? undefined,
+        paidJoinAmount: parsedPaidJoinAmount,
+        paidPostAmount: parsedPaidPostAmount,
       });
 
       onOpenChange(false);
@@ -259,6 +294,78 @@ export function CreateChannelDialog({
                 id="create-channel-ephemeral"
                 onCheckedChange={setEphemeral}
               />
+            </div>
+            <div className="grid gap-3 rounded-md border border-border p-3">
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  className="text-sm text-muted-foreground"
+                  htmlFor="create-channel-paid-join"
+                >
+                  Require payment to join
+                </label>
+                <Switch
+                  checked={paidJoinEnabled}
+                  disabled={isCreating}
+                  id="create-channel-paid-join"
+                  onCheckedChange={(checked) => {
+                    setPaidJoinEnabled(checked);
+                    setErrorMessage(null);
+                  }}
+                />
+              </div>
+              {paidJoinEnabled ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">₿</span>
+                  <Input
+                    disabled={isCreating}
+                    inputMode="numeric"
+                    min={1}
+                    onChange={(event) => {
+                      setPaidJoinAmount(event.target.value);
+                      setErrorMessage(null);
+                    }}
+                    placeholder="100"
+                    step={1}
+                    type="number"
+                    value={paidJoinAmount}
+                  />
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between gap-3">
+                <label
+                  className="text-sm text-muted-foreground"
+                  htmlFor="create-channel-paid-post"
+                >
+                  Require payment to post
+                </label>
+                <Switch
+                  checked={paidPostEnabled}
+                  disabled={isCreating}
+                  id="create-channel-paid-post"
+                  onCheckedChange={(checked) => {
+                    setPaidPostEnabled(checked);
+                    setErrorMessage(null);
+                  }}
+                />
+              </div>
+              {paidPostEnabled ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">₿</span>
+                  <Input
+                    disabled={isCreating}
+                    inputMode="numeric"
+                    min={1}
+                    onChange={(event) => {
+                      setPaidPostAmount(event.target.value);
+                      setErrorMessage(null);
+                    }}
+                    placeholder="10"
+                    step={1}
+                    type="number"
+                    value={paidPostAmount}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
 

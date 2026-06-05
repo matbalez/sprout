@@ -80,8 +80,21 @@ pub struct SetPresenceResponse {
     pub ttl_seconds: u64,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ChannelPaymentPolicyInfo {
+    pub join_payment_required: bool,
+    pub join_amount_base_units: u64,
+    pub post_payment_required: bool,
+    pub post_amount_base_units: u64,
+    pub payment_recipient_pubkey: String,
+    pub payment_recipient_bolt12_offer: String,
+    pub payment_rail: String,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct ChannelInfo {
+    #[serde(default)]
+    pub metadata_event_id: String,
     pub id: String,
     pub name: String,
     pub channel_type: String,
@@ -103,10 +116,14 @@ pub struct ChannelInfo {
     pub is_member: bool,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
+    #[serde(default)]
+    pub payment_policy: Option<ChannelPaymentPolicyInfo>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ChannelDetailInfo {
+    #[serde(default)]
+    pub metadata_event_id: String,
     pub id: String,
     pub name: String,
     pub channel_type: String,
@@ -129,6 +146,8 @@ pub struct ChannelDetailInfo {
     pub nip29_group_id: Option<String>,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
+    #[serde(default)]
+    pub payment_policy: Option<ChannelPaymentPolicyInfo>,
 }
 
 #[derive(Serialize, Deserialize)]

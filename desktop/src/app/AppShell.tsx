@@ -16,6 +16,7 @@ import { useSettingsShortcuts } from "@/app/useSettingsShortcuts";
 import { useWebviewZoomShortcuts } from "@/app/useWebviewZoomShortcuts";
 import {
   channelsQueryKey,
+  payForChannelAction,
   useChannelsQuery,
   useCreateChannelMutation,
   useHideDmMutation,
@@ -58,6 +59,7 @@ import { useMeshRelayOrchestrator } from "@/features/mesh-compute/hooks/useMeshR
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
 import { useWorkspaces } from "@/features/workspaces/useWorkspaces";
 import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
+import { getUserWalletBolt12Offer } from "@/features/wallet/api";
 import { relayClient } from "@/shared/api/relayClient";
 import { useIdentityQuery } from "@/shared/api/hooks";
 import { useDeferredStartup } from "@/shared/hooks/useDeferredStartup";
@@ -84,6 +86,17 @@ const LazySettingsScreen = React.lazy(async () => {
 const WINDOW_DRAG_HANDLE_HEIGHT = 44;
 const WINDOW_DRAG_INTERACTIVE_SELECTOR =
   'button, a, input, textarea, select, [role="button"], [contenteditable="true"]';
+
+async function paidChannelCreatorOffer(pubkey: string | undefined) {
+  if (!pubkey) {
+    throw new Error("Paid channels require a signed-in creator.");
+  }
+  const offer = await getUserWalletBolt12Offer(pubkey);
+  if (!offer) {
+    throw new Error("Paid channels require a published BOLT12 offer.");
+  }
+  return offer;
+}
 
 function isWindowDragHandleEvent(event: MouseEvent | PointerEvent) {
   if (event.clientY > WINDOW_DRAG_HANDLE_HEIGHT) {
@@ -388,8 +401,9 @@ export function AppShell() {
   }, []);
 
   const handleBrowseChannelJoin = React.useCallback(
-    async (channelId: string) => {
-      await joinChannel(channelId);
+    async (channel: Channel) => {
+      const paymentReceiptEventId = await payForChannelAction(channel, "join");
+      await joinChannel(channel.id, paymentReceiptEventId ?? undefined);
       await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
     },
     [queryClient],
@@ -721,10 +735,18 @@ export function AppShell() {
                   onCreateChannel={async ({
                     description,
                     name,
+                    paidJoinAmount,
+                    paidPostAmount,
                     visibility,
                     ttlSeconds,
                     templateId,
                   }) => {
+                    const paymentBolt12Offer =
+                      paidJoinAmount || paidPostAmount
+                        ? await paidChannelCreatorOffer(
+                            identityQuery.data?.pubkey,
+                          )
+                        : undefined;
                     const createdChannel =
                       await createChannelMutation.mutateAsync({
                         name,
@@ -732,6 +754,9 @@ export function AppShell() {
                         channelType: "stream",
                         visibility,
                         ttlSeconds,
+                        paidJoinAmount,
+                        paidPostAmount,
+                        paymentBolt12Offer,
                       });
 
                     await applyCanvas(templateId, createdChannel.id, name);
@@ -741,16 +766,27 @@ export function AppShell() {
                   onCreateForum={async ({
                     description,
                     name,
+                    paidJoinAmount,
+                    paidPostAmount,
                     visibility,
                     ttlSeconds,
                     templateId,
                   }) => {
+                    const paymentBolt12Offer =
+                      paidJoinAmount || paidPostAmount
+                        ? await paidChannelCreatorOffer(
+                            identityQuery.data?.pubkey,
+                          )
+                        : undefined;
                     const createdForum = await createForumMutation.mutateAsync({
                       name,
                       description,
                       channelType: "forum",
                       visibility,
                       ttlSeconds,
+                      paidJoinAmount,
+                      paidPostAmount,
+                      paymentBolt12Offer,
                     });
 
                     await applyCanvas(templateId, createdForum.id, name);

@@ -124,7 +124,7 @@ export function ChannelManagementSheet({
   const archiveChannelMutation = useArchiveChannelMutation(channelId);
   const unarchiveChannelMutation = useUnarchiveChannelMutation(channelId);
   const deleteChannelMutation = useDeleteChannelMutation(channelId);
-  const joinChannelMutation = useJoinChannelMutation(channelId);
+  const joinChannelMutation = useJoinChannelMutation(channel);
   const leaveChannelMutation = useLeaveChannelMutation(channelId);
 
   const detail = detailsQuery.data ?? channel;

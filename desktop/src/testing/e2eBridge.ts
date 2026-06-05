@@ -121,6 +121,7 @@ type RawSetPresenceResponse = {
 };
 
 type RawChannel = {
+  metadata_event_id: string;
   id: string;
   name: string;
   channel_type: "stream" | "forum" | "dm";
@@ -135,6 +136,7 @@ type RawChannel = {
   participant_pubkeys: string[];
   ttl_seconds: number | null;
   ttl_deadline: string | null;
+  payment_policy?: unknown | null;
 };
 
 type RawChannelWithMembership = RawChannel & {
@@ -619,6 +621,7 @@ function toRawChannel(
   const currentPubkey = getMockMemberPubkey(config).toLowerCase();
 
   return {
+    metadata_event_id: channel.id,
     id: channel.id,
     name: channel.name,
     channel_type: channel.channel_type,
@@ -682,6 +685,7 @@ function createMockChannel(
     | "participants"
     | "ttl_seconds"
     | "ttl_deadline"
+    | "metadata_event_id"
   > & {
     created_minutes_ago: number;
     members: RawChannelMember[];
@@ -694,6 +698,7 @@ function createMockChannel(
 ): MockChannel {
   return {
     ...seed,
+    metadata_event_id: seed.id,
     created_at: isoMinutesAgo(seed.created_minutes_ago),
     member_count: seed.members.length,
     members: cloneMembers(seed.members),
@@ -2528,6 +2533,7 @@ async function handleGetChannels(config: E2eConfig | undefined) {
       : [];
 
     return {
+      metadata_event_id: ev.id,
       id: channelId,
       name: getTag("name") ?? "",
       description: getTag("about") ?? "",

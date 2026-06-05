@@ -113,6 +113,17 @@ pub struct MessageTipResult {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ChannelPaymentResult {
+    pub payment_id: String,
+    pub amount_sats: u64,
+    pub nonce: String,
+    pub receipt_event_id: Option<String>,
+    pub receipt_accepted: bool,
+    pub receipt_error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WalletTransaction {
     pub id: String,
     pub rail: String,

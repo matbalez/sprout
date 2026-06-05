@@ -17,6 +17,7 @@ import { createOptimisticMessage } from "@/features/messages/lib/optimisticMessa
 import { splitOutgoingTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import { relayClient } from "@/shared/api/relayClient";
 import { customEmojiQueryKey } from "@/features/custom-emoji/hooks";
+import { payForChannelAction } from "@/features/channels/hooks";
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 import {
@@ -407,11 +408,20 @@ export function useSendMessageMutation(
           }),
         );
       }
+      const paidPostReceiptEventId = await payForChannelAction(channel, "post");
+      const paymentTags = paidPostReceiptEventId
+        ? [["payment", paidPostReceiptEventId, "post"]]
+        : [];
 
       // Messages carrying media OR custom-emoji tags MUST go through REST so
       // the relay's tag validation runs. The WebSocket path emits no extra
       // tags, so emoji-only messages would otherwise lose their emoji tag.
-      if (parentEventId || imetaTags.length > 0 || emojiTags.length > 0) {
+      if (
+        parentEventId ||
+        imetaTags.length > 0 ||
+        emojiTags.length > 0 ||
+        paidPostReceiptEventId
+      ) {
         const cachedMessages =
           queryClient.getQueryData<RelayEvent[]>(
             channelMessagesKey(channel.id),
@@ -425,6 +435,7 @@ export function useSendMessageMutation(
           undefined,
           annotationTags,
           emojiTags,
+          paidPostReceiptEventId,
         );
 
         // Build tags matching relay-emitted shape: h, actor, author p, mention ps, reply es, imeta, emoji, annotations.
@@ -464,6 +475,7 @@ export function useSendMessageMutation(
             ...imetaTags,
             ...emojiTags,
             ...annotationTags,
+            ...paymentTags,
           ],
           content: content.trim(),
           sig: "",
@@ -510,7 +522,12 @@ export function useSendMessageMutation(
       parentEventId,
       mediaTags,
     }) => {
-      if (!channel || !identity || channel.channelType === "forum") {
+      if (
+        !channel ||
+        !identity ||
+        channel.channelType === "forum" ||
+        channel.paymentPolicy?.postPaymentRequired
+      ) {
         return undefined;
       }
 

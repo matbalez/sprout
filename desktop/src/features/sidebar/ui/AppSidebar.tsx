@@ -102,6 +102,8 @@ type AppSidebarProps = {
     visibility: ChannelVisibility;
     ttlSeconds?: number;
     templateId?: string;
+    paidJoinAmount?: number;
+    paidPostAmount?: number;
   }) => Promise<void>;
   onCreateForum: (input: {
     name: string;
@@ -109,6 +111,8 @@ type AppSidebarProps = {
     visibility: ChannelVisibility;
     ttlSeconds?: number;
     templateId?: string;
+    paidJoinAmount?: number;
+    paidPostAmount?: number;
   }) => Promise<void>;
   onOpenAddWorkspace: () => void;
   onOpenBrowseChannels: () => void;
@@ -379,6 +383,8 @@ export function AppSidebar({
       visibility: ChannelVisibility;
       ttlSeconds?: number;
       templateId?: string;
+      paidJoinAmount?: number;
+      paidPostAmount?: number;
     }) => {
       if (createDialogKind === "stream") {
         await onCreateChannel(input);

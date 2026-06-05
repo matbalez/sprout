@@ -275,6 +275,7 @@ pub async fn send_channel_message(
     mention_pubkeys: Option<Vec<String>>,
     kind: Option<u32>,
     annotation_tags: Option<Vec<Vec<String>>>,
+    payment_receipt_event_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<SendChannelMessageResponse, String> {
     let channel_uuid = uuid::Uuid::parse_str(&channel_id)
@@ -293,9 +294,13 @@ pub async fn send_channel_message(
     let mut resolved_root: Option<String> = None;
 
     let builder = match kind_num {
-        sprout_core::kind::KIND_FORUM_POST => {
-            events::build_forum_post(channel_uuid, content.trim(), &mention_refs, &media)?
-        }
+        sprout_core::kind::KIND_FORUM_POST => events::build_forum_post(
+            channel_uuid,
+            content.trim(),
+            &mention_refs,
+            &media,
+            payment_receipt_event_id.as_deref(),
+        )?,
         sprout_core::kind::KIND_FORUM_COMMENT => {
             let parent_id = parent_event_id
                 .as_deref()
@@ -308,6 +313,7 @@ pub async fn send_channel_message(
                 &thread_ref,
                 &mention_refs,
                 &media,
+                payment_receipt_event_id.as_deref(),
             )?
         }
         _ => {
@@ -328,6 +334,7 @@ pub async fn send_channel_message(
                 &media,
                 &annotations,
                 &emoji,
+                payment_receipt_event_id.as_deref(),
             )?
         }
     };

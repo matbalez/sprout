@@ -1,5 +1,13 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
+import {
+  fromRawChannel,
+  fromRawChannelDetail,
+  fromRawChannelMember,
+  type RawChannel,
+  type RawChannelDetail,
+  type RawChannelMember,
+} from "@/shared/api/channelMapper";
 import type {
   AddChannelMembersInput,
   AddChannelMembersResult,
@@ -9,7 +17,6 @@ import type {
   Channel,
   ChannelDetail,
   ChannelMember,
-  ChannelType,
   CreateChannelInput,
   GetHomeFeedInput,
   HomeFeedResponse,
@@ -86,45 +93,6 @@ type RawPresenceLookup = Record<string, PresenceStatus>;
 type RawSetPresenceResult = {
   status: PresenceStatus;
   ttl_seconds: number;
-};
-
-type RawChannel = {
-  id: string;
-  name: string;
-  channel_type: ChannelType;
-  visibility: "open" | "private";
-  description: string;
-  topic: string | null;
-  purpose: string | null;
-  member_count: number;
-  member_pubkeys: string[];
-  last_message_at: string | null;
-  archived_at: string | null;
-  participants: string[];
-  participant_pubkeys: string[];
-  is_member?: boolean;
-  ttl_seconds: number | null;
-  ttl_deadline: string | null;
-};
-
-type RawChannelDetail = RawChannel & {
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  topic_set_by: string | null;
-  topic_set_at: string | null;
-  purpose_set_by: string | null;
-  purpose_set_at: string | null;
-  topic_required: boolean;
-  max_members: number | null;
-  nip29_group_id: string | null;
-};
-
-type RawChannelMember = {
-  pubkey: string;
-  role: ChannelMember["role"];
-  joined_at: string;
-  display_name: string | null;
 };
 
 type RawChannelMembersResponse = {
@@ -345,52 +313,6 @@ export async function invokeTauri<T>(
   } catch (error) {
     throw toTauriError(error);
   }
-}
-
-function fromRawChannel(channel: RawChannel): Channel {
-  return {
-    id: channel.id,
-    name: channel.name,
-    channelType: channel.channel_type,
-    visibility: channel.visibility,
-    description: channel.description,
-    topic: channel.topic,
-    purpose: channel.purpose,
-    memberCount: channel.member_count,
-    memberPubkeys: channel.member_pubkeys ?? [],
-    lastMessageAt: channel.last_message_at,
-    archivedAt: channel.archived_at,
-    participants: channel.participants,
-    participantPubkeys: channel.participant_pubkeys,
-    isMember: channel.is_member ?? true,
-    ttlSeconds: channel.ttl_seconds,
-    ttlDeadline: channel.ttl_deadline,
-  };
-}
-
-function fromRawChannelDetail(channel: RawChannelDetail): ChannelDetail {
-  return {
-    ...fromRawChannel(channel),
-    createdBy: channel.created_by,
-    createdAt: channel.created_at,
-    updatedAt: channel.updated_at,
-    topicSetBy: channel.topic_set_by,
-    topicSetAt: channel.topic_set_at,
-    purposeSetBy: channel.purpose_set_by,
-    purposeSetAt: channel.purpose_set_at,
-    topicRequired: channel.topic_required,
-    maxMembers: channel.max_members,
-    nip29GroupId: channel.nip29_group_id,
-  };
-}
-
-function fromRawChannelMember(member: RawChannelMember): ChannelMember {
-  return {
-    pubkey: member.pubkey,
-    role: member.role,
-    joinedAt: member.joined_at,
-    displayName: member.display_name,
-  };
 }
 
 function fromRawFeedItem(item: RawFeedItem) {
@@ -648,8 +570,11 @@ export async function changeChannelMemberRole(
   await invokeTauri("change_channel_member_role", { channelId, pubkey, role });
 }
 
-export async function joinChannel(channelId: string): Promise<void> {
-  await invokeTauri("join_channel", { channelId });
+export async function joinChannel(
+  channelId: string,
+  paymentReceiptEventId?: string,
+): Promise<void> {
+  await invokeTauri("join_channel", { channelId, paymentReceiptEventId });
 }
 
 export async function leaveChannel(channelId: string): Promise<void> {
@@ -729,6 +654,7 @@ export async function sendChannelMessage(
   kind?: number,
   annotationTags?: string[][],
   emojiTags?: string[][],
+  paymentReceiptEventId?: string | null,
 ): Promise<SendChannelMessageResult> {
   const response = await invokeTauri<RawSendChannelMessageResult>(
     "send_channel_message",
@@ -741,6 +667,7 @@ export async function sendChannelMessage(
       mentionPubkeys: mentionPubkeys ?? null,
       kind: kind ?? null,
       annotationTags: annotationTags ?? null,
+      paymentReceiptEventId: paymentReceiptEventId ?? null,
     },
   );
 

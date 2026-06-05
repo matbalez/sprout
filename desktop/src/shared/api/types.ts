@@ -2,7 +2,18 @@ export type ChannelType = "stream" | "forum" | "dm";
 export type ChannelVisibility = "open" | "private";
 export type ChannelRole = "owner" | "admin" | "member" | "guest" | "bot";
 
+export type ChannelPaymentPolicy = {
+  joinPaymentRequired: boolean;
+  joinAmountBaseUnits: number;
+  postPaymentRequired: boolean;
+  postAmountBaseUnits: number;
+  paymentRecipientPubkey: string;
+  paymentRecipientBolt12Offer: string;
+  paymentRail: string;
+};
+
 export type Channel = {
+  metadataEventId: string;
   id: string;
   name: string;
   channelType: ChannelType;
@@ -19,6 +30,7 @@ export type Channel = {
   isMember: boolean;
   ttlSeconds: number | null;
   ttlDeadline: string | null;
+  paymentPolicy: ChannelPaymentPolicy | null;
 };
 
 export type ChannelDetail = Channel & {
@@ -47,6 +59,9 @@ export type CreateChannelInput = {
   visibility: ChannelVisibility;
   description?: string;
   ttlSeconds?: number;
+  paidJoinAmount?: number;
+  paidPostAmount?: number;
+  paymentBolt12Offer?: string;
 };
 
 export type OpenDmInput = {

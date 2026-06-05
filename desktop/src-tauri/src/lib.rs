@@ -763,6 +763,7 @@ pub fn run() {
             get_lightning_wallet_transactions,
             get_user_wallet_bolt12_offer,
             send_lightning_wallet_payment,
+            send_channel_payment,
             send_message_kudos,
             send_message_tip,
             send_shared_agent_invocation_payment,

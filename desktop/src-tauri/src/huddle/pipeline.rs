@@ -278,6 +278,7 @@ pub(crate) fn spawn_transcription_task(
                 &[],
                 &[],
                 &[],
+                None,
             ) {
                 Ok(b) => b,
                 Err(e) => {

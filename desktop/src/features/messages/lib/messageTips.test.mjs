@@ -5,10 +5,7 @@ import {
   buildTipsByEventId,
   isMessageTipReceiptEvent,
 } from "@/features/messages/lib/messageTips";
-import {
-  KIND_REACTION,
-  KIND_STREAM_MESSAGE,
-} from "@/shared/constants/kinds";
+import { KIND_REACTION, KIND_STREAM_MESSAGE } from "@/shared/constants/kinds";
 
 const CHANNEL_ID = "1069491a-ccdc-43a6-bbfb-2d9f8b4d0afb";
 const TARGET_ID =

@@ -20,7 +20,7 @@ type AppShellOverlaysProps = {
   channels: Channel[];
   currentPubkey?: string;
   isChannelManagementOpen: boolean;
-  onBrowseChannelJoin: (channelId: string) => Promise<void>;
+  onBrowseChannelJoin: (channel: Channel) => Promise<void>;
   onBrowseDialogOpenChange: (open: boolean) => void;
   onChannelManagementOpenChange: (open: boolean) => void;
   onDeleteActiveChannel: () => void;

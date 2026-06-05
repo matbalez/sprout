@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getForumPosts, getForumThread } from "@/shared/api/forum";
+import { payForChannelAction } from "@/features/channels/hooks";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
 import type {
   Channel,
@@ -59,6 +60,7 @@ export function useCreateForumPostMutation(channel: Channel | null) {
         throw new Error("No channel selected.");
       }
 
+      const paymentReceiptEventId = await payForChannelAction(channel, "post");
       return sendChannelMessage(
         channel.id,
         content,
@@ -66,6 +68,9 @@ export function useCreateForumPostMutation(channel: Channel | null) {
         mediaTags,
         mentionPubkeys,
         KIND_FORUM_POST,
+        undefined,
+        undefined,
+        paymentReceiptEventId,
       );
     },
     onSuccess: () => {
@@ -139,6 +144,7 @@ export function useCreateForumReplyMutation(channel: Channel | null) {
         throw new Error("No channel selected.");
       }
 
+      const paymentReceiptEventId = await payForChannelAction(channel, "post");
       return sendChannelMessage(
         channel.id,
         content,
@@ -146,6 +152,9 @@ export function useCreateForumReplyMutation(channel: Channel | null) {
         mediaTags,
         mentionPubkeys,
         KIND_FORUM_COMMENT,
+        undefined,
+        undefined,
+        paymentReceiptEventId,
       );
     },
     onSuccess: (_data, variables) => {
