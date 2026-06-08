@@ -168,20 +168,15 @@ desktop-tauri-check: _ensure-sidecar-stubs
 desktop-tauri-test: _ensure-sidecar-stubs
     cd desktop/src-tauri && cargo test
 
-# Build the full desktop Tauri app locally (unsigned, for testing)
+# Build a clean, isolated Sprout Dev app locally (unsigned, for testing)
 desktop-release-build target="aarch64-apple-darwin":
     #!/usr/bin/env bash
     set -euo pipefail
-    TARGET={{target}}
-    mkdir -p desktop/src-tauri/binaries
-    touch "desktop/src-tauri/binaries/sprout-acp-$TARGET"
-    touch "desktop/src-tauri/binaries/sprout-mcp-server-$TARGET"
-    touch "desktop/src-tauri/binaries/sprout-agent-$TARGET"
-    touch "desktop/src-tauri/binaries/sprout-dev-mcp-$TARGET"
-    touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
-    touch "desktop/src-tauri/binaries/sprout-$TARGET"
-    pnpm install
-    cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
+    ./scripts/build-dev-desktop-app.sh {{target}}
+
+# Validate an installed or built Sprout Dev app bundle
+desktop-validate-dev-app app_path="desktop/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Sprout Dev.app":
+    ./scripts/validate-dev-app-bundle.sh "{{app_path}}"
 
 # Run desktop checks suitable for CI / pre-push
 desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test

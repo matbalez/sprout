@@ -17,6 +17,6 @@ fi
 
 mkdir -p "$BINARIES_DIR"
 for bin in "${SIDECARS[@]}"; do
-    cp "target/release/$bin" "$BINARIES_DIR/${bin}-${TARGET}"
+    install -m 755 "target/release/$bin" "$BINARIES_DIR/${bin}-${TARGET}"
 done
 echo "Sidecars bundled for $TARGET"
