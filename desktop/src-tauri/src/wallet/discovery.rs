@@ -17,6 +17,8 @@ struct LexeBotDiscovery {
     owner: PublicKey,
     display_name: String,
     bolt12_offer: String,
+    created_at: u64,
+    event_id: String,
 }
 
 struct ResolvedLexeBotTarget {
@@ -73,11 +75,7 @@ pub(crate) async fn resolve_bolt12_offer_for_pubkey(
         .filter(|record| record.owner == target)
         .collect::<Vec<_>>();
 
-    match records.as_slice() {
-        [] => Ok(None),
-        [record] => Ok(Some(record.bolt12_offer.clone())),
-        _ => Err("found multiple verified BOLT12 offers for this user".to_string()),
-    }
+    Ok(latest_lexebot_discovery(&records).map(|record| record.bolt12_offer.clone()))
 }
 
 async fn resolve_lexebot_offer_for_username(
@@ -92,18 +90,23 @@ async fn resolve_lexebot_offer_for_username(
         .filter(|record| record.owner == owner.pubkey)
         .collect::<Vec<_>>();
 
-    match records.as_slice() {
-        [] => Err(format!(
+    match latest_lexebot_discovery(&records) {
+        None => Err(format!(
             "found @{username}, but could not find a verified LexeBot BOLT12 offer for that user"
         )),
-        [record] => Ok(ResolvedLexeBotTarget {
+        Some(record) => Ok(ResolvedLexeBotTarget {
             display_name: record.display_name.clone(),
             bolt12_offer: record.bolt12_offer.clone(),
         }),
-        _ => Err(format!(
-            "found multiple verified LexeBot profiles for @{username}; use a direct BOLT12 offer instead"
-        )),
     }
+}
+
+fn latest_lexebot_discovery(records: &[LexeBotDiscovery]) -> Option<&LexeBotDiscovery> {
+    records.iter().max_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.event_id.cmp(&right.event_id))
+    })
 }
 
 fn find_user_profile_by_username(
@@ -223,6 +226,8 @@ fn lexebot_discovery_from_profile(event: &Event) -> Option<LexeBotDiscovery> {
         owner,
         display_name,
         bolt12_offer,
+        created_at: event.created_at.as_secs(),
+        event_id: event.id.to_hex(),
     })
 }
 
@@ -259,4 +264,91 @@ fn lexebot_command_name(display_name: &str) -> String {
         return "LexeBot".to_string();
     }
     normalized.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Kind, Timestamp};
+    use serde_json::json;
+
+    fn owner_auth_json(agent: &Keys, owner: &Keys) -> Value {
+        let agent_hex = agent.public_key().to_hex();
+        let agent_pubkey = nostr::PublicKey::from_hex(&agent_hex).expect("agent pubkey");
+        let owner_secret =
+            nostr::SecretKey::from_slice(owner.secret_key().as_secret_bytes()).unwrap();
+        let owner_keys = nostr::Keys::new(owner_secret);
+        let tag_json = sprout_sdk::nip_oa::compute_auth_tag(&owner_keys, &agent_pubkey, "")
+            .expect("compute auth tag");
+        serde_json::from_str(&tag_json).expect("owner auth json")
+    }
+
+    fn lexebot_event(owner: &Keys, agent: &Keys, offer: &str, created_at: u64) -> Event {
+        let content = json!({
+            "name": "LexeBot",
+            "lexebot": {
+                "owner_pubkey": owner.public_key().to_hex(),
+                "bolt12_offer": offer,
+                "owner_auth": owner_auth_json(agent, owner),
+            }
+        })
+        .to_string();
+
+        EventBuilder::new(Kind::Metadata, content)
+            .custom_created_at(Timestamp::from(created_at))
+            .sign_with_keys(agent)
+            .expect("sign lexebot profile")
+    }
+
+    #[test]
+    fn lexebot_discovery_includes_event_time() {
+        let owner = Keys::generate();
+        let agent = Keys::generate();
+        let event = lexebot_event(&owner, &agent, "lno1validoffer", 1234);
+
+        let record = lexebot_discovery_from_profile(&event).expect("verified lexebot");
+        assert_eq!(record.owner, owner.public_key());
+        assert_eq!(record.bolt12_offer, "lno1validoffer");
+        assert_eq!(record.created_at, 1234);
+        assert_eq!(record.event_id, event.id.to_hex());
+    }
+
+    #[test]
+    fn latest_lexebot_discovery_prefers_most_recent_offer() {
+        let owner = Keys::generate();
+        let old_agent = Keys::generate();
+        let new_agent = Keys::generate();
+        let old_event = lexebot_event(&owner, &old_agent, "lno1oldoffer", 1000);
+        let new_event = lexebot_event(&owner, &new_agent, "lno1newoffer", 2000);
+        let records = vec![
+            lexebot_discovery_from_profile(&old_event).expect("old verified lexebot"),
+            lexebot_discovery_from_profile(&new_event).expect("new verified lexebot"),
+        ];
+
+        let record = latest_lexebot_discovery(&records).expect("latest record");
+        assert_eq!(record.bolt12_offer, "lno1newoffer");
+    }
+
+    #[test]
+    fn latest_lexebot_discovery_tie_breaks_deterministically() {
+        let records = vec![
+            LexeBotDiscovery {
+                owner: Keys::generate().public_key(),
+                display_name: "LexeBot".into(),
+                bolt12_offer: "lno1lowid".into(),
+                created_at: 1000,
+                event_id: "0".repeat(64),
+            },
+            LexeBotDiscovery {
+                owner: Keys::generate().public_key(),
+                display_name: "LexeBot".into(),
+                bolt12_offer: "lno1highid".into(),
+                created_at: 1000,
+                event_id: "f".repeat(64),
+            },
+        ];
+
+        let record = latest_lexebot_discovery(&records).expect("latest record");
+        assert_eq!(record.bolt12_offer, "lno1highid");
+    }
 }
