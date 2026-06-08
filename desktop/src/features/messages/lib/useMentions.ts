@@ -12,7 +12,7 @@ import type { ChannelMember } from "@/shared/api/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { detectPrefixQuery } from "@/shared/lib/detectPrefixQuery";
 import { trimMapToSize } from "@/shared/lib/trimMapToSize";
-import { hasMention } from "./hasMention";
+import { extractMentionPubkeysFromText } from "./mentionPubkeys";
 
 const MENTION_DEBOUNCE_MS = 120;
 
@@ -234,27 +234,12 @@ export function useMentions(
 
   const extractMentionPubkeys = React.useCallback(
     (text: string): string[] => {
-      const pubkeys: string[] = [];
-
-      for (const [displayName, pubkey] of mentionMapRef.current) {
-        if (hasMention(text, displayName)) {
-          pubkeys.push(pubkey);
-        }
-      }
-
-      for (const member of members ?? []) {
-        if (pubkeys.includes(member.pubkey)) {
-          continue;
-        }
-        const name =
-          member.displayName ??
-          managedAgentNamesByPubkey.get(member.pubkey.toLowerCase());
-        if (name && hasMention(text, name)) {
-          pubkeys.push(member.pubkey);
-        }
-      }
-
-      return [...new Set(pubkeys)];
+      return extractMentionPubkeysFromText({
+        managedAgentNamesByPubkey,
+        members,
+        mentionMap: mentionMapRef.current,
+        text,
+      });
     },
     [members, managedAgentNamesByPubkey],
   );
