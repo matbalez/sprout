@@ -7558,6 +7558,7 @@ dependencies = [
  "sprout-core",
  "sprout-persona",
  "sprout-sdk",
+ "sprout-ws-client",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -7574,7 +7575,6 @@ dependencies = [
  "nostr",
  "percent-encoding",
  "rand 0.10.1",
- "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -7874,7 +7874,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "sprout-core",
- "sprout-mcp",
+ "sprout-ws-client",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.29.0",
@@ -7904,6 +7904,20 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "sprout-ws-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "nostr",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tracing",
+ "url",
 ]
 
 [[package]]

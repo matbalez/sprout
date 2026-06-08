@@ -13,7 +13,6 @@ use crate::{
         BackendProviderInfo, CreateManagedAgentRequest, CreateManagedAgentResponse,
         ManagedAgentLogResponse, ManagedAgentRecord, ManagedAgentSummary, DEFAULT_ACP_COMMAND,
         DEFAULT_AGENT_COMMAND, DEFAULT_AGENT_PARALLELISM, DEFAULT_AGENT_TURN_TIMEOUT_SECONDS,
-        DEFAULT_MCP_COMMAND,
     },
     relay::{relay_ws_url_with_override, sync_managed_agent_profile},
     util::now_iso,
@@ -408,9 +407,9 @@ pub async fn create_managed_agent(
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .unwrap_or_else(
-                || match crate::managed_agents::known_acp_provider(&agent_command) {
+                || match crate::managed_agents::known_acp_runtime(&agent_command) {
                     Some(p) => p.mcp_command.unwrap_or("").to_string(),
-                    None => DEFAULT_MCP_COMMAND.to_string(),
+                    None => String::new(),
                 },
             );
 

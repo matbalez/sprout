@@ -47,6 +47,49 @@ function slotIdKey(pubkey: string): string {
   return `${SLOT_ID_KEY_PREFIX}:${pubkey}`;
 }
 
+export type ApplyRemoteContextResult = "unchanged" | "advanced";
+
+function resolveRemoteContextTimestamp(args: {
+  current: number;
+  timestamp: number;
+}): { next: number; result: ApplyRemoteContextResult } {
+  const next = Math.max(args.current, args.timestamp);
+  return {
+    next,
+    result: next === args.current ? "unchanged" : "advanced",
+  };
+}
+
+export function applyRemoteContextTimestamp(args: {
+  effectiveState: Map<string, number>;
+  contextSourceCreatedAt: Map<string, number>;
+  contextId: string;
+  timestamp: number;
+  eventCreatedAt: number;
+}): ApplyRemoteContextResult {
+  const {
+    effectiveState,
+    contextSourceCreatedAt,
+    contextId,
+    timestamp,
+    eventCreatedAt,
+  } = args;
+  const sourceCreatedAt = contextSourceCreatedAt.get(contextId) ?? 0;
+  const current = effectiveState.get(contextId) ?? 0;
+  const { next, result } = resolveRemoteContextTimestamp({
+    current,
+    timestamp,
+  });
+
+  if (result === "advanced") {
+    effectiveState.set(contextId, next);
+  }
+  if (eventCreatedAt > sourceCreatedAt) {
+    contextSourceCreatedAt.set(contextId, eventCreatedAt);
+  }
+  return result;
+}
+
 export class ReadStateManager {
   private pubkey: string;
   private relayClient: RelayClient;
@@ -60,8 +103,9 @@ export class ReadStateManager {
   private unsubscribeLive: (() => void) | null = null;
   private initialized = false;
   private maxFetchedCreatedAt = 0;
-  private forcedContexts = new Set<string>();
   private contextSourceCreatedAt = new Map<string, number>();
+  private pendingSyncedAdvances = new Set<string>();
+  private destroyed = false;
 
   constructor(pubkey: string, relayClient: RelayClient) {
     this.pubkey = pubkey;
@@ -75,22 +119,29 @@ export class ReadStateManager {
   }
 
   async initialize(): Promise<void> {
-    if (this.initialized) return;
+    if (this.initialized || this.destroyed) return;
+    console.debug(
+      `[ReadStateManager] initialize pubkey=${this.pubkey.substring(0, 8)}… clientId=${this.clientId.substring(0, 8)}… slotId=${this.slotId}`,
+    );
 
     this.hydrateFromLocalStorage();
 
     await this.fetchAndMerge();
+    if (this.destroyed) return;
     await this.startLiveSubscription();
+    if (this.destroyed) return;
     if (!this.isIdenticalToLastPublished(this.currentContexts())) {
       this.schedulePublish();
     }
 
     this.initialized = true;
+    console.debug(
+      `[ReadStateManager] initialize complete maxFetchedCreatedAt=${this.maxFetchedCreatedAt} contexts=${this.effectiveState.size}`,
+    );
     this.notifyListeners();
   }
 
   markContextRead(contextId: string, unixTimestamp: number): void {
-    this.forcedContexts.delete(contextId);
     this.advanceContext(contextId, unixTimestamp, { publishable: true });
     this.contextSourceCreatedAt.set(
       contextId,
@@ -100,16 +151,6 @@ export class ReadStateManager {
 
   seedContextRead(contextId: string, unixTimestamp: number): void {
     this.advanceContext(contextId, unixTimestamp, { publishable: false });
-  }
-
-  markContextUnread(contextId: string, lastMessageUnix: number): void {
-    const rollbackTo = lastMessageUnix - 1;
-    this.effectiveState.set(contextId, rollbackTo);
-    this.publishableContextIds.add(contextId);
-    this.forcedContexts.add(contextId);
-    this.persistLocalState();
-    this.notifyListeners();
-    this.schedulePublish();
   }
 
   private advanceContext(
@@ -152,6 +193,7 @@ export class ReadStateManager {
   }
 
   destroy(): void {
+    this.destroyed = true;
     // Flush any pending writes immediately
     if (this.debounceTimer !== null) {
       window.clearTimeout(this.debounceTimer);
@@ -177,7 +219,8 @@ export class ReadStateManager {
         since: Math.floor(Date.now() / 1_000) - READ_STATE_HORIZON_SECONDS,
         limit: READ_STATE_FETCH_LIMIT,
       });
-    } catch {
+    } catch (error) {
+      console.debug("[ReadStateManager] fetchAndMerge failed:", error);
       // If fetch fails, proceed with local state only
       return;
     }
@@ -219,21 +262,26 @@ export class ReadStateManager {
           client_id: parsed.client_id,
           contexts: sanitizeContexts(parsed.contexts),
         };
-      } catch {
+      } catch (error) {
+        console.debug(
+          `[ReadStateManager] mergeEvents decrypt failed event=${event.id.substring(0, 8)}…:`,
+          error,
+        );
         continue;
       }
 
       for (const [ctx, ts] of Object.entries(blob.contexts)) {
-        if (this.forcedContexts.has(ctx)) continue;
-        const sourceCreatedAt = this.contextSourceCreatedAt.get(ctx) ?? 0;
-        const current = this.effectiveState.get(ctx) ?? 0;
-        if (event.created_at > sourceCreatedAt) {
-          this.effectiveState.set(ctx, ts);
-          this.contextSourceCreatedAt.set(ctx, event.created_at);
-        } else if (event.created_at === sourceCreatedAt && ts !== current) {
-          this.effectiveState.set(ctx, ts);
+        const result = applyRemoteContextTimestamp({
+          effectiveState: this.effectiveState,
+          contextSourceCreatedAt: this.contextSourceCreatedAt,
+          contextId: ctx,
+          timestamp: ts,
+          eventCreatedAt: event.created_at,
+        });
+        if (result !== "unchanged") {
+          this.pendingSyncedAdvances.add(ctx);
+          this.publishableContextIds.add(ctx);
         }
-        this.publishableContextIds.add(ctx);
       }
 
       if (blob.client_id === this.clientId) {
@@ -260,7 +308,11 @@ export class ReadStateManager {
           localStorage.setItem(slotIdKey(this.pubkey), this.slotId);
           break;
         }
-      } catch {
+      } catch (error) {
+        console.debug(
+          `[ReadStateManager] conflict check decrypt failed event=${event.id.substring(0, 8)}…:`,
+          error,
+        );
         // Decrypt failure — skip this event
       }
     }
@@ -286,14 +338,24 @@ export class ReadStateManager {
           void this.handleIncomingEvent(event);
         },
       );
+      if (this.destroyed) {
+        unsub();
+        return;
+      }
       this.unsubscribeLive = unsub;
-    } catch {
+      console.debug("[ReadStateManager] live subscription established");
+    } catch (error) {
+      console.debug("[ReadStateManager] live subscription FAILED:", error);
       // Non-fatal: we can still work with local state
     }
   }
 
   private async handleIncomingEvent(event: RelayEvent): Promise<void> {
     if (event.pubkey !== this.pubkey) return;
+    if (this.destroyed) return;
+    console.debug(
+      `[ReadStateManager] incoming event=${event.id.substring(0, 8)}… created_at=${event.created_at}`,
+    );
 
     const dTags = event.tags.filter((t) => t[0] === "d");
     if (dTags.length !== 1) return;
@@ -320,23 +382,25 @@ export class ReadStateManager {
         client_id: parsed.client_id,
         contexts: sanitizeContexts(parsed.contexts),
       };
-    } catch {
+    } catch (error) {
+      console.debug(
+        `[ReadStateManager] incoming event decrypt/parse failed event=${event.id.substring(0, 8)}…:`,
+        error,
+      );
       return;
     }
 
     let anyAdvanced = false;
     for (const [ctx, ts] of Object.entries(blob.contexts)) {
-      if (this.forcedContexts.has(ctx)) continue;
-      const sourceCreatedAt = this.contextSourceCreatedAt.get(ctx) ?? 0;
-      const current = this.effectiveState.get(ctx) ?? 0;
-      if (event.created_at > sourceCreatedAt) {
-        if (this.effectiveState.get(ctx) !== ts) {
-          this.effectiveState.set(ctx, ts);
-          anyAdvanced = true;
-        }
-        this.contextSourceCreatedAt.set(ctx, event.created_at);
-      } else if (event.created_at === sourceCreatedAt && ts !== current) {
-        this.effectiveState.set(ctx, ts);
+      const result = applyRemoteContextTimestamp({
+        effectiveState: this.effectiveState,
+        contextSourceCreatedAt: this.contextSourceCreatedAt,
+        contextId: ctx,
+        timestamp: ts,
+        eventCreatedAt: event.created_at,
+      });
+      if (result === "advanced") {
+        this.pendingSyncedAdvances.add(ctx);
         anyAdvanced = true;
       }
       if (!this.publishableContextIds.has(ctx)) {
@@ -344,6 +408,9 @@ export class ReadStateManager {
         anyAdvanced = true;
       }
     }
+    console.debug(
+      `[ReadStateManager] incoming result anyAdvanced=${anyAdvanced} clientId=${blob.client_id.substring(0, 8)}…`,
+    );
 
     if (anyAdvanced) {
       this.persistLocalState();
@@ -368,6 +435,7 @@ export class ReadStateManager {
   }
 
   private async publish(): Promise<void> {
+    console.debug(`[ReadStateManager] publish starting slotId=${this.slotId}`);
     await this.fetchOwnBlobBeforePublish();
 
     // Build blob from contexts this client is allowed to publish.
@@ -408,12 +476,16 @@ export class ReadStateManager {
         "Timed out publishing read state.",
         "Failed to publish read state.",
       );
+      console.debug(
+        `[ReadStateManager] publish accepted createdAt=${createdAt}`,
+      );
 
-      this.lastPublishedContexts = contexts;
-      this.forcedContexts.clear();
       for (const key of Object.keys(contexts)) {
-        this.contextSourceCreatedAt.set(key, createdAt);
+        if (this.lastPublishedContexts[key] !== contexts[key]) {
+          this.contextSourceCreatedAt.set(key, createdAt);
+        }
       }
+      this.lastPublishedContexts = contexts;
       this.maxFetchedCreatedAt = Math.max(
         this.maxFetchedCreatedAt,
         event.created_at,
@@ -435,7 +507,11 @@ export class ReadStateManager {
 
       await this.mergeEvents(events);
       this.persistLocalState();
-    } catch {
+    } catch (error) {
+      console.debug(
+        "[ReadStateManager] fetchOwnBlobBeforePublish failed:",
+        error,
+      );
       // Per NIP-RS, proceed with reachable data and merge on a later fetch.
     }
   }
@@ -486,11 +562,18 @@ export class ReadStateManager {
     );
   }
 
+  drainSyncedAdvances(): ReadonlySet<string> {
+    const drained = this.pendingSyncedAdvances;
+    this.pendingSyncedAdvances = new Set<string>();
+    return drained;
+  }
+
   private notifyListeners(): void {
     for (const listener of this.listeners) {
       try {
         listener();
-      } catch {
+      } catch (error) {
+        console.debug("[ReadStateManager] listener threw:", error);
         // Don't let a broken listener break the manager
       }
     }

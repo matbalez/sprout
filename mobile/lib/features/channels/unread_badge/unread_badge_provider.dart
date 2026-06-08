@@ -33,11 +33,17 @@ final unreadBadgeProvider = Provider<UnreadBadgeState>((ref) {
       for (final channel in channels) {
         if (!channel.isMember || channel.isArchived) continue;
 
+        final isLocallyForced = readState.locallyForcedChannelIds.contains(
+          channel.id,
+        );
         final lastMessageAt = dateTimeToUnixSeconds(channel.lastMessageAt);
-        if (lastMessageAt == null) continue;
+        if (lastMessageAt == null && !isLocallyForced) continue;
 
         final readAt = readState.effectiveTimestamp(channel.id);
-        final isUnread = readAt == null || lastMessageAt > readAt;
+        final isUnread =
+            isLocallyForced ||
+            readAt == null ||
+            (lastMessageAt != null && lastMessageAt > readAt);
         if (!isUnread) continue;
 
         if (channel.isDm) {

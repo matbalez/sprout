@@ -11,9 +11,10 @@ import {
 import {
   KIND_STREAM_MESSAGE_EDIT,
   KIND_SYSTEM_MESSAGE,
+  KIND_USER_STATUS,
 } from "@/shared/constants/kinds";
 import type {
-  RawAcpProviderCatalogEntry,
+  RawAcpRuntimeCatalogEntry,
   RawInstallRuntimeResult,
 } from "@/shared/api/tauri";
 
@@ -32,7 +33,7 @@ type MockCommandAvailability = {
 type E2eConfig = {
   mode?: "mock" | "relay";
   mock?: {
-    acpProvidersCatalog?: RawAcpProviderCatalogEntry[];
+    acpRuntimesCatalog?: RawAcpRuntimeCatalogEntry[];
     installAcpRuntimeResult?: RawInstallRuntimeResult;
     managedAgentPrereqs?: {
       acp?: MockCommandAvailability;
@@ -114,11 +115,6 @@ type RawSearchUsersResponse = {
 type PresenceStatus = "online" | "away" | "offline";
 
 type RawPresenceLookup = Record<string, PresenceStatus>;
-
-type RawSetPresenceResponse = {
-  status: PresenceStatus;
-  ttl_seconds: number;
-};
 
 type RawChannel = {
   metadata_event_id: string;
@@ -398,6 +394,13 @@ type MockSubscription = {
   kinds: number[] | null;
 };
 
+type MockFilter = {
+  "#d"?: string[];
+  "#h"?: string[];
+  authors?: string[];
+  kinds?: number[];
+};
+
 type MockSocket = {
   handler: WsHandler;
   subscriptions: Map<string, MockSubscription>;
@@ -532,6 +535,12 @@ declare global {
       models?: Array<{ id: string; name: string | null }>;
       denyReason?: string;
     }) => void;
+    __SPROUT_E2E_EMIT_MOCK_READ_STATE__?: (input: {
+      clientId: string;
+      contexts: Record<string, number>;
+      createdAt: number;
+      slotId: string;
+    }) => unknown;
   }
 }
 
@@ -589,7 +598,6 @@ const CHARLIE_PUBKEY =
 const OUTSIDER_PUBKEY =
   "df8e91b86fda13a9a67896df77232f7bdab2ba9c3e165378e1ba3d24c13a328e";
 const MOCK_IDENTITY_PUBKEY = DEFAULT_MOCK_IDENTITY.pubkey;
-const MOCK_PRESENCE_TTL_SECONDS = 90;
 
 const mockDisplayNames = new Map<string, string>([
   [MOCK_IDENTITY_PUBKEY, DEFAULT_MOCK_IDENTITY.display_name],
@@ -1240,6 +1248,7 @@ const mockChannels: MockChannel[] = [
 ];
 
 const mockMessages = new Map<string, RelayEvent[]>();
+const mockUserStatuses: RelayEvent[] = [];
 let mockRelayMembers: RawRelayMember[] = [];
 const mockSockets = new Map<number, MockSocket>();
 let mockWebsocketSendMutexWedged = false;
@@ -2014,6 +2023,17 @@ function emitMockLiveEvent(channelId: string, event: RelayEvent) {
   }
 }
 
+function emitMockGlobalEvent(event: RelayEvent) {
+  for (const socket of mockSockets.values()) {
+    for (const [subId, subscription] of socket.subscriptions) {
+      if (subscription.kinds && !subscription.kinds.includes(event.kind)) {
+        continue;
+      }
+      sendWsText(socket.handler, ["EVENT", subId, event]);
+    }
+  }
+}
+
 function hasMockLiveSubscription(channelId: string, kind?: number) {
   for (const socket of mockSockets.values()) {
     for (const subscription of socket.subscriptions.values()) {
@@ -2043,6 +2063,46 @@ function recordMockMessage(channelId: string, event: RelayEvent) {
 
   channel.last_message_at = new Date(event.created_at * 1_000).toISOString();
   touchMockChannel(channel);
+}
+
+function resetMockUserStatuses() {
+  mockUserStatuses.length = 0;
+}
+
+function recordMockUserStatus(event: RelayEvent) {
+  const dTag = event.tags.find((tag) => tag[0] === "d")?.[1];
+  if (dTag) {
+    const index = mockUserStatuses.findIndex(
+      (stored) =>
+        stored.pubkey.toLowerCase() === event.pubkey.toLowerCase() &&
+        stored.tags.some((tag) => tag[0] === "d" && tag[1] === dTag),
+    );
+    if (index >= 0) {
+      mockUserStatuses.splice(index, 1);
+    }
+  }
+
+  mockUserStatuses.push(event);
+}
+
+function filterMockUserStatuses(filter: MockFilter) {
+  const authors = filter.authors?.map((author) => author.toLowerCase());
+  const dTags = filter["#d"];
+
+  return mockUserStatuses
+    .filter((event) => {
+      if (authors && !authors.includes(event.pubkey.toLowerCase())) {
+        return false;
+      }
+      if (
+        dTags &&
+        !event.tags.some((tag) => tag[0] === "d" && dTags.includes(tag[1]))
+      ) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.created_at - a.created_at);
 }
 
 function emitMockChannelMessage(
@@ -2626,7 +2686,7 @@ async function handleUpdateProfile(
     if (nextAvatarUrl && nextAvatarUrl !== profile.avatar_url) {
       profile.avatar_url = nextAvatarUrl;
     }
-    if (nextAbout && nextAbout !== profile.about) {
+    if (typeof nextAbout === "string" && nextAbout !== profile.about) {
       profile.about = nextAbout;
     }
     if (
@@ -2844,7 +2904,7 @@ async function handleGetPresence(
     return {} satisfies RawPresenceLookup;
   }
 
-  // Presence is ephemeral (kind:20001) — query via bridge which synthesizes from Redis.
+  // Presence is ephemeral (kind:20001) — mock returns from in-memory map.
   const events = await relayQuery(config, [
     { kinds: [20001], authors: args.pubkeys, limit: args.pubkeys.length },
   ]);
@@ -2862,40 +2922,6 @@ async function handleGetPresence(
     }
   }
   return result;
-}
-
-async function handleSetPresence(
-  args: {
-    status: PresenceStatus;
-  },
-  config: E2eConfig | undefined,
-) {
-  const identity = getIdentity(config);
-  if (!identity) {
-    setMockPresenceStatus(getMockMemberPubkey(config), args.status);
-
-    return {
-      status: args.status,
-      ttl_seconds: args.status === "offline" ? 0 : MOCK_PRESENCE_TTL_SECONDS,
-    } satisfies RawSetPresenceResponse;
-  }
-
-  // Presence is ephemeral kind:20001 — submit via POST /events.
-  // Note: the relay may reject this with "kind 20001 is only accepted via WebSocket"
-  // in which case we just return the expected shape (presence is best-effort in e2e).
-  try {
-    await submitSignedEvent(config, {
-      kind: 20001,
-      content: args.status,
-      tags: [],
-    });
-  } catch {
-    // Expected: ephemeral events may be WS-only
-  }
-  return {
-    status: args.status,
-    ttl_seconds: args.status === "offline" ? 0 : 90,
-  };
 }
 
 async function handleCreateChannel(
@@ -3851,10 +3877,10 @@ async function handleListRelayAgents(): Promise<RawRelayAgent[]> {
   return mockRelayAgents.map(cloneRelayAgent);
 }
 
-async function handleDiscoverAcpProviders(
+async function handleDiscoverAcpRuntimes(
   config: E2eConfig | undefined,
-): Promise<RawAcpProviderCatalogEntry[]> {
-  const configured = config?.mock?.acpProvidersCatalog;
+): Promise<RawAcpRuntimeCatalogEntry[]> {
+  const configured = config?.mock?.acpRuntimesCatalog;
   if (configured) {
     return configured;
   }
@@ -3922,7 +3948,7 @@ async function handleDiscoverAcpProviders(
 
 async function handleInstallAcpRuntime(
   args: {
-    providerId?: string;
+    runtimeId?: string;
   },
   config: E2eConfig | undefined,
 ): Promise<RawInstallRuntimeResult> {
@@ -3935,7 +3961,7 @@ async function handleInstallAcpRuntime(
     steps: [
       {
         step: "adapter",
-        command: `mock install ${args.providerId ?? "unknown"}`,
+        command: `mock install ${args.runtimeId ?? "unknown"}`,
         success: true,
         stdout: "mock: installed successfully",
         stderr: "",
@@ -3968,13 +3994,8 @@ async function handleDiscoverManagedAgentPrereqs(
       available: configuredPrereqs?.acp?.available ?? true,
     },
     mcp: {
-      command:
-        configuredPrereqs?.mcp?.command ??
-        args.input?.mcpCommand ??
-        "sprout-mcp-server",
-      resolved_path:
-        configuredPrereqs?.mcp?.resolvedPath ??
-        "/Users/wesb/dev/sprout/target/debug/sprout-mcp-server",
+      command: configuredPrereqs?.mcp?.command ?? args.input?.mcpCommand ?? "",
+      resolved_path: configuredPrereqs?.mcp?.resolvedPath ?? "",
       available: configuredPrereqs?.mcp?.available ?? true,
     },
   };
@@ -4296,7 +4317,7 @@ async function handleCreateManagedAgent(args: {
       args.input.agentArgs && args.input.agentArgs.length > 0
         ? [...args.input.agentArgs]
         : ["acp"],
-    mcp_command: args.input.mcpCommand ?? "sprout-mcp-server",
+    mcp_command: args.input.mcpCommand ?? "",
     turn_timeout_seconds: args.input.turnTimeoutSeconds ?? 320,
     idle_timeout_seconds: args.input.idleTimeoutSeconds ?? null,
     max_turn_duration_seconds: args.input.maxTurnDurationSeconds ?? null,
@@ -5111,11 +5132,7 @@ function sendToMockSocket(args: {
       return;
     }
 
-    const filter = rest[1] as {
-      "#h"?: string[];
-      kinds?: number[];
-      authors?: string[];
-    };
+    const filter = rest[1] as MockFilter;
     if (filter.kinds?.includes(13534)) {
       sendWsText(socket.handler, [
         "EVENT",
@@ -5136,6 +5153,14 @@ function sendToMockSocket(args: {
           continue;
         }
         sendWsText(socket.handler, ["EVENT", subId, emojiEvent]);
+      }
+      sendWsText(socket.handler, ["EOSE", subId]);
+      return;
+    }
+
+    if (filter.kinds?.includes(KIND_USER_STATUS)) {
+      for (const statusEvent of filterMockUserStatuses(filter)) {
+        sendWsText(socket.handler, ["EVENT", subId, statusEvent]);
       }
       sendWsText(socket.handler, ["EOSE", subId]);
       return;
@@ -5193,6 +5218,41 @@ function sendToMockSocket(args: {
       return;
     }
 
+    if (event.kind === 30078) {
+      sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
+    if (event.kind === 20001) {
+      const status = event.content;
+      if (status === "online" || status === "away" || status === "offline") {
+        setMockPresenceStatus(event.pubkey, status);
+      }
+      emitMockGlobalEvent(event);
+      sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
+    if (event.kind === KIND_USER_STATUS) {
+      const hasGeneralDTag = event.tags.some(
+        (tag) => tag[0] === "d" && tag[1] === "general",
+      );
+      if (!hasGeneralDTag) {
+        sendWsText(socket.handler, [
+          "OK",
+          event.id,
+          false,
+          "invalid: user status missing d tag.",
+        ]);
+        return;
+      }
+
+      recordMockUserStatus(event);
+      emitMockGlobalEvent(event);
+      sendWsText(socket.handler, ["OK", event.id, true, ""]);
+      return;
+    }
+
     const channelId = getChannelIdFromTags(event.tags);
     if (!channelId) {
       sendWsText(socket.handler, [
@@ -5236,6 +5296,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockTeams();
   resetMockWorkflows();
   resetMockMesh();
+  resetMockUserStatuses();
   mockWebsocketSendMutexWedged = false;
   mockWindows("main");
   window.__SPROUT_E2E_COMMANDS__ = [];
@@ -5297,6 +5358,30 @@ export function maybeInstallE2eTauriMocks() {
     mockFeedOverrides[category].unshift(item);
     window.dispatchEvent(new CustomEvent("sprout:e2e-home-feed-updated"));
     return item;
+  };
+  window.__SPROUT_E2E_EMIT_MOCK_READ_STATE__ = ({
+    clientId,
+    contexts,
+    createdAt,
+    slotId,
+  }) => {
+    const blob = JSON.stringify({
+      v: 1,
+      client_id: clientId,
+      contexts,
+    });
+    const event = createMockEvent(
+      30078,
+      blob,
+      [
+        ["d", `read-state:${slotId}`],
+        ["t", "read-state"],
+      ],
+      getMockMemberPubkey(config),
+      createdAt,
+    );
+    emitMockLiveEvent(GLOBAL_MOCK_SUBSCRIPTION, event);
+    return event;
   };
   window.__SPROUT_E2E_SET_STALL_WEBSOCKET_SENDS__ = (stall) => {
     const config = getConfig();
@@ -5516,11 +5601,6 @@ export function maybeInstallE2eTauriMocks() {
           },
           activeConfig,
         );
-      case "set_presence":
-        return handleSetPresence(
-          payload as Parameters<typeof handleSetPresence>[0],
-          activeConfig,
-        );
       case "get_relay_ws_url":
         return getRelayWsUrl(activeConfig);
       case "get_default_relay_url":
@@ -5528,10 +5608,10 @@ export function maybeInstallE2eTauriMocks() {
       case "get_relay_http_url":
         return getRelayHttpUrl(activeConfig);
       case "discover_acp_providers":
-        return handleDiscoverAcpProviders(activeConfig);
+        return handleDiscoverAcpRuntimes(activeConfig);
       case "install_acp_runtime":
         return handleInstallAcpRuntime(
-          payload as { providerId?: string },
+          payload as { runtimeId?: string },
           activeConfig,
         );
       case "discover_backend_providers":
@@ -5786,6 +5866,10 @@ export function maybeInstallE2eTauriMocks() {
             (payload as { createdAt?: number }).createdAt,
           ),
         );
+      case "nip44_encrypt_to_self":
+        return (payload as { plaintext: string }).plaintext;
+      case "nip44_decrypt_from_self":
+        return (payload as { ciphertext: string }).ciphertext;
       case "create_auth_event":
         if (identity) {
           return JSON.stringify(

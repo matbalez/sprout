@@ -559,6 +559,7 @@ pub struct GetPresenceParams {
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SetPresenceParams {
     /// Presence status to set.
+    #[schemars(with = "String")]
     pub status: PresenceStatus,
 }
 

@@ -6,11 +6,6 @@
 //! `SPROUT_SHARE_IDENTITY=1` and `SPROUT_PRIVATE_KEY` is set. All dev
 //! instances share the same physical files — edits in any worktree are
 //! immediately visible to all others.
-//!
-//! **Provider reconciliation** (`reconcile_provider_mcp_commands`): Per-launch
-//! fix-up of `mcp_command` values in `managed-agents.json` against the
-//! discovery table. Ensures known providers always have their canonical
-//! `mcp_command`; unknown/custom agents are left untouched.
 
 use std::path::{Path, PathBuf};
 use tauri::Manager;
@@ -264,53 +259,6 @@ pub fn sync_shared_agent_data(app: &tauri::AppHandle) {
     }
 }
 
-fn reconcile_mcp_commands_in_file(path: &Path) {
-    patch_json_records(path, |obj| {
-        let agent_command = match obj.get("agent_command").and_then(|v| v.as_str()) {
-            Some(cmd) => cmd.to_string(),
-            None => return false,
-        };
-        let Some(provider) = crate::managed_agents::known_acp_provider(&agent_command) else {
-            return false;
-        };
-        let expected = provider.mcp_command.unwrap_or("");
-        let current = obj
-            .get("mcp_command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if current != expected {
-            eprintln!(
-                "sprout-desktop: provider-reconcile: {:?} ({:?}): mcp_command {:?} → {:?}",
-                obj.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
-                agent_command,
-                current,
-                expected,
-            );
-            obj.insert(
-                "mcp_command".to_string(),
-                serde_json::Value::String(expected.to_string()),
-            );
-            true
-        } else {
-            false
-        }
-    });
-}
-
-/// Reconcile `mcp_command` values in managed-agents.json against the
-/// discovery table. Known providers get their canonical mcp_command;
-/// unknown/custom agents are left untouched.
-pub fn reconcile_provider_mcp_commands(app: &tauri::AppHandle) {
-    let Ok(dir) = app.path().app_data_dir() else {
-        return;
-    };
-    let path = dir.join("agents/managed-agents.json");
-    if !path.exists() {
-        return;
-    }
-    reconcile_mcp_commands_in_file(&path);
-}
-
 fn reconcile_pack_paths_in_file(path: &Path, canonical_dir: &Path) {
     let canonical_packs = canonical_dir.join("agents/packs");
     patch_json_records(path, |obj| {
@@ -370,6 +318,30 @@ pub fn reconcile_persona_pack_paths(app: &tauri::AppHandle) {
     reconcile_pack_paths_in_file(&path, &canonical_dir);
 }
 
+fn rename_provider_to_runtime_in_personas(path: &Path) {
+    patch_json_records(path, |obj| {
+        if obj.contains_key("runtime") {
+            return false;
+        }
+        if let Some(value) = obj.remove("provider") {
+            obj.insert("runtime".to_string(), value);
+            true
+        } else {
+            false
+        }
+    });
+}
+
+pub fn migrate_persona_provider_to_runtime(app: &tauri::AppHandle) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = dir.join("agents/personas.json");
+    if !path.exists() {
+        return;
+    }
+    rename_provider_to_runtime_in_personas(&path);
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1009,5 +981,94 @@ mod tests {
         let after_second = std::fs::read_to_string(&path).unwrap();
 
         assert_eq!(after_first, after_second);
+    }
+
+    fn write_personas_json(dir: &Path, records: &serde_json::Value) {
+        std::fs::create_dir_all(dir.join("agents")).unwrap();
+        std::fs::write(
+            dir.join("agents/personas.json"),
+            serde_json::to_vec_pretty(records).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn read_personas_json(dir: &Path) -> Vec<serde_json::Value> {
+        let content = std::fs::read_to_string(dir.join("agents/personas.json")).unwrap();
+        serde_json::from_str(&content).unwrap()
+    }
+
+    #[test]
+    fn rename_provider_to_runtime_migrates_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write_personas_json(
+            dir.path(),
+            &serde_json::json!([{
+                "id": "persona-1",
+                "displayName": "Alice",
+                "provider": "goose"
+            }]),
+        );
+        rename_provider_to_runtime_in_personas(&dir.path().join("agents/personas.json"));
+        let records = read_personas_json(dir.path());
+        assert_eq!(records[0]["runtime"], "goose");
+        assert!(records[0].get("provider").is_none());
+    }
+
+    #[test]
+    fn rename_provider_to_runtime_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_personas_json(
+            dir.path(),
+            &serde_json::json!([{
+                "id": "persona-1",
+                "displayName": "Alice",
+                "runtime": "goose"
+            }]),
+        );
+        let before = std::fs::read_to_string(dir.path().join("agents/personas.json")).unwrap();
+        rename_provider_to_runtime_in_personas(&dir.path().join("agents/personas.json"));
+        let after = std::fs::read_to_string(dir.path().join("agents/personas.json")).unwrap();
+        assert_eq!(
+            before, after,
+            "file should not be rewritten when already migrated"
+        );
+    }
+
+    #[test]
+    fn rename_provider_to_runtime_skips_record_without_either_key() {
+        let dir = tempfile::tempdir().unwrap();
+        write_personas_json(
+            dir.path(),
+            &serde_json::json!([{
+                "id": "persona-1",
+                "displayName": "Alice"
+            }]),
+        );
+        let before = std::fs::read_to_string(dir.path().join("agents/personas.json")).unwrap();
+        rename_provider_to_runtime_in_personas(&dir.path().join("agents/personas.json"));
+        let after = std::fs::read_to_string(dir.path().join("agents/personas.json")).unwrap();
+        assert_eq!(
+            before, after,
+            "file should not be rewritten when no provider key exists"
+        );
+    }
+
+    #[test]
+    fn rename_provider_to_runtime_preserves_existing_runtime_over_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        write_personas_json(
+            dir.path(),
+            &serde_json::json!([{
+                "id": "persona-1",
+                "displayName": "Alice",
+                "provider": "old-value",
+                "runtime": "correct-value"
+            }]),
+        );
+        rename_provider_to_runtime_in_personas(&dir.path().join("agents/personas.json"));
+        let records = read_personas_json(dir.path());
+        assert_eq!(records[0]["runtime"], "correct-value");
+        // provider key should still be there since the closure returns false when runtime exists
+        assert_eq!(records[0]["provider"], "old-value");
     }
 }

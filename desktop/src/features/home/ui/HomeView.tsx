@@ -359,6 +359,7 @@ export function HomeView({
               markItemRead(itemId);
             }}
             selectedId={selectedItemId}
+            showRightDivider={showListPane && showDetailPane}
           />
         ) : null}
 

@@ -31,13 +31,13 @@ const rules = [
 // file is broken up. Tracked as a follow-up.
 const overrides = new Map([
   ["src-tauri/src/managed_agents/nest.rs", 1415],
-  ["src-tauri/src/managed_agents/runtime.rs", 1402],
+  ["src-tauri/src/managed_agents/runtime.rs", 1443],
   ["src-tauri/src/wallet/broker.rs", 1482],
   ["src-tauri/src/huddle/tts.rs", 1364],
   ["src/shared/api/tauri.ts", 1208],
   ["src-tauri/src/nostr_convert.rs", 1124],
   ["src/shared/api/relayClientSession.ts", 1031],
-  ["src-tauri/src/migration.rs", 1014],
+  ["src-tauri/src/migration.rs", 1130],
 ]);
 
 await runFileSizeCheck({

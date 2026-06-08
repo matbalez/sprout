@@ -26,7 +26,9 @@ block/sprout (source)
   └─── sprout-backend-blox         (Blox compute provider for Desktop agent launch)
 ```
 
-See [RELEASING.md](RELEASING.md) for the desktop release flow across `block/sprout` and `sprout-releases`.
+See [RELEASING.md](RELEASING.md) for the desktop release flow and
+[CONTRIBUTING.md § Ecosystem](CONTRIBUTING.md#ecosystem) for contributor
+access information.
 
 ---
 
@@ -44,7 +46,6 @@ crates/
   sprout-audit        # Hash-chain audit log
   sprout-media        # Blossom/S3 media storage
   # Agent surface
-  sprout-mcp          # MCP server providing AI agent tools (being phased out in favor of the CLI)
   sprout-acp          # ACP harness bridging Sprout events to AI agents
   sprout-agent        # Minimal ACP-compliant agent (non-streaming, tool-calls-as-output)
   sprout-dev-mcp      # Developer MCP server — shell + file-edit tools
@@ -60,6 +61,7 @@ crates/
   sprout-cli          # Agent-first CLI
   sprout-sdk          # Typed Nostr event builders
   sprout-admin        # Operator CLI for relay administration
+  sprout-ws-client    # Shared NIP-42 WebSocket client (connect, auth, publish)
   sprout-test-client  # Integration test client and E2E test suite
   sprig               # All-in-one harness bundling ACP, agent, and dev MCP
 
@@ -144,12 +146,7 @@ first, then implement handling in the relay.
 **Channel scoping**: Channels use `h` tags (NIP-29 group tag), not `e` tags.
 Filters and queries must scope to `h` tags when operating within a channel.
 
-**Agent-facing operations go in `sprout-cli`, not `sprout-mcp`**: `sprout-mcp`
-is being phased out. New agent-facing features belong in `sprout-cli` — add a
-subcommand there first, then wire the REST/WebSocket call in `client.rs`. Do
-not add new tools to `sprout-mcp` unless specifically required for backward
-compatibility. `sprout-dev-mcp` (shell + file tools for `sprout-agent`) is
-separate and not being phased out.
+**Agent-facing operations go in `sprout-cli`**: New agent-facing features belong in `sprout-cli` — add a subcommand there first, then wire the REST/WebSocket call in `client.rs`. `sprout-dev-mcp` (shell + file tools for `sprout-agent`) is separate.
 
 **Workflow conditions**: `sprout-workflow` uses
 [evalexpr](https://docs.rs/evalexpr) for condition evaluation. Keep expressions
@@ -163,7 +160,7 @@ check existing reply handlers for the pattern.
 
 ## Agent CLI (`sprout-cli`)
 
-`sprout` is the agent-first CLI replacing `sprout-mcp`. Auth env vars
+`sprout` is the agent-first CLI. Auth env vars
 (`SPROUT_RELAY_URL`, `SPROUT_PRIVATE_KEY`, `SPROUT_AUTH_TAG`) are auto-injected
 by the ACP harness into managed agent subprocesses. In development, set
 `SPROUT_PRIVATE_KEY` and `SPROUT_RELAY_URL` in your environment manually.
@@ -211,7 +208,6 @@ just test         # full integration suite (requires Postgres + Redis)
 E2E tests live in `crates/sprout-test-client/tests/`:
 - `e2e_relay.rs` — WebSocket relay protocol
 - `e2e_rest_api.rs` — REST endpoint coverage
-- `e2e_mcp.rs` — MCP tool surface
 - `e2e_tokens.rs` — auth token flows
 - `e2e_workflows.rs` — workflow engine
 - `e2e_media.rs` — media upload/download (Blossom)
@@ -223,6 +219,11 @@ Desktop E2E: `cd desktop && pnpm exec playwright test`
 See [TESTING.md](TESTING.md) for the full multi-agent E2E guide.
 
 ### Desktop Screenshots (Playwright)
+
+> **Do NOT use `sprout upload`, the relay media endpoint, or any third-party
+> image host for PR screenshots.** Relay media URLs fail through GitHub's camo
+> proxy. Always use `scripts/post-screenshots.sh` — see the `desktop-screenshot`
+> skill for the full workflow.
 
 The desktop app requires the E2E mock bridge to render — it cannot run in a plain
 browser. Use `just desktop-screenshot` to capture screenshots (builds frontend,
@@ -320,6 +321,48 @@ Right-click shows "Mark as read".
 
 Re-runs for the same PR overwrite previous images. Cleanup:
 `git push origin --delete agent-screenshots/<username>`.
+
+### Writing E2E Screenshot Specs
+
+When screenshots need seeded state, live messages, or UI interaction before
+capture, write a Playwright spec instead of using `just desktop-screenshot`.
+Add specs to `desktop/tests/e2e/` and register them in `playwright.config.ts`
+(`smoke` project `testMatch`). Every test calls `installMockBridge(page)` for
+mock Tauri IPC. Mock pubkey, channel names, and UUIDs live in `e2eBridge.ts`.
+
+**Stale server:** `reuseExistingServer: true` means a previous build's server
+serves old code. Kill port 4173 and `pnpm run build` before re-running tests
+after code changes.
+
+**`addInitScript` before bridge:** `page.addInitScript` (localStorage seeding)
+must run BEFORE `installMockBridge(page)` — React reads state on mount, the
+bridge triggers mount.
+
+**Live messages:** Call `waitForMockLiveSubscription(page, channelName)` before
+`__SPROUT_E2E_EMIT_MOCK_MESSAGE__` — messages are silently dropped without a
+subscription. Navigate to the channel first (triggers subscription), then away
+(so unread indicators appear), then inject.
+
+**Animation timing:** Radix components animate in via CSS. `toBeVisible()`
+resolves mid-animation — wait for completion before screenshotting:
+
+```ts
+await menuItem.evaluate((el) =>
+  Promise.all(
+    el.closest("[data-state]")?.getAnimations().map((a) => a.finished) ?? [],
+  ),
+);
+```
+
+**Cropping:** Use `clip` — full-window (1280x720) screenshots are unreadable
+for sidebar features. Sidebar = 256px; context menus ~450px.
+
+**`general` has pre-seeded messages** making `hasUnread` always true. Use
+`engineering` for "muted + no unread" visual states.
+
+**PR comments:** Use a body template (3rd arg to `post-screenshots.sh`) with
+`{{filename}}` placeholders. Each screenshot gets a `###` heading + one-line
+description. See [PR #803](https://github.com/block/sprout/pull/803).
 
 ---
 

@@ -35,7 +35,6 @@ import type {
   SendChannelMessageResult,
   SetCanvasInput,
   SetCanvasResult,
-  SetPresenceResult,
   SetChannelPurposeInput,
   SetChannelTopicInput,
   UpdateProfileInput,
@@ -47,7 +46,7 @@ import type {
   AgentModelsResponse,
   UpdateManagedAgentInput,
   AcpAvailabilityStatus,
-  AcpProviderCatalogEntry,
+  AcpRuntimeCatalogEntry,
   CommandAvailability,
   InstallRuntimeResult,
   OpenDmInput,
@@ -89,11 +88,6 @@ type RawSearchUsersResponse = {
 };
 
 type RawPresenceLookup = Record<string, PresenceStatus>;
-
-type RawSetPresenceResult = {
-  status: PresenceStatus;
-  ttl_seconds: number;
-};
 
 type RawChannelMembersResponse = {
   members: RawChannelMember[];
@@ -217,7 +211,7 @@ type RawManagedAgentLog = {
   log_path: string;
 };
 
-export type RawAcpProviderCatalogEntry = {
+export type RawAcpRuntimeCatalogEntry = {
   id: string;
   label: string;
   avatar_url: string;
@@ -449,19 +443,6 @@ export async function getPresence(pubkeys: string[]): Promise<PresenceLookup> {
   );
 }
 
-export async function setPresence(
-  status: PresenceStatus,
-): Promise<SetPresenceResult> {
-  const response = await invokeTauri<RawSetPresenceResult>("set_presence", {
-    status,
-  });
-
-  return {
-    status: response.status,
-    ttlSeconds: response.ttl_seconds,
-  };
-}
-
 export function getDefaultRelayUrl(): Promise<string> {
   return invokeTauri<string>("get_default_relay_url");
 }
@@ -691,7 +672,7 @@ export type BlobDescriptor = {
   thumb?: string;
   duration?: number;
   image?: string;
-  /** Original filename for generic (non-media) file attachments. */
+  /** Original filename captured client-side. */
   filename?: string;
 };
 
@@ -819,9 +800,9 @@ export function fromRawManagedAgent(agent: RawManagedAgent): ManagedAgent {
   };
 }
 
-function fromRawAcpProviderCatalogEntry(
-  entry: RawAcpProviderCatalogEntry,
-): AcpProviderCatalogEntry {
+function fromRawAcpRuntimeCatalogEntry(
+  entry: RawAcpRuntimeCatalogEntry,
+): AcpRuntimeCatalogEntry {
   return {
     id: entry.id,
     label: entry.label,
@@ -1014,20 +995,18 @@ export async function getManagedAgentLog(pubkey: string, lineCount?: number) {
   };
 }
 
-export async function discoverAcpProviders(): Promise<
-  AcpProviderCatalogEntry[]
-> {
+export async function discoverAcpRuntimes(): Promise<AcpRuntimeCatalogEntry[]> {
   return (
-    await invokeTauri<RawAcpProviderCatalogEntry[]>("discover_acp_providers")
-  ).map(fromRawAcpProviderCatalogEntry);
+    await invokeTauri<RawAcpRuntimeCatalogEntry[]>("discover_acp_providers")
+  ).map(fromRawAcpRuntimeCatalogEntry);
 }
 
 export async function installAcpRuntime(
-  providerId: string,
+  runtimeId: string,
 ): Promise<InstallRuntimeResult> {
   const raw = await invokeTauri<RawInstallRuntimeResult>(
     "install_acp_runtime",
-    { providerId },
+    { runtimeId },
   );
   return fromRawInstallRuntimeResult(raw);
 }

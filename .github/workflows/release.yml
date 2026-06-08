@@ -47,7 +47,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event_name == 'push' && github.ref || inputs.ref }}
           persist-credentials: false
@@ -72,7 +72,7 @@ jobs:
 
       - name: Build sidecars
         run: |
-          cargo build --release -p sprout-acp -p sprout-mcp -p sprout-agent -p sprout-dev-mcp -p git-credential-nostr -p sprout-cli
+          cargo build --release -p sprout-acp -p sprout-agent -p sprout-dev-mcp -p git-credential-nostr -p sprout-cli
           ./scripts/bundle-sidecars.sh
 
       # Mesh rev derived from Cargo.lock (no lockstep edit on dep bump); cache key tracks it.
@@ -267,7 +267,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event_name == 'push' && github.ref || inputs.ref }}
           persist-credentials: false
@@ -317,7 +317,7 @@ jobs:
 
       - name: Build sidecars
         run: |
-          cargo build --release -p sprout-acp -p sprout-mcp -p sprout-agent -p sprout-dev-mcp -p git-credential-nostr -p sprout-cli
+          cargo build --release -p sprout-acp -p sprout-agent -p sprout-dev-mcp -p git-credential-nostr -p sprout-cli
           ./scripts/bundle-sidecars.sh
 
       - name: Build Linux Tauri app

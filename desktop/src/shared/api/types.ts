@@ -164,11 +164,6 @@ export type UserStatus = {
 
 export type UserStatusLookup = Record<string, UserStatus | null>;
 
-export type SetPresenceResult = {
-  status: PresenceStatus;
-  ttlSeconds: number;
-};
-
 export type RelayEvent = {
   id: string;
   pubkey: string;
@@ -390,7 +385,7 @@ export type AcpAvailabilityStatus =
   | "cli_missing"
   | "not_installed";
 
-export type AcpProviderCatalogEntry = {
+export type AcpRuntimeCatalogEntry = {
   id: string;
   label: string;
   avatarUrl: string;
@@ -405,8 +400,8 @@ export type AcpProviderCatalogEntry = {
   underlyingCliPath: string | null;
 };
 
-/** An AcpProviderCatalogEntry that is confirmed available — command and binaryPath are non-null. */
-export type AcpProvider = AcpProviderCatalogEntry & {
+/** An AcpRuntimeCatalogEntry that is confirmed available — command and binaryPath are non-null. */
+export type AcpRuntime = AcpRuntimeCatalogEntry & {
   availability: "available";
   command: string;
   binaryPath: string;
@@ -478,9 +473,9 @@ export type AgentPersona = {
   displayName: string;
   avatarUrl: string | null;
   systemPrompt: string;
-  /** Preferred ACP provider ID (e.g. "goose", "claude"). */
-  provider: string | null;
-  /** Preferred model ID (e.g. "gpt-4o", "claude-sonnet-4-20250514"). */
+  /** Preferred ACP runtime ID (e.g. "goose", "claude"). */
+  runtime: string | null;
+  /** Opaque, harness-specific model identifier string. Sprout stores and passes through without interpretation. */
   model: string | null;
   namePool: string[];
   isBuiltIn: boolean;
@@ -498,7 +493,7 @@ export type CreatePersonaInput = {
   displayName: string;
   avatarUrl?: string;
   systemPrompt: string;
-  provider?: string;
+  runtime?: string;
   model?: string;
   namePool?: string[];
   envVars?: Record<string, string>;
@@ -509,7 +504,7 @@ export type UpdatePersonaInput = {
   displayName: string;
   avatarUrl?: string;
   systemPrompt: string;
-  provider?: string;
+  runtime?: string;
   model?: string;
   namePool?: string[];
   envVars?: Record<string, string>;
@@ -546,7 +541,7 @@ export type TemplateBackend =
 
 export type TemplateAgentEntry = {
   personaId: string;
-  provider: string | null;
+  runtime: string | null;
   model: string | null;
   role: string | null;
   backend: TemplateBackend | null;
@@ -554,7 +549,7 @@ export type TemplateAgentEntry = {
 
 export type TemplateTeamEntry = {
   teamId: string;
-  provider: string | null;
+  runtime: string | null;
   model: string | null;
   backend: TemplateBackend | null;
 };

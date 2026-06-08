@@ -57,6 +57,8 @@ import {
 import { HuddleBar, HuddleProvider } from "@/features/huddle";
 import { useMeshRelayOrchestrator } from "@/features/mesh-compute/hooks/useMeshRelayOrchestrator";
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
+import { useChannelMutes } from "@/features/sidebar/lib/useChannelMutes";
+import { useChannelStars } from "@/features/sidebar/lib/useChannelStars";
 import { useWorkspaces } from "@/features/workspaces/useWorkspaces";
 import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { getUserWalletBolt12Offer } from "@/features/wallet/api";
@@ -184,13 +186,11 @@ export function AppShell() {
   const [settingsSection, setSettingsSection] = React.useState<SettingsSection>(
     DEFAULT_SETTINGS_SECTION,
   );
-  const [settingsMode, setSettingsMode] = React.useState<
-    "profile" | "preferences"
-  >("preferences");
 
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
   const [searchFocusRequest, setSearchFocusRequest] = React.useState(0);
+  const [topbarSearchHidden, setTopbarSearchHidden] = React.useState(false);
   const [browseDialogType, setBrowseDialogType] =
     React.useState<BrowseDialogType>(null);
   const [isNewDmOpen, setIsNewDmOpen] = React.useState(false);
@@ -217,6 +217,12 @@ export function AppShell() {
 
   const identityQuery = useIdentityQuery();
   useMeshRelayOrchestrator(identityQuery.data?.pubkey);
+  const { mutedChannelIds, muteChannel, unmuteChannel } = useChannelMutes(
+    identityQuery.data?.pubkey,
+  );
+  const { starredChannelIds, starChannel, unstarChannel } = useChannelStars(
+    identityQuery.data?.pubkey,
+  );
   const profileQuery = useProfileQuery();
   const deferredPubkey = startupReady ? identityQuery.data?.pubkey : undefined;
   usePresenceSubscription();
@@ -232,10 +238,12 @@ export function AppShell() {
   const refetchHomeFeedOnLiveMention = React.useEffectEvent(() => {
     void homeFeedQuery.refetch();
   });
-  const handleChannelNotification = React.useEffectEvent(() => {
-    if (!notificationSettings.settings.desktopEnabled) return;
-    void requestDockBounce();
-  });
+  const handleChannelNotification = React.useEffectEvent(
+    (_channelId: string, _event: RelayEvent) => {
+      if (!notificationSettings.settings.desktopEnabled) return;
+      void requestDockBounce();
+    },
+  );
 
   const handleDmNotification = React.useEffectEvent(
     (event: RelayEvent, channel: Channel) => {
@@ -325,6 +333,7 @@ export function AppShell() {
       pubkey: identityQuery.data?.pubkey,
       relayClient,
       currentPubkey: identityQuery.data?.pubkey,
+      mutedChannelIds,
       onChannelMessage: handleChannelNotification,
       onDmMessage: handleDmNotification,
       onLiveMention: refetchHomeFeedOnLiveMention,
@@ -348,6 +357,7 @@ export function AppShell() {
       readStateVersion,
       highPriorityUnreadChannelIds,
       feedProfilesQuery.data?.profiles,
+      mutedChannelIds,
     );
 
   const isNotifiedForThread = React.useCallback(
@@ -425,9 +435,8 @@ export function AppShell() {
   );
 
   const handleOpenSettings = React.useCallback(
-    (section: SettingsSection = "appearance") => {
+    (section: SettingsSection = DEFAULT_SETTINGS_SECTION) => {
       setIsChannelManagementOpen(false);
-      setSettingsMode(section === "profile" ? "profile" : "preferences");
       setSettingsSection(section);
       setSettingsOpen(true);
     },
@@ -681,173 +690,220 @@ export function AppShell() {
             unfollowThread: handleUnfollowThread,
             isFollowingThread,
             isNotifiedForThread,
+            setTopbarSearchHidden,
             threadActivityItems,
           }}
         >
           <HuddleProvider>
             <div className="flex h-dvh flex-col overflow-hidden overscroll-none">
               <SidebarProvider className="min-h-0 flex-1 overflow-hidden">
-                <AppTopChrome
-                  canGoBack={canGoBack}
-                  canGoForward={canGoForward}
-                  channels={channels}
-                  currentPubkey={identityQuery.data?.pubkey}
-                  onGoBack={goBack}
-                  onGoForward={goForward}
-                  onOpenChannel={(channelId) => {
-                    void goChannel(channelId);
-                  }}
-                  onOpenResult={handleOpenSearchResult}
-                  searchFocusRequest={searchFocusRequest}
-                />
-                <AppSidebar
-                  activeWorkspace={workspacesHook.activeWorkspace}
-                  channels={sidebarChannels}
-                  currentPubkey={identityQuery.data?.pubkey}
-                  errorMessage={
-                    channelsQuery.error instanceof Error
-                      ? channelsQuery.error.message
-                      : undefined
-                  }
-                  fallbackDisplayName={identityQuery.data?.displayName}
-                  homeBadgeCount={homeBadgeCount}
-                  isAddWorkspaceOpen={isAddWorkspaceOpen}
-                  isCreatingChannel={createChannelMutation.isPending}
-                  isCreatingForum={createForumMutation.isPending}
-                  isLoading={channelsQuery.isLoading}
-                  isOpeningDm={openDmMutation.isPending}
-                  isNewDmOpen={isNewDmOpen}
-                  isCreateChannelOpen={isCreateChannelOpen}
-                  isPresencePending={presenceSession.isPending}
-                  onAddWorkspace={(workspace) => {
-                    const id = workspacesHook.addWorkspace(workspace);
-                    workspacesHook.switchWorkspace(id);
-                  }}
-                  onAddWorkspaceOpenChange={setIsAddWorkspaceOpen}
-                  onNewDmOpenChange={setIsNewDmOpen}
-                  onCreateChannelOpenChange={setIsCreateChannelOpen}
-                  onOpenAddWorkspace={() => setIsAddWorkspaceOpen(true)}
-                  onUpdateWorkspace={workspacesHook.updateWorkspace}
-                  onRemoveWorkspace={workspacesHook.removeWorkspace}
-                  onSwitchWorkspace={workspacesHook.switchWorkspace}
-                  selfPresenceStatus={presenceSession.currentStatus}
-                  workspaces={workspacesHook.workspaces}
-                  onCreateChannel={async ({
-                    description,
-                    name,
-                    paidJoinAmount,
-                    paidPostAmount,
-                    visibility,
-                    ttlSeconds,
-                    templateId,
-                  }) => {
-                    const paymentBolt12Offer =
-                      paidJoinAmount || paidPostAmount
-                        ? await paidChannelCreatorOffer(
-                            identityQuery.data?.pubkey,
-                          )
-                        : undefined;
-                    const createdChannel =
-                      await createChannelMutation.mutateAsync({
-                        name,
+                {!settingsOpen ? (
+                  <AppTopChrome
+                    canGoBack={canGoBack}
+                    canGoForward={canGoForward}
+                    channels={channels}
+                    currentPubkey={identityQuery.data?.pubkey}
+                    onGoBack={goBack}
+                    onGoForward={goForward}
+                    onOpenChannel={(channelId) => {
+                      void goChannel(channelId);
+                    }}
+                    onOpenResult={handleOpenSearchResult}
+                    searchHidden={topbarSearchHidden}
+                    searchFocusRequest={searchFocusRequest}
+                  />
+                ) : null}
+                {settingsOpen ? (
+                  <React.Suspense fallback={null}>
+                    <LazySettingsScreen
+                      currentPubkey={identityQuery.data?.pubkey}
+                      fallbackDisplayName={identityQuery.data?.displayName}
+                      isUpdatingDesktopNotifications={
+                        notificationSettings.isUpdatingDesktopEnabled
+                      }
+                      notificationErrorMessage={
+                        notificationSettings.errorMessage
+                      }
+                      notificationPermission={notificationSettings.permission}
+                      notificationSettings={notificationSettings.settings}
+                      onClose={handleCloseSettings}
+                      onSectionChange={setSettingsSection}
+                      onSetDesktopNotificationsEnabled={
+                        notificationSettings.setDesktopEnabled
+                      }
+                      onSetHomeBadgeEnabled={
+                        notificationSettings.setHomeBadgeEnabled
+                      }
+                      onSetMentionNotificationsEnabled={
+                        notificationSettings.setMentionsEnabled
+                      }
+                      onSetNeedsActionNotificationsEnabled={
+                        notificationSettings.setNeedsActionEnabled
+                      }
+                      onSetSoundEnabled={notificationSettings.setSoundEnabled}
+                      section={settingsSection}
+                    />
+                  </React.Suspense>
+                ) : (
+                  <>
+                    <AppSidebar
+                      activeWorkspace={workspacesHook.activeWorkspace}
+                      channels={sidebarChannels}
+                      currentPubkey={identityQuery.data?.pubkey}
+                      errorMessage={
+                        channelsQuery.error instanceof Error
+                          ? channelsQuery.error.message
+                          : undefined
+                      }
+                      fallbackDisplayName={identityQuery.data?.displayName}
+                      homeBadgeCount={homeBadgeCount}
+                      isAddWorkspaceOpen={isAddWorkspaceOpen}
+                      isCreatingChannel={createChannelMutation.isPending}
+                      isCreatingForum={createForumMutation.isPending}
+                      isLoading={channelsQuery.isLoading}
+                      isOpeningDm={openDmMutation.isPending}
+                      isNewDmOpen={isNewDmOpen}
+                      isCreateChannelOpen={isCreateChannelOpen}
+                      isPresencePending={presenceSession.isPending}
+                      onAddWorkspace={(workspace) => {
+                        const id = workspacesHook.addWorkspace(workspace);
+                        workspacesHook.switchWorkspace(id);
+                      }}
+                      onAddWorkspaceOpenChange={setIsAddWorkspaceOpen}
+                      onNewDmOpenChange={setIsNewDmOpen}
+                      onCreateChannelOpenChange={setIsCreateChannelOpen}
+                      onOpenAddWorkspace={() => setIsAddWorkspaceOpen(true)}
+                      onUpdateWorkspace={workspacesHook.updateWorkspace}
+                      onRemoveWorkspace={workspacesHook.removeWorkspace}
+                      onSwitchWorkspace={workspacesHook.switchWorkspace}
+                      selfPresenceStatus={presenceSession.currentStatus}
+                      workspaces={workspacesHook.workspaces}
+                      onCreateChannel={async ({
                         description,
-                        channelType: "stream",
-                        visibility,
-                        ttlSeconds,
+                        name,
                         paidJoinAmount,
                         paidPostAmount,
-                        paymentBolt12Offer,
-                      });
+                        visibility,
+                        ttlSeconds,
+                        templateId,
+                      }) => {
+                        const paymentBolt12Offer =
+                          paidJoinAmount || paidPostAmount
+                            ? await paidChannelCreatorOffer(
+                                identityQuery.data?.pubkey,
+                              )
+                            : undefined;
+                        const createdChannel =
+                          await createChannelMutation.mutateAsync({
+                            name,
+                            description,
+                            channelType: "stream",
+                            visibility,
+                            ttlSeconds,
+                            paidJoinAmount,
+                            paidPostAmount,
+                            paymentBolt12Offer,
+                          });
 
-                    await applyCanvas(templateId, createdChannel.id, name);
-                    await goChannel(createdChannel.id);
-                    void applyAgents(templateId, createdChannel.id);
-                  }}
-                  onCreateForum={async ({
-                    description,
-                    name,
-                    paidJoinAmount,
-                    paidPostAmount,
-                    visibility,
-                    ttlSeconds,
-                    templateId,
-                  }) => {
-                    const paymentBolt12Offer =
-                      paidJoinAmount || paidPostAmount
-                        ? await paidChannelCreatorOffer(
-                            identityQuery.data?.pubkey,
-                          )
-                        : undefined;
-                    const createdForum = await createForumMutation.mutateAsync({
-                      name,
-                      description,
-                      channelType: "forum",
-                      visibility,
-                      ttlSeconds,
-                      paidJoinAmount,
-                      paidPostAmount,
-                      paymentBolt12Offer,
-                    });
+                        await applyCanvas(templateId, createdChannel.id, name);
+                        await goChannel(createdChannel.id);
+                        void applyAgents(templateId, createdChannel.id);
+                      }}
+                      onCreateForum={async ({
+                        description,
+                        name,
+                        paidJoinAmount,
+                        paidPostAmount,
+                        visibility,
+                        ttlSeconds,
+                        templateId,
+                      }) => {
+                        const paymentBolt12Offer =
+                          paidJoinAmount || paidPostAmount
+                            ? await paidChannelCreatorOffer(
+                                identityQuery.data?.pubkey,
+                              )
+                            : undefined;
+                        const createdForum =
+                          await createForumMutation.mutateAsync({
+                            name,
+                            description,
+                            channelType: "forum",
+                            visibility,
+                            ttlSeconds,
+                            paidJoinAmount,
+                            paidPostAmount,
+                            paymentBolt12Offer,
+                          });
 
-                    await applyCanvas(templateId, createdForum.id, name);
-                    await goChannel(createdForum.id);
-                    void applyAgents(templateId, createdForum.id);
-                  }}
-                  onHideDm={handleHideDm}
-                  onMarkAllChannelsRead={markAllChannelsRead}
-                  onMarkChannelRead={markChannelRead}
-                  onMarkChannelUnread={markChannelUnread}
-                  onOpenBrowseChannels={handleOpenBrowseChannels}
-                  onOpenBrowseForums={handleOpenBrowseForums}
-                  onOpenDm={async ({ pubkeys }) => {
-                    const directMessage = await openDmMutation.mutateAsync({
-                      pubkeys,
-                    });
-                    await goChannel(directMessage.id);
-                  }}
-                  onSelectAgents={() => {
-                    void goAgents();
-                  }}
-                  onSelectChannel={(channelId) => {
-                    void goChannel(channelId);
-                  }}
-                  onSelectHome={() => {
-                    void goHome();
-                  }}
-                  onSelectProjects={() => {
-                    void goProjects();
-                  }}
-                  onSelectPulse={() => {
-                    void goPulse();
-                  }}
-                  onSelectSettings={handleOpenSettings}
-                  onSelectWorkflows={() => {
-                    void goWorkflows();
-                  }}
-                  onSetPresenceStatus={(status) =>
-                    presenceSession.setStatus(status)
-                  }
-                  onSetUserStatus={(text, emoji) =>
-                    setUserStatusMutation.mutate({ text, emoji })
-                  }
-                  onClearUserStatus={() =>
-                    setUserStatusMutation.mutate({ text: "", emoji: "" })
-                  }
-                  profile={profileQuery.data}
-                  selfUserStatus={
-                    deferredPubkey
-                      ? (selfStatusQuery.data?.[deferredPubkey.toLowerCase()] ??
-                        undefined)
-                      : undefined
-                  }
-                  selectedChannelId={selectedChannelId}
-                  selectedView={selectedView}
-                  unreadChannelIds={unreadChannelIds}
-                />
+                        await applyCanvas(templateId, createdForum.id, name);
+                        await goChannel(createdForum.id);
+                        void applyAgents(templateId, createdForum.id);
+                      }}
+                      onHideDm={handleHideDm}
+                      onMarkAllChannelsRead={markAllChannelsRead}
+                      onMarkChannelRead={markChannelRead}
+                      onMarkChannelUnread={markChannelUnread}
+                      onOpenBrowseChannels={handleOpenBrowseChannels}
+                      onOpenBrowseForums={handleOpenBrowseForums}
+                      onOpenDm={async ({ pubkeys }) => {
+                        const directMessage = await openDmMutation.mutateAsync({
+                          pubkeys,
+                        });
+                        await goChannel(directMessage.id);
+                      }}
+                      onSelectAgents={() => {
+                        void goAgents();
+                      }}
+                      onSelectChannel={(channelId) => {
+                        void goChannel(channelId);
+                      }}
+                      onSelectHome={() => {
+                        void goHome();
+                      }}
+                      onSelectProjects={() => {
+                        void goProjects();
+                      }}
+                      onSelectPulse={() => {
+                        void goPulse();
+                      }}
+                      onSelectSettings={handleOpenSettings}
+                      onSelectWorkflows={() => {
+                        void goWorkflows();
+                      }}
+                      onSetPresenceStatus={(status) =>
+                        presenceSession.setStatus(status)
+                      }
+                      onSetUserStatus={(text, emoji) =>
+                        setUserStatusMutation.mutate({ text, emoji })
+                      }
+                      onClearUserStatus={() =>
+                        setUserStatusMutation.mutate({ text: "", emoji: "" })
+                      }
+                      profile={profileQuery.data}
+                      selfUserStatus={
+                        deferredPubkey
+                          ? (selfStatusQuery.data?.[
+                              deferredPubkey.toLowerCase()
+                            ] ?? undefined)
+                          : undefined
+                      }
+                      selectedChannelId={selectedChannelId}
+                      selectedView={selectedView}
+                      unreadChannelIds={unreadChannelIds}
+                      mutedChannelIds={mutedChannelIds}
+                      onMuteChannel={muteChannel}
+                      onUnmuteChannel={unmuteChannel}
+                      starredChannelIds={starredChannelIds}
+                      onStarChannel={starChannel}
+                      onUnstarChannel={unstarChannel}
+                    />
 
-                <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
-                  <Outlet />
-                </SidebarInset>
+                    <SidebarInset className="min-h-0 min-w-0 overflow-hidden">
+                      <Outlet />
+                    </SidebarInset>
+                  </>
+                )}
 
                 <AppShellOverlays
                   activeChannel={activeChannel}
@@ -866,40 +922,6 @@ export function AppShell() {
                     void goChannel(channelId);
                   }}
                 />
-
-                {settingsOpen ? (
-                  <React.Suspense fallback={null}>
-                    <LazySettingsScreen
-                      currentPubkey={identityQuery.data?.pubkey}
-                      fallbackDisplayName={identityQuery.data?.displayName}
-                      isUpdatingDesktopNotifications={
-                        notificationSettings.isUpdatingDesktopEnabled
-                      }
-                      notificationErrorMessage={
-                        notificationSettings.errorMessage
-                      }
-                      notificationPermission={notificationSettings.permission}
-                      notificationSettings={notificationSettings.settings}
-                      onClose={handleCloseSettings}
-                      onSectionChange={setSettingsSection}
-                      mode={settingsMode}
-                      onSetDesktopNotificationsEnabled={
-                        notificationSettings.setDesktopEnabled
-                      }
-                      onSetHomeBadgeEnabled={
-                        notificationSettings.setHomeBadgeEnabled
-                      }
-                      onSetMentionNotificationsEnabled={
-                        notificationSettings.setMentionsEnabled
-                      }
-                      onSetNeedsActionNotificationsEnabled={
-                        notificationSettings.setNeedsActionEnabled
-                      }
-                      onSetSoundEnabled={notificationSettings.setSoundEnabled}
-                      section={settingsSection}
-                    />
-                  </React.Suspense>
-                ) : null}
               </SidebarProvider>
               <HuddleBar />
             </div>

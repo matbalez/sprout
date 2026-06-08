@@ -10,8 +10,8 @@ import {
   isBroadcastReply,
 } from "@/features/messages/lib/threading";
 import {
-  shouldNotifyForEvent,
   isHighPriorityEventForUser,
+  shouldNotifyForEvent,
 } from "@/features/notifications/lib/shouldNotify";
 import type { RelayClient } from "@/shared/api/relayClientSession";
 import type { Channel, RelayEvent } from "@/shared/api/types";
@@ -20,6 +20,7 @@ import { CHANNEL_MESSAGE_EVENT_KINDS } from "@/shared/constants/kinds";
 type UseUnreadChannelsOptions = UseLiveChannelUpdatesOptions & {
   pubkey?: string;
   relayClient?: RelayClient;
+  mutedChannelIds?: ReadonlySet<string>;
 };
 
 // Per-channel cap on the catch-up REQ. We only consume the *max matching*
@@ -226,7 +227,12 @@ export function useUnreadChannels(
   activeReadAt?: string | null,
   options: UseUnreadChannelsOptions = {},
 ) {
-  const { pubkey, relayClient, ...liveUpdateOptions } = options;
+  const {
+    pubkey,
+    relayClient,
+    mutedChannelIds: mutedChannelIdsOption,
+    ...liveUpdateOptions
+  } = options;
   const activeChannelId = activeChannel?.id ?? null;
   const activeChannelLastMessageAt = activeChannel?.lastMessageAt ?? null;
   const normalizedPubkey = pubkey?.toLowerCase() ?? null;
@@ -240,7 +246,7 @@ export function useUnreadChannels(
     getEffectiveTimestamp,
     isReady: isReadStateReady,
     markContextRead,
-    markContextUnread,
+    drainSyncedAdvances,
     readStateVersion,
   } = useReadState(pubkey, relayClient);
 
@@ -260,11 +266,24 @@ export function useUnreadChannels(
   channelsRef.current = channels;
 
   // Channels manually marked unread this session (e.g., right-click → "mark
-  // unread"). The NIP-RS rollback (markContextUnread) is the cross-device
-  // mechanism; this in-session flag is what makes the badge appear *now* in
-  // the case where we don't yet have an observed latest timestamp to compare
-  // against. Cleared when the user opens the channel.
+  // unread"). Because NIP-RS read markers are monotonic, this in-session flag
+  // is what makes the badge appear *now* without lowering synced read state.
+  // Cleared when the user opens the channel.
   const forcedUnreadRef = React.useRef(new Set<string>());
+
+  // When a synced event advances a read marker (cross-device mark-as-read),
+  // remove from forcedUnreadRef so the dot clears immediately.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion is the intentional drain trigger
+  React.useEffect(() => {
+    const advanced = drainSyncedAdvances();
+    let anyNew = false;
+    for (const channelId of advanced) {
+      if (forcedUnreadRef.current.delete(channelId)) {
+        anyNew = true;
+      }
+    }
+    if (anyNew) bumpLatestVersion();
+  }, [readStateVersion, drainSyncedAdvances]);
 
   // Root event IDs of threads where the current user has replied at least once.
   // Used to determine if thread replies should trigger unread notifications.
@@ -277,6 +296,11 @@ export function useUnreadChannels(
   // Root event IDs of threads the user has explicitly muted. Takes precedence
   // over participation, follow, and authorship for notification suppression.
   const mutedRootIdsRef = React.useRef(new Set<string>());
+
+  // Stable ref for the caller-supplied muted channel IDs. Updated every render
+  // so the catch-up loop always reads the latest set without being a dep.
+  const mutedChannelIdsRef = React.useRef<ReadonlySet<string>>(new Set());
+  mutedChannelIdsRef.current = mutedChannelIdsOption ?? new Set();
 
   // Thread reply events that triggered notifications — surfaced in the Home
   // activity feed as synthetic FeedItems.
@@ -338,28 +362,14 @@ export function useUnreadChannels(
   );
 
   // Manually mark a channel unread (e.g., right-click → "mark unread"). Sets
-  // the in-session forced flag so the sidebar badge appears immediately, and
-  // rolls the NIP-RS read marker back so the unread state syncs across
-  // devices. The forced flag is cleared in markChannelRead when the user
-  // opens the channel. If lastMessageAt is unknown we still set the forced
-  // flag, but skip the NIP-RS rollback — without a target timestamp we have
-  // nothing honest to publish.
-  const markChannelUnread = React.useCallback(
-    (channelId: string, lastMessageAt: string | null | undefined) => {
-      if (!forcedUnreadRef.current.has(channelId)) {
-        forcedUnreadRef.current.add(channelId);
-        bumpLatestVersion();
-      }
-      const unixSeconds =
-        toUnixSeconds(lastMessageAt) ??
-        latestByChannelRef.current.get(channelId) ??
-        null;
-      if (unixSeconds !== null) {
-        markContextUnread(channelId, unixSeconds);
-      }
-    },
-    [markContextUnread],
-  );
+  // the in-session forced flag so the sidebar badge appears immediately. NIP-RS
+  // read markers are monotonic, so we do not publish a lower timestamp.
+  const markChannelUnread = React.useCallback((channelId: string) => {
+    if (!forcedUnreadRef.current.has(channelId)) {
+      forcedUnreadRef.current.add(channelId);
+      bumpLatestVersion();
+    }
+  }, []);
 
   // Mark the active channel as read when it changes or new messages arrive.
   // Honours the caller's contract that a null activeReadAt suppresses
@@ -496,6 +506,7 @@ export function useUnreadChannels(
     followedRootIds: liveUpdateOptions.followedRootIds,
     authoredRootIds: authoredRootIdsRef.current,
     mutedRootIds: mutedRootIdsRef.current,
+    mutedChannelIds: mutedChannelIdsRef.current,
   });
 
   // Effect-key the catch-up on the *set* of channel IDs, not the array
@@ -602,15 +613,17 @@ export function useUnreadChannels(
               continue;
             }
             if (readAt !== null && event.created_at <= readAt) continue;
+            const eventChannelId =
+              event.tags.find((t) => t[0] === "h")?.[1] ?? null;
             if (
-              !shouldNotifyForEvent(
-                event,
-                normalizedPubkey ?? "",
-                participatedRootIdsRef.current,
-                options.followedRootIds ?? EMPTY_SET,
-                authoredRootIdsRef.current,
-                mutedRootIdsRef.current,
-              )
+              !shouldNotifyForEvent(event, normalizedPubkey ?? "", {
+                participatedRootIds: participatedRootIdsRef.current,
+                followedRootIds: options.followedRootIds ?? EMPTY_SET,
+                authoredRootIds: authoredRootIdsRef.current,
+                mutedRootIds: mutedRootIdsRef.current,
+                mutedChannelIds: mutedChannelIdsRef.current,
+                channelId: eventChannelId,
+              })
             ) {
               continue;
             }

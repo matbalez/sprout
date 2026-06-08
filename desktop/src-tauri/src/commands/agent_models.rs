@@ -7,10 +7,10 @@ use crate::{
     app_state::AppState,
     managed_agents::{
         build_managed_agent_summary, default_agent_workdir, find_managed_agent_mut,
-        load_managed_agents, managed_agent_avatar_url, missing_command_message,
+        known_acp_runtime, load_managed_agents, managed_agent_avatar_url, missing_command_message,
         normalize_agent_args, resolve_command, save_managed_agents, sync_managed_agent_processes,
         try_regenerate_nest, AgentModelInfo, AgentModelsResponse, UpdateManagedAgentRequest,
-        UpdateManagedAgentResponse, DEFAULT_MCP_COMMAND,
+        UpdateManagedAgentResponse,
     },
     relay::{relay_ws_url_with_override, sync_managed_agent_profile},
     util::now_iso,
@@ -84,11 +84,14 @@ pub async fn get_agent_models(
         cmd.arg("models")
             .arg("--json")
             .env("SPROUT_ACP_AGENT_COMMAND", &agent_command)
-            .env("SPROUT_ACP_AGENT_ARGS", agent_args.join(","))
-            .env(
-                "GOOSE_MODE",
-                std::env::var("GOOSE_MODE").unwrap_or_else(|_| "auto".into()),
-            );
+            .env("SPROUT_ACP_AGENT_ARGS", agent_args.join(","));
+        if let Some(meta) = known_acp_runtime(&agent_command) {
+            for (key, value) in meta.default_env {
+                if std::env::var(key).is_err() {
+                    cmd.env(key, value);
+                }
+            }
+        }
         // User env layering — written LAST so it overrides any Sprout-set env above.
         for (k, v) in &merged_env {
             cmd.env(k, v);
@@ -192,11 +195,7 @@ pub async fn update_managed_agent(
             record.agent_args = agent_args;
         }
         if let Some(mcp_command) = input.mcp_command {
-            record.mcp_command = if mcp_command.trim().is_empty() {
-                DEFAULT_MCP_COMMAND.to_string()
-            } else {
-                mcp_command
-            };
+            record.mcp_command = mcp_command;
         }
         if let Some(env_vars) = input.env_vars {
             crate::managed_agents::validate_user_env_keys(&env_vars)?;
