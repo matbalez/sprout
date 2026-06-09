@@ -69,7 +69,6 @@ PY
 
 required_sidecars=(
     sprout-acp
-    sprout-mcp-server
     sprout-agent
     sprout-dev-mcp
     git-credential-nostr

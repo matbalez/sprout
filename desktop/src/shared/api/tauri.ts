@@ -502,7 +502,9 @@ export async function getChannelMembers(
 export async function updateChannel(
   input: UpdateChannelInput,
 ): Promise<ChannelDetail> {
-  const channel = await invokeTauri<RawChannelDetail>("update_channel", input);
+  const channel = await invokeTauri<RawChannelDetail>("update_channel", {
+    input,
+  });
   return fromRawChannelDetail(channel);
 }
 
@@ -944,10 +946,10 @@ export async function createManagedAgent(input: CreateManagedAgentInput) {
         backend: input.backend,
         respondTo: input.respondTo,
         respondToAllowlist: input.respondToAllowlist,
+        relayMesh: input.relayMesh,
       },
     },
   );
-
   return {
     agent: fromRawManagedAgent(response.agent),
     privateKeyNsec: response.private_key_nsec,

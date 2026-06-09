@@ -27,7 +27,6 @@ fi
 
 cargo build --release \
     -p sprout-acp \
-    -p sprout-mcp \
     -p sprout-agent \
     -p sprout-dev-mcp \
     -p git-credential-nostr \

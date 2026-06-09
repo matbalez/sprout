@@ -135,6 +135,7 @@ export function ChannelScreen({
   }, [activeChannel?.isMember, activeChannelId, activeReadAt, markChannelRead]);
   const {
     activeChannelTitle,
+    activeDmAvatarUrl,
     activeDmPresenceStatus,
     activeChannelEphemeralDisplay,
   } = useActiveChannelHeader(activeChannel, currentPubkey);
@@ -171,6 +172,13 @@ export function ChannelScreen({
   const managedAgents = managedAgentsQuery.data ?? [];
   const relayAgentsQuery = useRelayAgentsQuery();
   const relayAgents = relayAgentsQuery.data ?? [];
+  const activeDmParticipantPubkeys = React.useMemo(
+    () =>
+      activeChannel?.channelType === "dm"
+        ? activeChannel.participantPubkeys
+        : [],
+    [activeChannel],
+  );
   const sharedAgentOwnerPubkeys = React.useMemo(
     () =>
       relayAgents
@@ -183,11 +191,17 @@ export function ChannelScreen({
       [
         ...new Set([
           ...messageAuthorPubkeys,
+          ...activeDmParticipantPubkeys,
           ...typingEntries.map((entry) => entry.pubkey),
           ...sharedAgentOwnerPubkeys,
         ]),
       ].filter((pubkey) => pubkey.toLowerCase() !== WALLETBOT_PUBKEY),
-    [messageAuthorPubkeys, sharedAgentOwnerPubkeys, typingEntries],
+    [
+      activeDmParticipantPubkeys,
+      messageAuthorPubkeys,
+      sharedAgentOwnerPubkeys,
+      typingEntries,
+    ],
   );
   const messageProfilesQuery = useUsersBatchQuery(messageProfilePubkeys, {
     enabled: messageProfilePubkeys.length > 0,
@@ -513,6 +527,7 @@ export function ChannelScreen({
           activeChannelTitle={activeChannelTitle}
           actionsRightInset={headerActionsRightInset}
           actionsVariant={shouldCompactHeaderActions ? "compact" : "inline"}
+          activeDmAvatarUrl={activeDmAvatarUrl}
           activeDmPresenceStatus={activeDmPresenceStatus}
           currentPubkey={currentPubkey}
           isJoining={joinChannelMutation.isPending}

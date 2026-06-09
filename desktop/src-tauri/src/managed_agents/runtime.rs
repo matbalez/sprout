@@ -815,14 +815,20 @@ pub fn spawn_agent_child(
     let agent_args = normalize_agent_args(&record.agent_command, record.agent_args.clone());
     let resolved_acp_command = resolve_command(&record.acp_command)
         .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
-    let resolved_mcp_command: Option<std::path::PathBuf> =
-        if record.mcp_command.is_empty() {
-            None
-        } else {
-            Some(resolve_command(&record.mcp_command).ok_or_else(|| {
-                missing_command_message(&record.mcp_command, "MCP server command")
-            })?)
-        };
+    let resolved_mcp_command: Option<std::path::PathBuf> = if record.mcp_command.is_empty() {
+        None
+    } else {
+        match resolve_command(&record.mcp_command) {
+            Some(path) => Some(path),
+            None => {
+                eprintln!(
+                    "sprout-desktop: mcp_command {:?} not found, skipping",
+                    record.mcp_command
+                );
+                None
+            }
+        }
+    };
     // Resolve agent command to a full path (DMG launches have minimal PATH).
     let resolved_agent_command = resolve_command(&record.agent_command)
         .map(|p| p.display().to_string())
@@ -1266,18 +1272,18 @@ mod tests {
     fn goose_has_no_mcp_hooks() {
         let p = known_acp_runtime("goose").expect("should resolve");
         assert!(!p.mcp_hooks);
-        assert_eq!(p.mcp_command, Some("sprout-mcp-server"));
+        assert_eq!(p.mcp_command, None);
     }
 
     #[test]
-    fn external_acp_providers_use_sprout_mcp_server() {
+    fn external_acp_providers_do_not_use_mcp_server() {
         for command in ["goose", "claude-agent-acp", "claude-code-acp", "codex-acp"] {
             let p = known_acp_runtime(command).expect("should resolve known runtime");
             assert!(!p.mcp_hooks, "{command} should not enable hook tools");
             assert_eq!(
                 p.mcp_command,
-                Some("sprout-mcp-server"),
-                "{command} should receive Sprout MCP"
+                None,
+                "{command} should not receive a bundled MCP command"
             );
         }
     }
@@ -1348,6 +1354,7 @@ mod tests {
             last_error: None,
             respond_to,
             respond_to_allowlist: allowlist,
+            relay_mesh: None,
         }
     }
 
