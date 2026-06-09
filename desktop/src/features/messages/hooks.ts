@@ -482,7 +482,7 @@ export function useSendMessageMutation(
         };
 
         if (kudos) {
-          echoKudosPayment(channel.id);
+          echoKudosPayment(channel.id, sentMessage.created_at);
         }
         if (sharedAgentPaymentTargets.length > 0) {
           echoSharedAgentInvocationPayments(
@@ -503,7 +503,7 @@ export function useSendMessageMutation(
       );
 
       if (kudos) {
-        echoKudosPayment(channel.id);
+        echoKudosPayment(channel.id, sentMessage.created_at);
       }
       if (sharedAgentPaymentTargets.length > 0) {
         echoSharedAgentInvocationPayments(

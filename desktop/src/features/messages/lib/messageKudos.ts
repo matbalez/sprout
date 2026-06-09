@@ -24,6 +24,13 @@ export function isKudosMessageEvent(event: RelayEvent) {
   return isKudosMessageTags(event.tags);
 }
 
+export function resolveKudosEchoCreatedAt(
+  messageCreatedAt: number,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+) {
+  return Math.max(nowSeconds, messageCreatedAt + 1);
+}
+
 export function resolveKudosTargetPubkey(
   mentionPubkeys: string[],
   currentPubkey?: string,

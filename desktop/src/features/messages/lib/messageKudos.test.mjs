@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   buildKudosMessageTag,
   isKudosMessageTags,
+  resolveKudosEchoCreatedAt,
   resolveKudosTargetPubkey,
 } from "@/features/messages/lib/messageKudos";
 
@@ -25,5 +26,10 @@ describe("message kudos", () => {
       () => resolveKudosTargetPubkey([ALICE, BOB]),
       /only be sent to one/,
     );
+  });
+
+  it("timestamps the payment echo after the kudos message", () => {
+    assert.equal(resolveKudosEchoCreatedAt(100, 100), 101);
+    assert.equal(resolveKudosEchoCreatedAt(100, 105), 105);
   });
 });

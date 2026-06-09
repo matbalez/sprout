@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import {
   buildKudosMessageTag,
   KUDOS_PAYMENT_AMOUNT_SATS,
+  resolveKudosEchoCreatedAt,
   resolveKudosTargetPubkey,
 } from "@/features/messages/lib/messageKudos";
 import { formatBitcoinAmount, sendMessageKudos } from "@/features/wallet/api";
@@ -34,13 +35,17 @@ export async function payForKudosMessage({
   return [buildKudosMessageTag()];
 }
 
-export function echoKudosPayment(channelId: string) {
+export function echoKudosPayment(channelId: string, messageCreatedAt: number) {
   void relayClient
     .sendMessage(
       channelId,
       `🤜 ${formatBitcoinAmount(KUDOS_PAYMENT_AMOUNT_SATS)} sent`,
       [],
       [],
+      undefined,
+      {
+        createdAt: resolveKudosEchoCreatedAt(messageCreatedAt),
+      },
     )
     .catch((error) => {
       console.error("Failed to echo kudos payment", error);

@@ -201,6 +201,9 @@ export class RelayClient {
     mentionPubkeys: string[] = [],
     extraTags: string[][] = [],
     actorPubkey?: string,
+    options?: {
+      createdAt?: number;
+    },
   ) {
     await this.ensureConnected();
 
@@ -223,6 +226,9 @@ export class RelayClient {
       kind: KIND_STREAM_MESSAGE,
       content: content.trim(),
       tags,
+      ...(typeof options?.createdAt === "number"
+        ? { createdAt: options.createdAt }
+        : {}),
     });
 
     return this.publishEvent(
