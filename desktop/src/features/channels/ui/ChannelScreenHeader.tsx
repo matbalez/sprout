@@ -6,6 +6,7 @@ import { getChannelDescription } from "@/features/channels/lib/channelDescriptio
 import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderStatusBadge";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
+import { formatBitcoinAmount } from "@/features/wallet/api";
 import { Button } from "@/shared/ui/button";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
 
@@ -18,8 +19,12 @@ type ChannelScreenHeaderProps = {
   activeDmAvatarUrl: string | null;
   activeDmPresenceStatus: PresenceStatus | null;
   currentPubkey?: string;
+  earnedBaseUnits?: number;
   isJoining?: boolean;
+  postSpendBaseUnits?: number;
   showHeaderContent?: boolean;
+  showEarned?: boolean;
+  showPostSpend?: boolean;
   onJoinChannel?: () => Promise<void>;
   onManageChannel: () => void;
   onToggleMembers: () => void;
@@ -34,8 +39,12 @@ export function ChannelScreenHeader({
   activeDmAvatarUrl,
   activeDmPresenceStatus,
   currentPubkey,
+  earnedBaseUnits = 0,
   isJoining = false,
+  postSpendBaseUnits = 0,
   showHeaderContent = true,
+  showEarned = false,
+  showPostSpend = false,
   onJoinChannel,
   onManageChannel,
   onToggleMembers,
@@ -47,26 +56,52 @@ export function ChannelScreenHeader({
     !activeChannel.archivedAt &&
     onJoinChannel;
 
-  const actions = activeChannel ? (
-    showJoinButton ? (
-      <Button
-        disabled={isJoining}
-        onClick={() => void onJoinChannel()}
-        size="sm"
-        variant="default"
+  const spendBadge =
+    activeChannel && showPostSpend ? (
+      <div
+        className="rounded-md border border-border/60 bg-muted/45 px-2 py-1 text-xs font-medium text-muted-foreground"
+        data-testid="channel-post-spend-total"
+        title="Total spent posting in this channel"
       >
-        <LogIn className="mr-1.5 h-3.5 w-3.5" />
-        {isJoining ? "Joining…" : "Join"}
-      </Button>
-    ) : (
-      <ChannelMembersBar
-        channel={activeChannel}
-        currentPubkey={currentPubkey}
-        onManageChannel={onManageChannel}
-        onToggleMembers={onToggleMembers}
-        variant={actionsVariant}
-      />
-    )
+        Spent {formatBitcoinAmount(postSpendBaseUnits)}
+      </div>
+    ) : null;
+
+  const earnedBadge =
+    activeChannel && showEarned ? (
+      <div
+        className="rounded-md border border-border/60 bg-muted/45 px-2 py-1 text-xs font-medium text-muted-foreground"
+        data-testid="channel-earned-total"
+        title="Total earned from paid joins and posts in this channel"
+      >
+        Earned {formatBitcoinAmount(earnedBaseUnits)}
+      </div>
+    ) : null;
+
+  const actions = activeChannel ? (
+    <div className="flex items-center gap-2">
+      {spendBadge}
+      {earnedBadge}
+      {showJoinButton ? (
+        <Button
+          disabled={isJoining}
+          onClick={() => void onJoinChannel()}
+          size="sm"
+          variant="default"
+        >
+          <LogIn className="mr-1.5 h-3.5 w-3.5" />
+          {isJoining ? "Joining…" : "Join"}
+        </Button>
+      ) : (
+        <ChannelMembersBar
+          channel={activeChannel}
+          currentPubkey={currentPubkey}
+          onManageChannel={onManageChannel}
+          onToggleMembers={onToggleMembers}
+          variant={actionsVariant}
+        />
+      )}
+    </div>
   ) : null;
 
   if (!showHeaderContent) {

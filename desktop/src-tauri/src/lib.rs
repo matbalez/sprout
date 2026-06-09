@@ -667,6 +667,8 @@ pub fn run() {
             open_dm,
             hide_dm,
             get_channel_details,
+            get_channel_earned_total,
+            get_channel_post_spend_total,
             get_channel_members,
             update_channel,
             set_channel_topic,

@@ -1,7 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { getForumPosts, getForumThread } from "@/shared/api/forum";
-import { payForChannelAction } from "@/features/channels/hooks";
+import {
+  getPaidPostAmountForCurrentUser,
+  incrementChannelPostSpendTotal,
+  payForChannelAction,
+} from "@/features/channels/hooks";
 import { deleteMessage, sendChannelMessage } from "@/shared/api/tauri";
 import type {
   Channel,
@@ -75,6 +79,11 @@ export function useCreateForumPostMutation(channel: Channel | null) {
     },
     onSuccess: () => {
       if (channel) {
+        incrementChannelPostSpendTotal(
+          queryClient,
+          channel.id,
+          getPaidPostAmountForCurrentUser(channel),
+        );
         void queryClient.invalidateQueries({
           queryKey: forumPostsQueryKey(channel.id),
         });
@@ -159,6 +168,11 @@ export function useCreateForumReplyMutation(channel: Channel | null) {
     },
     onSuccess: (_data, variables) => {
       if (channel) {
+        incrementChannelPostSpendTotal(
+          queryClient,
+          channel.id,
+          getPaidPostAmountForCurrentUser(channel),
+        );
         void queryClient.invalidateQueries({
           queryKey: forumThreadQueryKey(channel.id, variables.parentEventId),
         });

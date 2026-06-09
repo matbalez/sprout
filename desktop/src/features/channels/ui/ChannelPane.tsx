@@ -83,6 +83,7 @@ type ChannelPaneProps = {
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  postPriceLabel?: string | null;
   onThreadScrollTargetResolved: () => void;
   onThreadPanelResizeStart: (
     event: React.PointerEvent<HTMLButtonElement>,
@@ -152,6 +153,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   onThreadPanelResizeStart,
   onTargetReached,
   onToggleReaction,
+  postPriceLabel,
   onUnfollowThread,
   unfollowThreadById,
   personaLookup,
@@ -435,6 +437,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   onEditLastOwnMessage={handleEditLastOwnMainMessage}
                   onEditSave={onEditSave}
                   onSend={onSendMessage}
+                  paymentAnnotation={postPriceLabel}
                   profiles={profiles}
                   placeholder={
                     activeChannel?.archivedAt
@@ -492,6 +495,7 @@ export const ChannelPane = React.memo(function ChannelPane({
           isFollowingThread={isFollowingThread}
           isSending={isSending}
           isSinglePanelView={isSinglePanelView}
+          postPriceLabel={postPriceLabel}
           onCancelEdit={onCancelEdit}
           onCancelReply={onCancelThreadReply}
           onClose={onCloseThread}

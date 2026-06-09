@@ -32,6 +32,7 @@ export function ForumComposer({
   isSending,
   onCancel,
   onSubmit,
+  paymentAnnotation,
   compact = false,
   autocompleteBelow = false,
   profiles,
@@ -438,6 +439,17 @@ export function ForumComposer({
           >
             <EditorContent editor={richText.editor} />
           </div>
+
+          {paymentAnnotation ? (
+            <div
+              className="mt-2 flex justify-end text-xs font-medium text-muted-foreground"
+              data-testid="composer-post-price"
+            >
+              <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
+                {paymentAnnotation}
+              </span>
+            </div>
+          ) : null}
 
           <MessageComposerToolbar
             composerDisabled={disabled ?? false}

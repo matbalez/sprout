@@ -124,7 +124,6 @@ pub fn channel_info_from_event(
     let ttl_seconds = first_tag_value(event, "ttl").and_then(|v| v.parse::<i32>().ok());
     let ttl_deadline = first_tag_value(event, "ttl_deadline").map(str::to_string);
     let payment_policy = payment_policy_from_event(event);
-
     Ok(ChannelInfo {
         metadata_event_id: event.id.to_hex(),
         id,
@@ -141,6 +140,7 @@ pub fn channel_info_from_event(
         participants,
         participant_pubkeys,
         is_member: is_member.unwrap_or(true),
+        current_user_role: None,
         ttl_seconds,
         ttl_deadline,
         payment_policy,
@@ -177,7 +177,6 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
     };
 
     let created_at_iso = timestamp_to_iso(event.created_at.as_secs());
-
     let archived_at = if first_tag_value(event, "archived") == Some("true") {
         Some(timestamp_to_iso(event.created_at.as_secs()))
     } else {
@@ -207,6 +206,7 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
         nip29_group_id: None,
         ttl_seconds: first_tag_value(event, "ttl").and_then(|v| v.parse::<i32>().ok()),
         ttl_deadline: first_tag_value(event, "ttl_deadline").map(str::to_string),
+        current_user_role: None,
         payment_policy: payment_policy_from_event(event),
     })
 }

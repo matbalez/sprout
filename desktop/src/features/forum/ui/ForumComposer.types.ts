@@ -18,6 +18,7 @@ export type ForumComposerProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
   ) => undefined | Promise<unknown>;
+  paymentAnnotation?: React.ReactNode;
   /** Render as a single-line composer until the user focuses it. */
   compact?: boolean;
   /** When true, autocomplete renders below the input (for top-of-view composers). */

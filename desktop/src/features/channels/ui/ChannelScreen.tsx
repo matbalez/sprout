@@ -3,7 +3,10 @@ import { useAppShell } from "@/app/AppShellContext";
 import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHeader";
 import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandlers";
 import {
+  getPaidPostAmountForCurrentUser,
+  useChannelEarnedTotalQuery,
   useChannelMembersQuery,
+  useChannelPostSpendTotalQuery,
   useJoinChannelMutation,
 } from "@/features/channels/hooks";
 import { ChannelScreenEmptyState } from "@/features/channels/ui/ChannelScreenEmptyState";
@@ -39,7 +42,11 @@ import { useLoadMissingAncestors } from "@/features/messages/useLoadMissingAnces
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
-import { isWalletBotChannel, WALLETBOT_PUBKEY } from "@/features/wallet/api";
+import {
+  formatBitcoinAmount,
+  isWalletBotChannel,
+  WALLETBOT_PUBKEY,
+} from "@/features/wallet/api";
 import type { RespondToMode } from "@/shared/api/types";
 import { useChannelFind } from "@/features/search/useChannelFind";
 import { ViewLoadingFallback } from "@/shared/ui/ViewLoadingFallback";
@@ -168,6 +175,29 @@ export function ChannelScreen({
     !isWalletBotActive,
   );
   const channelMembers = channelMembersQuery.data;
+  const paidPostAmountBaseUnits = getPaidPostAmountForCurrentUser(activeChannel);
+  const postPriceLabel =
+    paidPostAmountBaseUnits !== null
+      ? `Post ${formatBitcoinAmount(paidPostAmountBaseUnits)}`
+      : null;
+  const showPostSpendTotal = paidPostAmountBaseUnits !== null;
+  const postSpendTotalQuery = useChannelPostSpendTotalQuery(
+    activeChannelId,
+    showPostSpendTotal && activeChannel?.isMember === true,
+  );
+  const isChannelPaymentRecipient = Boolean(
+    activeChannel?.paymentPolicy &&
+      currentPubkey &&
+      activeChannel.paymentPolicy.paymentRecipientPubkey.toLowerCase() ===
+        currentPubkey.toLowerCase(),
+  );
+  const showEarnedTotal = Boolean(
+    activeChannel?.paymentPolicy && isChannelPaymentRecipient,
+  );
+  const earnedTotalQuery = useChannelEarnedTotalQuery(
+    activeChannelId,
+    showEarnedTotal && activeChannel?.isMember === true,
+  );
   const managedAgentsQuery = useManagedAgentsQuery();
   const managedAgents = managedAgentsQuery.data ?? [];
   const relayAgentsQuery = useRelayAgentsQuery();
@@ -534,6 +564,10 @@ export function ChannelScreen({
           onJoinChannel={joinChannelMutation.mutateAsync}
           onManageChannel={openChannelManagement}
           onToggleMembers={() => setIsMembersSidebarOpen((prev) => !prev)}
+          earnedBaseUnits={earnedTotalQuery.data ?? 0}
+          postSpendBaseUnits={postSpendTotalQuery.data ?? 0}
+          showEarned={showEarnedTotal}
+          showPostSpend={showPostSpendTotal}
           showHeaderContent={!isSinglePanelView}
         />
 
@@ -549,6 +583,7 @@ export function ChannelScreen({
                   currentPubkey={currentPubkey}
                   onClosePost={onCloseForumPost}
                   onSelectPost={onSelectForumPost}
+                  postPriceLabel={postPriceLabel}
                   selectedPostId={selectedForumPostId}
                   targetReplyId={targetForumReplyId}
                 />
@@ -624,6 +659,7 @@ export function ChannelScreen({
                   onSelectThreadReplyTarget={handleSelectThreadReplyTarget}
                   onSendMessage={handleSendMessage}
                   onSendThreadReply={handleSendThreadReply}
+                  postPriceLabel={postPriceLabel}
                   onThreadScrollTargetResolved={
                     handleThreadScrollTargetResolved
                   }

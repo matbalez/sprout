@@ -2,7 +2,10 @@ import * as React from "react";
 
 import { getCachedSearchHitEvent } from "@/app/navigation/searchHitEventCache";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { useChannelsQuery } from "@/features/channels/hooks";
+import {
+  useChannelDetailsQuery,
+  useChannelsQuery,
+} from "@/features/channels/hooks";
 import { ChannelScreen } from "@/features/channels/ui/ChannelScreen";
 import { useProfileQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -32,6 +35,22 @@ export function ChannelRouteScreen({
   const channels = channelsQuery.data ?? [];
   const activeChannel =
     channels.find((channel) => channel.id === channelId) ?? null;
+  const channelDetailsQuery = useChannelDetailsQuery(
+    channelId,
+    activeChannel !== null && activeChannel.paymentPolicy === null,
+  );
+  const hydratedActiveChannel = React.useMemo(() => {
+    const paymentPolicy = channelDetailsQuery.data?.paymentPolicy ?? null;
+    if (!activeChannel || activeChannel.paymentPolicy || !paymentPolicy) {
+      return activeChannel;
+    }
+    return {
+      ...activeChannel,
+      metadataEventId:
+        channelDetailsQuery.data?.metadataEventId ?? activeChannel.metadataEventId,
+      paymentPolicy,
+    };
+  }, [activeChannel, channelDetailsQuery.data]);
   const [targetMessageEvents, setTargetMessageEvents] = React.useState<
     RelayEvent[]
   >(() => {
@@ -99,7 +118,7 @@ export function ChannelRouteScreen({
 
   return (
     <ChannelScreen
-      activeChannel={activeChannel}
+      activeChannel={hydratedActiveChannel}
       currentIdentity={identityQuery.data}
       currentProfile={profileQuery.data}
       onCloseForumPost={() => {

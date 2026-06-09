@@ -24,6 +24,7 @@ type ForumViewProps = {
   onClosePost: () => void;
   onSelectPost: (postId: string) => void;
   onTargetReached?: (messageId: string) => void;
+  postPriceLabel?: string | null;
   selectedPostId: string | null;
   targetReplyId: string | null;
 };
@@ -41,6 +42,7 @@ export function ForumView({
   onClosePost,
   onSelectPost,
   onTargetReached,
+  postPriceLabel = null,
   selectedPostId,
   targetReplyId,
 }: ForumViewProps) {
@@ -134,6 +136,7 @@ export function ForumView({
             mediaTags,
           })
         }
+        postPriceLabel={postPriceLabel}
         onTargetReached={onTargetReached}
         profiles={profiles}
         targetEventId={targetReplyId}
@@ -160,6 +163,7 @@ export function ForumView({
               });
               setIsComposerOpen(false);
             }}
+            paymentAnnotation={postPriceLabel}
             placeholder="Write your post..."
             profiles={profiles}
           />

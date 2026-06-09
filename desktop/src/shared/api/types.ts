@@ -28,6 +28,7 @@ export type Channel = {
   participants: string[];
   participantPubkeys: string[];
   isMember: boolean;
+  currentUserRole: ChannelRole | null;
   ttlSeconds: number | null;
   ttlDeadline: string | null;
   paymentPolicy: ChannelPaymentPolicy | null;

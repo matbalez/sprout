@@ -132,6 +132,7 @@ type RawChannel = {
   participant_pubkeys: string[];
   ttl_seconds: number | null;
   ttl_deadline: string | null;
+  current_user_role?: "owner" | "admin" | "member" | "guest" | "bot" | null;
   payment_policy?: unknown | null;
 };
 
@@ -174,6 +175,15 @@ type RawAddChannelMembersResponse = {
 
 type MockChannel = RawChannelDetail & {
   members: RawChannelMember[];
+};
+
+type MockChannelPayment = {
+  amountSats: number;
+  channelId: string;
+  purpose: "join" | "post";
+  pubkey: string;
+  recipientPubkey: string;
+  receiptEventId: string;
 };
 
 type RawFeedItem = {
@@ -627,6 +637,10 @@ function toRawChannel(
   config?: E2eConfig,
 ): RawChannelWithMembership {
   const currentPubkey = getMockMemberPubkey(config).toLowerCase();
+  const currentMember =
+    channel.members.find(
+      (member) => member.pubkey.toLowerCase() === currentPubkey,
+    ) ?? null;
 
   return {
     metadata_event_id: channel.id,
@@ -644,6 +658,8 @@ function toRawChannel(
     participant_pubkeys: [...channel.participant_pubkeys],
     ttl_seconds: channel.ttl_seconds ?? null,
     ttl_deadline: channel.ttl_deadline ?? null,
+    current_user_role: currentMember?.role ?? null,
+    payment_policy: channel.payment_policy ?? null,
     is_member: channel.members.some(
       (member) => member.pubkey.toLowerCase() === currentPubkey,
     ),
@@ -1246,6 +1262,8 @@ const mockChannels: MockChannel[] = [
     ],
   }),
 ];
+
+const mockChannelPayments: MockChannelPayment[] = [];
 
 const mockMessages = new Map<string, RelayEvent[]>();
 const mockUserStatuses: RelayEvent[] = [];
@@ -2931,6 +2949,9 @@ async function handleCreateChannel(
     visibility: "open" | "private";
     description?: string;
     ttlSeconds?: number;
+    paidJoinAmount?: number;
+    paidPostAmount?: number;
+    paymentBolt12Offer?: string;
   },
   config: E2eConfig | undefined,
 ) {
@@ -2941,6 +2962,19 @@ async function handleCreateChannel(
       : null;
   if (!identity) {
     const owner = createCurrentMember(config, "owner");
+    const paymentPolicy =
+      args.paidJoinAmount || args.paidPostAmount
+        ? {
+            join_payment_required: Boolean(args.paidJoinAmount),
+            join_amount_base_units: args.paidJoinAmount ?? 0,
+            post_payment_required: Boolean(args.paidPostAmount),
+            post_amount_base_units: args.paidPostAmount ?? 0,
+            payment_recipient_pubkey: owner.pubkey,
+            payment_recipient_bolt12_offer:
+              args.paymentBolt12Offer ?? "lno1mockpaidoffer",
+            payment_rail: "lexe-bolt12",
+          }
+        : null;
     const channel = createMockChannel({
       id: crypto.randomUUID(),
       name: args.name,
@@ -2958,6 +2992,8 @@ async function handleCreateChannel(
       purpose_set_at: null,
       ttl_seconds: args.ttlSeconds ?? null,
       ttl_deadline: ttlDeadline,
+      current_user_role: "owner",
+      payment_policy: paymentPolicy,
       topic_required: false,
       max_members: null,
       nip29_group_id: null,
@@ -2981,6 +3017,16 @@ async function handleCreateChannel(
   }
   if (typeof args.ttlSeconds === "number") {
     tags.push(["ttl", String(args.ttlSeconds)]);
+  }
+  if (typeof args.paidJoinAmount === "number") {
+    tags.push(["paid_join", String(args.paidJoinAmount)]);
+  }
+  if (typeof args.paidPostAmount === "number") {
+    tags.push(["paid_post", String(args.paidPostAmount)]);
+  }
+  if (args.paymentBolt12Offer) {
+    tags.push(["payment_bolt12_offer", args.paymentBolt12Offer]);
+    tags.push(["payment_rail", "lexe-bolt12"]);
   }
   await submitSignedEvent(config, { kind: 9007, content: "", tags });
 
@@ -3008,6 +3054,7 @@ async function handleCreateChannel(
     archived_at: null,
     ttl_seconds: args.ttlSeconds ?? null,
     ttl_deadline: ttlDeadline,
+    current_user_role: "owner",
     created_at: ev.created_at
       ? new Date(ev.created_at * 1000).toISOString()
       : new Date().toISOString(),
@@ -3512,6 +3559,7 @@ async function handleRemoveChannelMember(
 async function handleJoinChannel(
   args: {
     channelId: string;
+    paymentReceiptEventId?: string | null;
   },
   config: E2eConfig | undefined,
 ) {
@@ -3530,10 +3578,14 @@ async function handleJoinChannel(
     return;
   }
 
+  const tags = [["h", args.channelId]];
+  if (args.paymentReceiptEventId) {
+    tags.push(["payment", args.paymentReceiptEventId, "join"]);
+  }
   await submitSignedEvent(config, {
     kind: 9021,
     content: "",
-    tags: [["h", args.channelId]],
+    tags,
   });
 }
 
@@ -3561,6 +3613,73 @@ async function handleLeaveChannel(
     content: "",
     tags: [["h", args.channelId]],
   });
+}
+
+function handleSendChannelPayment(args: {
+  amountSats?: number;
+  channelId?: string;
+  metadataEventId?: string;
+  purpose?: "join" | "post";
+  recipientPubkey?: string;
+}) {
+  if (!args.channelId || !args.metadataEventId || !args.recipientPubkey) {
+    throw new Error("mock channel payment requires channel and recipient data");
+  }
+  if (typeof args.amountSats !== "number" || args.amountSats <= 0) {
+    throw new Error("mock channel payment requires a positive amountSats");
+  }
+  if (args.purpose !== "join" && args.purpose !== "post") {
+    throw new Error("mock channel payment requires join or post purpose");
+  }
+
+  const receiptEventId = mockEventId();
+  const nonce = crypto.randomUUID().replace(/-/g, "");
+  mockChannelPayments.push({
+    amountSats: args.amountSats,
+    channelId: args.channelId,
+    purpose: args.purpose,
+    pubkey: getMockMemberPubkey(getConfig()).toLowerCase(),
+    recipientPubkey: args.recipientPubkey.toLowerCase(),
+    receiptEventId,
+  });
+
+  return {
+    paymentId: `mock-channel-payment-${crypto.randomUUID()}`,
+    amountSats: args.amountSats,
+    nonce,
+    receiptEventId,
+    receiptAccepted: true,
+    receiptError: null,
+  };
+}
+
+function handleGetChannelPostSpendTotal(args: { channelId?: string }) {
+  if (!args.channelId) {
+    throw new Error("mock spend total requires channelId");
+  }
+  const currentPubkey = getMockMemberPubkey(getConfig()).toLowerCase();
+  return mockChannelPayments
+    .filter(
+      (payment) =>
+        payment.channelId === args.channelId &&
+        payment.pubkey === currentPubkey &&
+        payment.purpose === "post",
+    )
+    .reduce((sum, payment) => sum + payment.amountSats, 0);
+}
+
+function handleGetChannelEarnedTotal(args: { channelId?: string }) {
+  if (!args.channelId) {
+    throw new Error("mock earned total requires channelId");
+  }
+  const currentPubkey = getMockMemberPubkey(getConfig()).toLowerCase();
+  return mockChannelPayments
+    .filter(
+      (payment) =>
+        payment.channelId === args.channelId &&
+        payment.recipientPubkey === currentPubkey,
+    )
+    .reduce((sum, payment) => sum + payment.amountSats, 0);
 }
 
 async function handleGetFeed(
@@ -4666,6 +4785,7 @@ async function handleSendChannelMessage(
     annotationTags?: string[][];
     mediaTags?: string[][] | null;
     emojiTags?: string[][] | null;
+    paymentReceiptEventId?: string | null;
   },
   config: E2eConfig | undefined,
 ): Promise<RawSendChannelMessageResponse> {
@@ -4678,8 +4798,11 @@ async function handleSendChannelMessage(
   // relay echoes them back on the stored event too, so mirror that here so the
   // emoji renderer keeps resolving `:shortcode:` after the round-trip.
   const emojiTags = args.emojiTags ?? [];
+  const paymentTags = args.paymentReceiptEventId
+    ? [["payment", args.paymentReceiptEventId, "post"]]
+    : [];
   // Both kinds end up on the stored event's tag set, just like the real relay.
-  const extraTags = [...mediaTags, ...emojiTags];
+  const extraTags = [...mediaTags, ...emojiTags, ...paymentTags];
   const identity = getIdentity(config);
   if (!identity) {
     const createdAt = Math.floor(Date.now() / 1000);
@@ -5320,6 +5443,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockWorkflows();
   resetMockMesh();
   resetMockUserStatuses();
+  mockChannelPayments.length = 0;
   mockWebsocketSendMutexWedged = false;
   mockWindows("main");
   window.__SPROUT_E2E_COMMANDS__ = [];
@@ -5613,6 +5737,10 @@ export function maybeInstallE2eTauriMocks() {
           amountSats,
         };
       }
+      case "send_channel_payment":
+        return handleSendChannelPayment(
+          (payload as Parameters<typeof handleSendChannelPayment>[0]) ?? {},
+        );
       case "apply_workspace":
         return;
       case "get_profile":
@@ -5797,6 +5925,15 @@ export function maybeInstallE2eTauriMocks() {
         return handleGetChannelDetails(
           payload as Parameters<typeof handleGetChannelDetails>[0],
           activeConfig,
+        );
+      case "get_channel_post_spend_total":
+        return handleGetChannelPostSpendTotal(
+          (payload as Parameters<typeof handleGetChannelPostSpendTotal>[0]) ??
+            {},
+        );
+      case "get_channel_earned_total":
+        return handleGetChannelEarnedTotal(
+          (payload as Parameters<typeof handleGetChannelEarnedTotal>[0]) ?? {},
         );
       case "get_channel_members":
         return handleGetChannelMembers(

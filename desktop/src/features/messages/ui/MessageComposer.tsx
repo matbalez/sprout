@@ -78,6 +78,7 @@ type MessageComposerProps = {
     mediaTags?: string[][],
     options?: { bountyAmountSats?: number | null; kudos?: boolean },
   ) => Promise<void>;
+  paymentAnnotation?: React.ReactNode;
   placeholder?: string;
   profiles?: UserProfileLookup;
   replyTarget?: {
@@ -104,6 +105,7 @@ export function MessageComposer({
   onEditLastOwnMessage,
   onEditSave,
   onSend,
+  paymentAnnotation,
   placeholder,
   profiles,
   replyTarget = null,
@@ -871,6 +873,17 @@ export function MessageComposer({
           >
             <EditorContent editor={richText.editor} />
           </div>
+
+          {paymentAnnotation && !editTarget ? (
+            <div
+              className="mt-2 flex justify-end text-xs font-medium text-muted-foreground"
+              data-testid="composer-post-price"
+            >
+              <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
+                {paymentAnnotation}
+              </span>
+            </div>
+          ) : null}
 
           <MessageComposerToolbar
             composerDisabled={disabled}

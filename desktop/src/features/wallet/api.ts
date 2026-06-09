@@ -131,6 +131,7 @@ export function walletBotChannel(): Channel {
     participants: ["WalletBot"],
     participantPubkeys: [WALLETBOT_PUBKEY],
     isMember: true,
+    currentUserRole: "member",
     ttlSeconds: null,
     ttlDeadline: null,
     paymentPolicy: null,

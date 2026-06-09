@@ -21,6 +21,7 @@ export type RawChannel = {
   participants: string[];
   participant_pubkeys: string[];
   is_member?: boolean;
+  current_user_role?: ChannelMember["role"] | null;
   ttl_seconds: number | null;
   ttl_deadline: string | null;
   payment_policy?: RawChannelPaymentPolicy | null;
@@ -73,6 +74,7 @@ export function fromRawChannel(channel: RawChannel): Channel {
     participants: channel.participants,
     participantPubkeys: channel.participant_pubkeys,
     isMember: channel.is_member ?? true,
+    currentUserRole: channel.current_user_role ?? null,
     ttlSeconds: channel.ttl_seconds,
     ttlDeadline: channel.ttl_deadline,
     paymentPolicy: channel.payment_policy

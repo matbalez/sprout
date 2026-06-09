@@ -8,7 +8,9 @@ import {
   deleteChannel,
   getCanvas,
   getChannelDetails,
+  getChannelEarnedTotal,
   getChannelMembers,
+  getChannelPostSpendTotal,
   getChannels,
   hideDm,
   joinChannel,
@@ -18,10 +20,13 @@ import {
   setCanvas,
   setChannelPurpose,
   setChannelTopic,
+  sendChannelMessage,
   unarchiveChannel,
   updateChannel,
 } from "@/shared/api/tauri";
+import { KIND_FORUM_POST } from "@/shared/constants/kinds";
 import {
+  formatBitcoinAmount,
   sendChannelPayment,
   withWalletBotChannel,
 } from "@/features/wallet/api";
@@ -37,6 +42,10 @@ import type {
 } from "@/shared/api/types";
 
 export const channelsQueryKey = ["channels"] as const;
+export const channelPostSpendTotalQueryKey = (channelId: string) =>
+  ["channels", channelId, "post-spend-total"] as const;
+export const channelEarnedTotalQueryKey = (channelId: string) =>
+  ["channels", channelId, "earned-total"] as const;
 const channelDetailQueryKey = (channelId: string) =>
   ["channels", channelId, "detail"] as const;
 const channelMembersQueryKey = (channelId: string) =>
@@ -47,23 +56,81 @@ const channelTypeOrder = {
   dm: 2,
 } as const;
 
+export function getPaidPostAmountForCurrentUser(
+  channel: Channel | null | undefined,
+): number | null {
+  const policy = channel?.paymentPolicy;
+  if (!channel || !policy?.postPaymentRequired) {
+    return null;
+  }
+  if (
+    channel.currentUserRole === "owner" ||
+    channel.currentUserRole === "admin"
+  ) {
+    return null;
+  }
+  return policy.postAmountBaseUnits > 0 ? policy.postAmountBaseUnits : null;
+}
+
+export function getPaidJoinAmount(
+  channel: Channel | null | undefined,
+): number | null {
+  const policy = channel?.paymentPolicy;
+  if (!policy?.joinPaymentRequired) {
+    return null;
+  }
+  return policy.joinAmountBaseUnits > 0 ? policy.joinAmountBaseUnits : null;
+}
+
+export async function postPaidJoinNotice(
+  channel: Channel,
+  amountBaseUnits: number | null,
+) {
+  if (!amountBaseUnits || amountBaseUnits <= 0) {
+    return;
+  }
+
+  await sendChannelMessage(
+    channel.id,
+    `➡️ paid ${formatBitcoinAmount(amountBaseUnits)} to join channel`,
+    null,
+    undefined,
+    undefined,
+    channel.channelType === "forum" ? KIND_FORUM_POST : undefined,
+  );
+}
+
+export function incrementChannelPostSpendTotal(
+  queryClient: ReturnType<typeof useQueryClient>,
+  channelId: string,
+  amountBaseUnits: number | null,
+) {
+  if (!amountBaseUnits || amountBaseUnits <= 0) {
+    return;
+  }
+  queryClient.setQueryData<number>(
+    channelPostSpendTotalQueryKey(channelId),
+    (current = 0) => current + amountBaseUnits,
+  );
+}
+
 export async function payForChannelAction(
   channel: Channel,
   purpose: "join" | "post",
 ): Promise<string | null> {
   const policy = channel.paymentPolicy;
-  const required =
-    purpose === "join"
-      ? policy?.joinPaymentRequired
-      : policy?.postPaymentRequired;
-  if (!policy || !required) {
+  if (!policy) {
     return null;
   }
 
   const amountSats =
     purpose === "join"
-      ? policy.joinAmountBaseUnits
-      : policy.postAmountBaseUnits;
+      ? getPaidJoinAmount(channel)
+      : getPaidPostAmountForCurrentUser(channel);
+  if (!amountSats) {
+    return null;
+  }
+
   const result = await sendChannelPayment({
     channelId: channel.id,
     metadataEventId: channel.metadataEventId,
@@ -242,6 +309,41 @@ export function useChannelMembersQuery(
       return getChannelMembers(channelId);
     },
     staleTime: 30_000,
+  });
+}
+
+export function useChannelPostSpendTotalQuery(
+  channelId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    enabled: enabled && channelId !== null,
+    queryKey: channelPostSpendTotalQueryKey(channelId ?? "none"),
+    queryFn: async () => {
+      if (!channelId) {
+        return 0;
+      }
+      return getChannelPostSpendTotal(channelId);
+    },
+    staleTime: 30_000,
+  });
+}
+
+export function useChannelEarnedTotalQuery(
+  channelId: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    enabled: enabled && channelId !== null,
+    queryKey: channelEarnedTotalQueryKey(channelId ?? "none"),
+    queryFn: async () => {
+      if (!channelId) {
+        return 0;
+      }
+      return getChannelEarnedTotal(channelId);
+    },
+    staleTime: 10_000,
+    refetchInterval: enabled && channelId !== null ? 15_000 : false,
   });
 }
 
@@ -448,6 +550,17 @@ export function useJoinChannelMutation(channel: Channel | string | null) {
           ? null
           : await payForChannelAction(channel, "join");
       await joinChannel(channelId, paymentReceiptEventId ?? undefined);
+      if (
+        typeof channel !== "string" &&
+        channel !== null &&
+        paymentReceiptEventId
+      ) {
+        try {
+          await postPaidJoinNotice(channel, getPaidJoinAmount(channel));
+        } catch (error) {
+          console.warn("Failed to post paid join notice", error);
+        }
+      }
     },
     onSettled: async () => {
       await invalidateChannelState(queryClient, channelId);

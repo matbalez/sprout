@@ -33,3 +33,51 @@ pub fn payment_policy_from_event(event: &Event) -> Option<ChannelPaymentPolicyIn
             .to_string(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+
+    fn ev(kind: u16, content: &str, tags: Vec<Vec<&str>>) -> Event {
+        let keys = Keys::generate();
+        let parsed: Vec<Tag> = tags
+            .into_iter()
+            .map(|tag| Tag::parse(tag).expect("parse tag"))
+            .collect();
+        EventBuilder::new(Kind::from_u16(kind), content)
+            .tags(parsed)
+            .sign_with_keys(&keys)
+            .expect("sign")
+    }
+
+    #[test]
+    fn parses_paid_create_event() {
+        let e = ev(
+            9007,
+            "",
+            vec![
+                vec!["h", "123e4567-e89b-12d3-a456-426614174000"],
+                vec!["name", "paid"],
+                vec!["visibility", "open"],
+                vec!["channel_type", "stream"],
+                vec!["paid_join", "25"],
+                vec!["paid_post", "10"],
+                vec!["payment_bolt12_offer", "lno1paidchanneloffer"],
+                vec!["payment_rail", "lexe-bolt12"],
+            ],
+        );
+
+        let policy = payment_policy_from_event(&e).expect("payment policy");
+        assert!(policy.join_payment_required);
+        assert_eq!(policy.join_amount_base_units, 25);
+        assert!(policy.post_payment_required);
+        assert_eq!(policy.post_amount_base_units, 10);
+        assert_eq!(policy.payment_recipient_pubkey, e.pubkey.to_hex());
+        assert_eq!(
+            policy.payment_recipient_bolt12_offer,
+            "lno1paidchanneloffer"
+        );
+        assert_eq!(policy.payment_rail, "lexe-bolt12");
+    }
+}

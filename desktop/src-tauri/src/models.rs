@@ -106,6 +106,8 @@ pub struct ChannelInfo {
     pub participant_pubkeys: Vec<String>,
     #[serde(default = "default_true")]
     pub is_member: bool,
+    #[serde(default)]
+    pub current_user_role: Option<String>,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
     #[serde(default)]
@@ -138,6 +140,8 @@ pub struct ChannelDetailInfo {
     pub nip29_group_id: Option<String>,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
+    #[serde(default)]
+    pub current_user_role: Option<String>,
     #[serde(default)]
     pub payment_policy: Option<ChannelPaymentPolicyInfo>,
 }

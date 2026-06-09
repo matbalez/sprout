@@ -16,7 +16,9 @@ import { useSettingsShortcuts } from "@/app/useSettingsShortcuts";
 import { useWebviewZoomShortcuts } from "@/app/useWebviewZoomShortcuts";
 import {
   channelsQueryKey,
+  getPaidJoinAmount,
   payForChannelAction,
+  postPaidJoinNotice,
   useChannelsQuery,
   useCreateChannelMutation,
   useHideDmMutation,
@@ -410,8 +412,16 @@ export function AppShell() {
 
   const handleBrowseChannelJoin = React.useCallback(
     async (channel: Channel) => {
+      const paidJoinAmountBaseUnits = getPaidJoinAmount(channel);
       const paymentReceiptEventId = await payForChannelAction(channel, "join");
       await joinChannel(channel.id, paymentReceiptEventId ?? undefined);
+      if (paymentReceiptEventId) {
+        try {
+          await postPaidJoinNotice(channel, paidJoinAmountBaseUnits);
+        } catch (error) {
+          console.warn("Failed to post paid join notice", error);
+        }
+      }
       await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
     },
     [queryClient],

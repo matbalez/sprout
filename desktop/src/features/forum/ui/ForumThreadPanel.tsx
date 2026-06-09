@@ -36,6 +36,7 @@ type ForumThreadPanelProps = {
   onDeletePost?: (eventId: string) => void;
   onDeleteReply?: (eventId: string) => void;
   onTargetReached?: (eventId: string) => void;
+  postPriceLabel?: string | null;
   canDeletePost?: boolean;
   isDeletingPost?: boolean;
   targetEventId?: string | null;
@@ -128,6 +129,7 @@ export function ForumThreadPanel({
   onDeletePost,
   onDeleteReply,
   onTargetReached,
+  postPriceLabel,
   canDeletePost,
   isDeletingPost,
   targetEventId,
@@ -286,6 +288,7 @@ export function ForumThreadPanel({
           channelId={channelId}
           isSending={isSendingReply}
           onSubmit={onReply}
+          paymentAnnotation={postPriceLabel}
           placeholder="Reply to this post..."
           profiles={profiles}
         />

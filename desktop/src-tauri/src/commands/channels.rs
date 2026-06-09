@@ -14,12 +14,54 @@ use crate::{
 // ── Reads (pure-nostr via /query) ────────────────────────────────────────────
 
 const CHANNEL_PAYMENT_POLICY_CONTENT: &str = "sprout-paid-channel-policy:v1";
+const KIND_CHANNEL_CREATE: u16 = 9007;
+const KIND_REACTION: u16 = 7;
 
 fn first_tag_value<'a>(event: &'a nostr::Event, name: &str) -> Option<&'a str> {
     event.tags.iter().find_map(|tag| {
         let parts = tag.as_slice();
         (parts.len() >= 2 && parts[0] == name).then(|| parts[1].as_str())
     })
+}
+
+fn keep_newest_policy(
+    policies: &mut HashMap<String, (u64, ChannelPaymentPolicyInfo)>,
+    key: &str,
+    created_at: u64,
+    policy: &ChannelPaymentPolicyInfo,
+) {
+    let entry = policies
+        .entry(key.to_string())
+        .or_insert_with(|| (created_at, policy.clone()));
+    if created_at >= entry.0 {
+        *entry = (created_at, policy.clone());
+    }
+}
+
+fn collect_payment_policies(
+    events: Vec<nostr::Event>,
+    newest_by_key: &mut HashMap<String, (u64, ChannelPaymentPolicyInfo)>,
+) {
+    for event in events {
+        let kind = event.kind.as_u16();
+        let policy_event = kind == KIND_REACTION && event.content == CHANNEL_PAYMENT_POLICY_CONTENT;
+        let create_event = kind == KIND_CHANNEL_CREATE;
+        if !policy_event && !create_event {
+            continue;
+        }
+        let Some(policy) = nostr_convert::payment_policy_from_event(&event) else {
+            continue;
+        };
+        let created_at = event.created_at.as_secs();
+        if policy_event {
+            if let Some(metadata_event_id) = first_tag_value(&event, "e") {
+                keep_newest_policy(newest_by_key, metadata_event_id, created_at, &policy);
+            }
+        }
+        if let Some(channel_id) = first_tag_value(&event, "h") {
+            keep_newest_policy(newest_by_key, channel_id, created_at, &policy);
+        }
+    }
 }
 
 async fn fetch_channel_payment_policies(
@@ -30,44 +72,60 @@ async fn fetch_channel_payment_policies(
         .iter()
         .map(|event| event.id.to_hex())
         .collect();
-    if metadata_event_ids.is_empty() {
+    let mut channel_ids: Vec<String> = metadata_events
+        .iter()
+        .filter_map(|event| first_tag_value(event, "d").map(str::to_string))
+        .collect();
+    channel_ids.sort();
+    channel_ids.dedup();
+
+    if metadata_event_ids.is_empty() && channel_ids.is_empty() {
         return Ok(HashMap::new());
     }
 
-    let policy_events = query_relay(
-        state,
-        &[serde_json::json!({
-            "kinds": [7],
-            "#e": metadata_event_ids,
-            "limit": 5000,
-        })],
-    )
-    .await?;
+    let mut newest_by_key: HashMap<String, (u64, ChannelPaymentPolicyInfo)> = HashMap::new();
+    if !metadata_event_ids.is_empty() {
+        let policy_events = query_relay(
+            state,
+            &[serde_json::json!({
+                "kinds": [KIND_REACTION],
+                "#e": metadata_event_ids,
+                "limit": 5000,
+            })],
+        )
+        .await
+        .unwrap_or_default();
+        collect_payment_policies(policy_events, &mut newest_by_key);
+    }
+    if !channel_ids.is_empty() {
+        let policy_marker_events = query_relay(
+            state,
+            &[serde_json::json!({
+                "kinds": [KIND_REACTION],
+                "#h": channel_ids.clone(),
+                "limit": 5000,
+            })],
+        )
+        .await
+        .unwrap_or_default();
+        collect_payment_policies(policy_marker_events, &mut newest_by_key);
 
-    let mut newest_by_metadata_id: HashMap<String, (u64, ChannelPaymentPolicyInfo)> =
-        HashMap::new();
-    for event in policy_events {
-        if event.content != CHANNEL_PAYMENT_POLICY_CONTENT {
-            continue;
-        }
-        let Some(metadata_event_id) = first_tag_value(&event, "e") else {
-            continue;
-        };
-        let Some(policy) = nostr_convert::payment_policy_from_event(&event) else {
-            continue;
-        };
-        let created_at = event.created_at.as_secs();
-        let entry = newest_by_metadata_id
-            .entry(metadata_event_id.to_string())
-            .or_insert_with(|| (created_at, policy.clone()));
-        if created_at >= entry.0 {
-            *entry = (created_at, policy);
-        }
+        let create_events = query_relay(
+            state,
+            &[serde_json::json!({
+                "kinds": [KIND_CHANNEL_CREATE],
+                "#h": channel_ids,
+                "limit": 5000,
+            })],
+        )
+        .await
+        .unwrap_or_default();
+        collect_payment_policies(create_events, &mut newest_by_key);
     }
 
-    Ok(newest_by_metadata_id
+    Ok(newest_by_key
         .into_iter()
-        .map(|(metadata_id, (_, policy))| (metadata_id, policy))
+        .map(|(key, (_, policy))| (key, policy))
         .collect())
 }
 
@@ -76,7 +134,10 @@ fn apply_payment_policy(
     policies: &HashMap<String, ChannelPaymentPolicyInfo>,
 ) -> ChannelInfo {
     if channel.payment_policy.is_none() {
-        channel.payment_policy = policies.get(&channel.metadata_event_id).cloned();
+        channel.payment_policy = policies
+            .get(&channel.metadata_event_id)
+            .or_else(|| policies.get(&channel.id))
+            .cloned();
     }
     channel
 }
@@ -86,7 +147,10 @@ fn apply_detail_payment_policy(
     policies: &HashMap<String, ChannelPaymentPolicyInfo>,
 ) -> ChannelDetailInfo {
     if channel.payment_policy.is_none() {
-        channel.payment_policy = policies.get(&channel.metadata_event_id).cloned();
+        channel.payment_policy = policies
+            .get(&channel.metadata_event_id)
+            .or_else(|| policies.get(&channel.id))
+            .cloned();
     }
     channel
 }
@@ -234,11 +298,12 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
         .await
         .unwrap_or_default();
 
-        let membership = collect_members_by_channel(&members_events);
+        let membership = collect_members_by_channel(&members_events, &my_pubkey);
         for channel in &mut channels {
             if let Some(info) = membership.get(&channel.id) {
                 channel.member_count = info.count;
                 channel.member_pubkeys = info.pubkeys.clone();
+                channel.current_user_role = info.current_user_role.clone();
             }
         }
     }
@@ -249,6 +314,7 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
 struct ChannelMembership {
     count: i64,
     pubkeys: Vec<String>,
+    current_user_role: Option<String>,
 }
 
 /// Build a `channel_id → membership` map from a batch of kind:39002 events.
@@ -257,9 +323,11 @@ struct ChannelMembership {
 /// per-channel `get_channel_members` path.
 fn collect_members_by_channel(
     events: &[nostr::Event],
+    current_pubkey: &str,
 ) -> std::collections::HashMap<String, ChannelMembership> {
     let mut map: std::collections::HashMap<String, ChannelMembership> =
         std::collections::HashMap::with_capacity(events.len());
+    let current_pubkey = current_pubkey.to_ascii_lowercase();
     for ev in events {
         let Some(d) = ev.tags.iter().find_map(|t| {
             let s = t.as_slice();
@@ -271,15 +339,101 @@ fn collect_members_by_channel(
             continue;
         };
         let pubkeys: Vec<String> = resp.members.iter().map(|m| m.pubkey.clone()).collect();
+        let current_user_role = resp
+            .members
+            .iter()
+            .find(|member| member.pubkey.eq_ignore_ascii_case(&current_pubkey))
+            .map(|member| member.role.clone());
         map.insert(
             d,
             ChannelMembership {
                 count: pubkeys.len() as i64,
                 pubkeys,
+                current_user_role,
             },
         );
     }
     map
+}
+
+fn channel_payment_receipt_amount(
+    event: &nostr::Event,
+    channel_id: &str,
+    purposes: &[&str],
+) -> Option<u64> {
+    let purpose = first_tag_value(event, "purpose")?;
+    if !purposes.contains(&purpose) {
+        return None;
+    }
+    let expected_content_prefix = format!("sprout-channel:{purpose}:");
+    if !event.content.starts_with(&expected_content_prefix) {
+        return None;
+    }
+    if first_tag_value(event, "h") != Some(channel_id) {
+        return None;
+    }
+    if first_tag_value(event, "status") != Some("sender-confirmed") {
+        return None;
+    }
+    first_tag_value(event, "amount")
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|amount| *amount > 0)
+}
+
+#[tauri::command]
+pub async fn get_channel_post_spend_total(
+    channel_id: String,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    parse_channel_uuid(&channel_id)?;
+    let my_pubkey = {
+        let keys = state.keys.lock().map_err(|e| e.to_string())?;
+        keys.public_key().to_hex()
+    };
+
+    let receipt_events = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [KIND_REACTION],
+            "authors": [my_pubkey],
+            "#h": [channel_id.clone()],
+            "limit": 5000,
+        })],
+    )
+    .await?;
+
+    Ok(receipt_events
+        .iter()
+        .filter_map(|event| channel_payment_receipt_amount(event, &channel_id, &["post"]))
+        .sum())
+}
+
+#[tauri::command]
+pub async fn get_channel_earned_total(
+    channel_id: String,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    parse_channel_uuid(&channel_id)?;
+    let my_pubkey = {
+        let keys = state.keys.lock().map_err(|e| e.to_string())?;
+        keys.public_key().to_hex()
+    };
+
+    let receipt_events = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [KIND_REACTION],
+            "#h": [channel_id.clone()],
+            "#p": [my_pubkey],
+            "limit": 5000,
+        })],
+    )
+    .await?;
+
+    Ok(receipt_events
+        .iter()
+        .filter_map(|event| channel_payment_receipt_amount(event, &channel_id, &["join", "post"]))
+        .sum())
 }
 
 #[tauri::command]
@@ -423,6 +577,7 @@ pub async fn create_channel(
         .map(|ev| nostr_convert::channel_info_from_event(ev, None, None))
         .transpose()?
         .ok_or_else(|| "channel created but metadata not yet available".to_string())?;
+    channel.current_user_role = Some("owner".to_string());
 
     let join_amount = paid_join_amount.unwrap_or(0);
     let post_amount = paid_post_amount.unwrap_or(0);

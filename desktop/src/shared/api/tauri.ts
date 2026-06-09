@@ -487,6 +487,14 @@ export async function getChannelDetails(
   return fromRawChannelDetail(channel);
 }
 
+export function getChannelPostSpendTotal(channelId: string): Promise<number> {
+  return invokeTauri<number>("get_channel_post_spend_total", { channelId });
+}
+
+export function getChannelEarnedTotal(channelId: string): Promise<number> {
+  return invokeTauri<number>("get_channel_earned_total", { channelId });
+}
+
 export async function getChannelMembers(
   channelId: string,
 ): Promise<ChannelMember[]> {

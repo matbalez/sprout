@@ -17,7 +17,11 @@ import { createOptimisticMessage } from "@/features/messages/lib/optimisticMessa
 import { splitOutgoingTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import { relayClient } from "@/shared/api/relayClient";
 import { customEmojiQueryKey } from "@/features/custom-emoji/hooks";
-import { payForChannelAction } from "@/features/channels/hooks";
+import {
+  getPaidPostAmountForCurrentUser,
+  incrementChannelPostSpendTotal,
+  payForChannelAction,
+} from "@/features/channels/hooks";
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 import {
@@ -526,7 +530,7 @@ export function useSendMessageMutation(
         !channel ||
         !identity ||
         channel.channelType === "forum" ||
-        channel.paymentPolicy?.postPaymentRequired
+        getPaidPostAmountForCurrentUser(channel) !== null
       ) {
         return undefined;
       }
@@ -583,7 +587,21 @@ export function useSendMessageMutation(
       queryClient.setQueryData(context.queryKey, context.previousMessages);
     },
     onSuccess: (message, _variables, context) => {
+      if (channel) {
+        incrementChannelPostSpendTotal(
+          queryClient,
+          channel.id,
+          getPaidPostAmountForCurrentUser(channel),
+        );
+      }
+
       if (!context) {
+        if (channel) {
+          queryClient.setQueryData<RelayEvent[]>(
+            channelMessagesKey(channel.id),
+            (current = []) => mergeTimelineCacheMessages(current, message),
+          );
+        }
         return;
       }
 

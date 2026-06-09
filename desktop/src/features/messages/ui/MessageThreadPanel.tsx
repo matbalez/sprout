@@ -63,6 +63,7 @@ type MessageThreadPanelProps = {
     emoji: string,
     remove: boolean,
   ) => Promise<void>;
+  postPriceLabel?: string | null;
   profiles?: UserProfileLookup;
   replyTargetMessage: TimelineMessage | null;
   scrollTargetId: string | null;
@@ -115,6 +116,7 @@ export function MessageThreadPanel({
   onSend,
   onToggleReaction,
   onUnfollowThread,
+  postPriceLabel,
   profiles,
   replyTargetMessage,
   scrollTargetId,
@@ -405,6 +407,7 @@ export function MessageThreadPanel({
               onEditLastOwnMessage={onEditLastOwnMessage}
               onEditSave={onEditSave}
               onSend={onSend}
+              paymentAnnotation={postPriceLabel}
               placeholder={`Reply in thread to ${threadHead.author}`}
               profiles={profiles}
               replyTarget={composerReplyTarget}
