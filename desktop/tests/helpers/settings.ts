@@ -3,6 +3,7 @@ import { expect, type Page } from "@playwright/test";
 type SettingsSection =
   | "profile"
   | "notifications"
+  | "lightning-wallet"
   | "agents"
   | "channel-templates"
   | "compute"

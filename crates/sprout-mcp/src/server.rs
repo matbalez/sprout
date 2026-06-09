@@ -2059,6 +2059,8 @@ are not returned — use `get_thread` to fetch the full reply tree for a specifi
             channel_uuid,
             p.name.as_deref(),
             p.description.as_deref(),
+            None,
+            None,
         ) {
             Ok(b) => b,
             Err(e) => return format!("Error: {e}"),

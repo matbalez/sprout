@@ -509,6 +509,7 @@ test("renders settings in the app shell with a back button", async ({
     "aria-pressed",
     "true",
   );
+  await expect(page.getByTestId("settings-nav-lightning-wallet")).toBeVisible();
   await expect(page.getByText("Workspaces", { exact: true })).toBeVisible();
   await expect(
     page.getByTestId("settings-nav-channel-templates"),
@@ -519,6 +520,12 @@ test("renders settings in the app shell with a back button", async ({
     page.getByTestId("settings-profile").getByRole("heading", {
       exact: true,
       name: "Profile",
+    }),
+  ).toBeVisible();
+  await page.getByTestId("settings-nav-lightning-wallet").click();
+  await expect(
+    page.getByTestId("settings-lightning-wallet").getByRole("heading", {
+      name: "Lightning Wallet",
     }),
   ).toBeVisible();
   await page.getByTestId("settings-nav-appearance").click();

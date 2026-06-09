@@ -47,6 +47,7 @@ const settingsNavGroups: Array<{
       "profile",
       "appearance",
       "notifications",
+      "lightning-wallet",
       "shortcuts",
       "custom-emoji",
     ],
