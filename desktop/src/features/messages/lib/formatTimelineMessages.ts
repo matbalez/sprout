@@ -14,6 +14,7 @@ import {
   isMessageTipReceiptEvent,
 } from "@/features/messages/lib/messageTips";
 import {
+  getDecayedMessageBountyAmount,
   parseMessageBountyPaidTags,
   parseMessageBountyTags,
   type MessageBounty,
@@ -299,6 +300,7 @@ export function formatTimelineMessages(
     profiles,
   });
 
+  const currentTimeSeconds = Math.floor(Date.now() / 1_000);
   const bountyByEventId = new Map<string, MessageBounty>();
   for (const event of visibleEvents) {
     const bounty = parseMessageBountyTags(event.tags);
@@ -306,13 +308,99 @@ export function formatTimelineMessages(
       continue;
     }
 
+    const amountSats = getDecayedMessageBountyAmount({
+      createdAt: event.created_at,
+      initialAmountSats: bounty.amountSats,
+      now: currentTimeSeconds,
+    });
     bountyByEventId.set(event.id, {
       ...bounty,
+      amountSats,
+      createdAt: event.created_at,
+      initialAmountSats: bounty.amountSats,
+      lockedAmountSats: null,
+      lockedResponseMessageId: null,
       paid: false,
     });
   }
 
-  const paidBountyIds = new Set<string>();
+  const eventIndexById = new Map(
+    visibleEvents.map((event, index) => [event.id, index]),
+  );
+  const firstResponseByBountyId = new Map<
+    string,
+    {
+      amountSats: number;
+      eventIndex: number;
+      responseCreatedAt: number;
+      responseMessageId: string;
+    }
+  >();
+  for (const event of visibleEvents) {
+    const thread = getThreadReference(event.tags);
+    const bountyMessageId =
+      thread.parentId && bountyByEventId.has(thread.parentId)
+        ? thread.parentId
+        : thread.rootId && bountyByEventId.has(thread.rootId)
+          ? thread.rootId
+          : null;
+    if (!bountyMessageId) {
+      continue;
+    }
+
+    const bounty = bountyByEventId.get(bountyMessageId);
+    if (!bounty) {
+      continue;
+    }
+
+    const authorPubkey = resolveEventAuthorPubkey({
+      pubkey: event.pubkey,
+      tags: event.tags,
+      preferActorTag: true,
+      requireChannelTagForPTags: true,
+    }).toLowerCase();
+    if (authorPubkey !== bounty.recipientPubkey) {
+      continue;
+    }
+
+    const eventIndex = eventIndexById.get(event.id) ?? Number.MAX_SAFE_INTEGER;
+    const existing = firstResponseByBountyId.get(bountyMessageId);
+    if (
+      existing &&
+      (existing.responseCreatedAt < event.created_at ||
+        (existing.responseCreatedAt === event.created_at &&
+          existing.eventIndex <= eventIndex))
+    ) {
+      continue;
+    }
+
+    firstResponseByBountyId.set(bountyMessageId, {
+      amountSats: getDecayedMessageBountyAmount({
+        createdAt: bounty.createdAt,
+        initialAmountSats: bounty.initialAmountSats,
+        now: event.created_at,
+      }),
+      eventIndex,
+      responseCreatedAt: event.created_at,
+      responseMessageId: event.id,
+    });
+  }
+
+  for (const [bountyMessageId, response] of firstResponseByBountyId) {
+    const bounty = bountyByEventId.get(bountyMessageId);
+    if (!bounty) {
+      continue;
+    }
+
+    bounty.amountSats = response.amountSats;
+    bounty.lockedAmountSats = response.amountSats;
+    bounty.lockedResponseMessageId = response.responseMessageId;
+  }
+
+  const paidBountyReceipts = new Map<
+    string,
+    { amountSats: number; responseMessageId: string }
+  >();
   for (const event of events) {
     if (deletedEventIds.has(event.id)) {
       continue;
@@ -323,11 +411,17 @@ export function formatTimelineMessages(
       continue;
     }
 
-    paidBountyIds.add(receipt.bountyMessageId);
+    paidBountyReceipts.set(receipt.bountyMessageId, {
+      amountSats: receipt.amountSats,
+      responseMessageId: receipt.responseMessageId,
+    });
   }
-  for (const bountyMessageId of paidBountyIds) {
+  for (const [bountyMessageId, receipt] of paidBountyReceipts) {
     const bounty = bountyByEventId.get(bountyMessageId);
     if (bounty) {
+      bounty.amountSats = receipt.amountSats;
+      bounty.lockedAmountSats = receipt.amountSats;
+      bounty.lockedResponseMessageId = receipt.responseMessageId;
       bounty.paid = true;
     }
   }
@@ -435,7 +529,8 @@ export function formatTimelineMessages(
       !referencedBounty.paid &&
       currentPubkeyLower &&
       bountySenderPubkey === currentPubkeyLower &&
-      authorPubkey.toLowerCase() === referencedBounty.recipientPubkey
+      authorPubkey.toLowerCase() === referencedBounty.recipientPubkey &&
+      referencedBounty.lockedResponseMessageId === event.id
         ? {
             amountSats: referencedBounty.amountSats,
             bountyMessageId: referencedBountyId,

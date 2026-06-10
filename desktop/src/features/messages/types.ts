@@ -26,6 +26,10 @@ export type TimelineTipSummary = {
 
 export type TimelineMessageBounty = {
   amountSats: number;
+  createdAt: number;
+  initialAmountSats: number;
+  lockedAmountSats: number | null;
+  lockedResponseMessageId: string | null;
   recipientPubkey: string;
   paid: boolean;
   recipientIsCurrentUser: boolean;

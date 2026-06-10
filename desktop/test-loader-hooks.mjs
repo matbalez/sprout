@@ -8,7 +8,9 @@ const srcRoot = path.resolve(
 
 export function resolve(specifier, context, nextResolve) {
   if (specifier.startsWith("@/")) {
-    const resolved = `${srcRoot}/${specifier.slice(2)}.ts`;
+    const sourcePath = specifier.slice(2);
+    const extension = path.extname(sourcePath) ? "" : ".ts";
+    const resolved = `${srcRoot}/${sourcePath}${extension}`;
     return nextResolve(resolved, context);
   }
   // Resolve extensionless relative TS imports (e.g. `./parseImeta`) — the app's

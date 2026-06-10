@@ -3,10 +3,20 @@ import type { RelayEvent } from "@/shared/api/types";
 const HEX_RE = /^[0-9a-f]+$/i;
 const BOUNTY_TAG = ["sprout", "message-bounty", "v1"] as const;
 const BOUNTY_PAID_TAG = ["sprout", "message-bounty-paid", "v1"] as const;
+const BOUNTY_DECAY_INTERVAL_SECONDS = 5 * 60;
+const BOUNTY_DECAY_PERCENT_PER_STEP = 5;
+const BOUNTY_RESIDUAL_PERCENT = 25;
 
-export type MessageBounty = {
+export type ParsedMessageBounty = {
   amountSats: number;
   recipientPubkey: string;
+};
+
+export type MessageBounty = ParsedMessageBounty & {
+  createdAt: number;
+  initialAmountSats: number;
+  lockedAmountSats: number | null;
+  lockedResponseMessageId: string | null;
   paid: boolean;
 };
 
@@ -60,6 +70,68 @@ export function formatBountyAmount(amountSats: number) {
   return `₿${new Intl.NumberFormat("en-US").format(amountSats)}`;
 }
 
+function percentFloor(amountSats: number, percent: number) {
+  return Number((BigInt(amountSats) * BigInt(percent)) / 100n);
+}
+
+export function getMessageBountyResidualAmount(initialAmountSats: number) {
+  if (!Number.isSafeInteger(initialAmountSats) || initialAmountSats <= 0) {
+    return 0;
+  }
+
+  return Math.max(1, percentFloor(initialAmountSats, BOUNTY_RESIDUAL_PERCENT));
+}
+
+export function getDecayedMessageBountyAmount(input: {
+  createdAt: number;
+  initialAmountSats: number;
+  now: number;
+}) {
+  const { createdAt, initialAmountSats, now } = input;
+  if (!Number.isSafeInteger(initialAmountSats) || initialAmountSats <= 0) {
+    return 0;
+  }
+
+  const elapsedSeconds = Math.max(0, Math.floor(now - createdAt));
+  const steps = Math.floor(elapsedSeconds / BOUNTY_DECAY_INTERVAL_SECONDS);
+  const remainingPercent = Math.max(
+    BOUNTY_RESIDUAL_PERCENT,
+    100 - steps * BOUNTY_DECAY_PERCENT_PER_STEP,
+  );
+
+  return Math.max(
+    getMessageBountyResidualAmount(initialAmountSats),
+    percentFloor(initialAmountSats, remainingPercent),
+  );
+}
+
+export function getDisplayMessageBountyAmount(
+  bounty: {
+    amountSats: number;
+    createdAt?: number;
+    initialAmountSats?: number;
+    lockedAmountSats?: number | null;
+  },
+  now: number,
+) {
+  if (typeof bounty.lockedAmountSats === "number") {
+    return bounty.lockedAmountSats;
+  }
+
+  if (
+    typeof bounty.initialAmountSats === "number" &&
+    typeof bounty.createdAt === "number"
+  ) {
+    return getDecayedMessageBountyAmount({
+      createdAt: bounty.createdAt,
+      initialAmountSats: bounty.initialAmountSats,
+      now,
+    });
+  }
+
+  return bounty.amountSats;
+}
+
 export function buildMessageBountyTag(input: {
   amountSats: number;
   recipientPubkey: string;
@@ -73,7 +145,7 @@ export function buildMessageBountyTag(input: {
 
 export function parseMessageBountyTags(
   tags: string[][] | undefined,
-): Omit<MessageBounty, "paid"> | null {
+): ParsedMessageBounty | null {
   const tag = tags?.find(
     (candidate) =>
       candidate[0] === BOUNTY_TAG[0] &&

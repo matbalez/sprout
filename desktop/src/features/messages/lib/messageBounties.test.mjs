@@ -5,6 +5,9 @@ import {
   buildMessageBountyPaidTag,
   buildMessageBountyTag,
   formatBountyConfirmation,
+  getDecayedMessageBountyAmount,
+  getDisplayMessageBountyAmount,
+  getMessageBountyResidualAmount,
   parseBountyAmountInput,
   parseMessageBountyPaidTags,
   parseMessageBountyTags,
@@ -47,6 +50,53 @@ describe("message bounties", () => {
     assert.equal(parseBountyAmountInput("  2100  "), 2100);
     assert.throws(() => parseBountyAmountInput("0"), /whole ₿ amount/);
     assert.throws(() => parseBountyAmountInput("1.5"), /whole ₿ amount/);
+  });
+
+  it("linearly decays bounty amounts every full five minutes", () => {
+    assert.equal(
+      getDecayedMessageBountyAmount({
+        createdAt: 1_000,
+        initialAmountSats: 1_000,
+        now: 1_000 + 4 * 60 + 59,
+      }),
+      1_000,
+    );
+    assert.equal(
+      getDecayedMessageBountyAmount({
+        createdAt: 1_000,
+        initialAmountSats: 1_000,
+        now: 1_000 + 12 * 60,
+      }),
+      900,
+    );
+  });
+
+  it("keeps decayed bounties at the residual floor", () => {
+    assert.equal(getMessageBountyResidualAmount(1_000), 250);
+    assert.equal(
+      getDecayedMessageBountyAmount({
+        createdAt: 1_000,
+        initialAmountSats: 1_000,
+        now: 1_000 + 4 * 60 * 60,
+      }),
+      250,
+    );
+    assert.equal(getMessageBountyResidualAmount(1), 1);
+  });
+
+  it("prefers locked bounty amounts for display", () => {
+    assert.equal(
+      getDisplayMessageBountyAmount(
+        {
+          amountSats: 1_000,
+          createdAt: 1_000,
+          initialAmountSats: 1_000,
+          lockedAmountSats: 900,
+        },
+        1_000 + 4 * 60 * 60,
+      ),
+      900,
+    );
   });
 
   it("builds and parses bounty paid tags", () => {

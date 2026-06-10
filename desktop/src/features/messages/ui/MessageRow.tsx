@@ -1,10 +1,16 @@
 import * as React from "react";
 
-import type { TimelineMessage } from "@/features/messages/types";
+import type {
+  TimelineMessage,
+  TimelineMessageBounty,
+} from "@/features/messages/types";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { MessageTips } from "@/features/messages/ui/MessageTips";
 import { useReactionHandler } from "@/features/messages/ui/useReactionHandler";
-import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
+import {
+  formatBountyAmount,
+  getDisplayMessageBountyAmount,
+} from "@/features/messages/lib/messageBounties";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { KIND_STREAM_MESSAGE_DIFF } from "@/shared/constants/kinds";
@@ -37,12 +43,28 @@ function KudosMessageChip() {
 }
 
 function BountyMessageChip({
-  amountSats,
+  bounty,
   paid,
 }: {
-  amountSats: number;
+  bounty: TimelineMessageBounty;
   paid: boolean;
 }) {
+  const isDecaying = !paid && bounty.lockedAmountSats === null;
+  const [nowSeconds, setNowSeconds] = React.useState(() =>
+    Math.floor(Date.now() / 1_000),
+  );
+  React.useEffect(() => {
+    if (!isDecaying) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setNowSeconds(Math.floor(Date.now() / 1_000));
+    }, 30_000);
+    return () => window.clearInterval(interval);
+  }, [isDecaying]);
+  const amountSats = getDisplayMessageBountyAmount(bounty, nowSeconds);
+
   return (
     <span
       className={cn(
@@ -295,7 +317,7 @@ export const MessageRow = React.memo(
         {message.kudos ? <KudosMessageChip /> : null}
         {message.bounty ? (
           <BountyMessageChip
-            amountSats={message.bounty.amountSats}
+            bounty={message.bounty}
             paid={message.bounty.paid}
           />
         ) : null}

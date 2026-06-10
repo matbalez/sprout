@@ -3,6 +3,7 @@ import {
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
 import {
+  getDecayedMessageBountyAmount,
   parseMessageBountyTags,
   type MessageBounty,
 } from "@/features/messages/lib/messageBounties";
@@ -348,9 +349,19 @@ export function buildInboxItems({
       const preview = feedPreview(item);
       const mentionNames = resolveMentionNames(item.tags, profiles) ?? [];
       const parsedBounty = parseMessageBountyTags(item.tags);
+      const nowSeconds = Math.floor(Date.now() / 1_000);
       const bounty = parsedBounty
         ? {
             ...parsedBounty,
+            amountSats: getDecayedMessageBountyAmount({
+              createdAt: item.createdAt,
+              initialAmountSats: parsedBounty.amountSats,
+              now: nowSeconds,
+            }),
+            createdAt: item.createdAt,
+            initialAmountSats: parsedBounty.amountSats,
+            lockedAmountSats: null,
+            lockedResponseMessageId: null,
             paid: false,
             recipientIsCurrentUser:
               currentPubkey?.trim().toLowerCase() ===
