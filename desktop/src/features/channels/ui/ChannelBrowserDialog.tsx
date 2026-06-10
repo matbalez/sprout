@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Compass,
   FileText,
@@ -9,7 +10,14 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import type { Channel } from "@/shared/api/types";
+import type { Channel, ChannelDetail } from "@/shared/api/types";
+import { formatBitcoinAmount } from "@/features/wallet/api";
+import {
+  channelsQueryKey,
+  shouldHydrateChannelForJoinPayment,
+  sortChannels,
+} from "@/features/channels/hooks";
+import { getChannelDetails } from "@/shared/api/tauri";
 import {
   Dialog,
   DialogContent,
@@ -92,7 +100,9 @@ export function ChannelBrowserDialog({
   const [joiningChannelId, setJoiningChannelId] = React.useState<string | null>(
     null,
   );
+  const queryClient = useQueryClient();
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const hydratedJoinPolicyIdsRef = React.useRef(new Set<string>());
   const deferredQuery = React.useDeferredValue(query.trim().toLowerCase());
 
   const isForumMode = channelTypeFilter === "forum";
@@ -130,6 +140,10 @@ export function ChannelBrowserDialog({
     () => browsableChannels.filter((channel) => !channel.isMember),
     [browsableChannels],
   );
+  const missingJoinPolicyChannels = React.useMemo(
+    () => notJoined.filter(shouldHydrateChannelForJoinPayment),
+    [notJoined],
+  );
 
   const joined = React.useMemo(
     () => browsableChannels.filter((channel) => channel.isMember),
@@ -163,6 +177,69 @@ export function ChannelBrowserDialog({
       window.clearTimeout(timeout);
     };
   }, [open]);
+
+  React.useEffect(() => {
+    if (!open || missingJoinPolicyChannels.length === 0) {
+      return;
+    }
+
+    const channelsToHydrate = missingJoinPolicyChannels
+      .filter((channel) => !hydratedJoinPolicyIdsRef.current.has(channel.id))
+      .slice(0, 50);
+    if (channelsToHydrate.length === 0) {
+      return;
+    }
+
+    for (const channel of channelsToHydrate) {
+      hydratedJoinPolicyIdsRef.current.add(channel.id);
+    }
+
+    let isCancelled = false;
+    void Promise.all(
+      channelsToHydrate.map(async (channel) => {
+        try {
+          return await getChannelDetails(channel.id);
+        } catch (error) {
+          console.warn("Failed to hydrate channel join policy", error);
+          return null;
+        }
+      }),
+    ).then((details) => {
+      if (isCancelled) {
+        return;
+      }
+
+      const hydratedChannels = details.filter(
+        (detail): detail is ChannelDetail =>
+          detail !== null && detail.paymentPolicy !== null,
+      );
+      if (hydratedChannels.length === 0) {
+        return;
+      }
+
+      const hydratedById = new Map(
+        hydratedChannels.map((channel) => [channel.id, channel]),
+      );
+      queryClient.setQueryData<Channel[]>(channelsQueryKey, (current = []) =>
+        sortChannels(
+          current.map((channel) => {
+            const hydrated = hydratedById.get(channel.id);
+            return hydrated
+              ? {
+                  ...channel,
+                  metadataEventId: hydrated.metadataEventId,
+                  paymentPolicy: hydrated.paymentPolicy,
+                }
+              : channel;
+          }),
+        ),
+      );
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [missingJoinPolicyChannels, open, queryClient]);
 
   React.useEffect(() => {
     setSelectedIndex((current) => {
@@ -353,6 +430,10 @@ function ChannelCard({
   const joinPrice = channel.paymentPolicy?.joinPaymentRequired
     ? channel.paymentPolicy.joinAmountBaseUnits
     : null;
+  const joinPriceLabel =
+    typeof joinPrice === "number" && joinPrice > 0
+      ? formatBitcoinAmount(joinPrice)
+      : null;
   return (
     <button
       className={
@@ -383,10 +464,8 @@ function ChannelCard({
             {channel.archivedAt ? (
               <Badge variant="warning">archived</Badge>
             ) : null}
-            {joinPrice ? (
-              <Badge variant="secondary">
-                Join ₿{new Intl.NumberFormat("en-US").format(joinPrice)}
-              </Badge>
+            {joinPriceLabel ? (
+              <Badge variant="secondary">Pay {joinPriceLabel} to join</Badge>
             ) : null}
             <div className="ml-auto flex items-center gap-3">
               <span className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -418,7 +497,11 @@ function ChannelCard({
             variant="default"
           >
             <LogIn className="mr-1.5 h-3.5 w-3.5" />
-            {isJoining ? "Joining..." : joinPrice ? "Pay & Join" : "Join"}
+            {isJoining
+              ? "Joining..."
+              : joinPriceLabel
+                ? `Pay ${joinPriceLabel} to join`
+                : "Join"}
           </Button>
         ) : null}
       </div>

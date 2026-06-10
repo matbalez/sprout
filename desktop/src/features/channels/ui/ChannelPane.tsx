@@ -10,8 +10,12 @@ import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import { UserProfilePanel } from "@/features/profile/ui/UserProfilePanel";
 import { ChannelFindBar } from "@/features/search/ui/ChannelFindBar";
-import { isWalletBotChannelId } from "@/features/wallet/api";
+import {
+  formatBitcoinAmount,
+  isWalletBotChannelId,
+} from "@/features/wallet/api";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
+import { getPaidJoinAmount } from "@/features/channels/hooks";
 import {
   BotActivityComposerAction,
   type BotActivityAgent,
@@ -179,6 +183,11 @@ export const ChannelPane = React.memo(function ChannelPane({
     !activeChannel.isMember &&
     activeChannel.visibility === "open" &&
     !activeChannel.archivedAt;
+  const paidJoinAmountBaseUnits = getPaidJoinAmount(activeChannel);
+  const joinButtonLabel =
+    paidJoinAmountBaseUnits !== null
+      ? `Pay ${formatBitcoinAmount(paidJoinAmountBaseUnits)} to join`
+      : "Join to participate";
   const hasMainComposerOverlay = !isNonMemberView;
   useComposerHeightPadding(
     timelineScrollRef,
@@ -418,7 +427,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 variant="default"
               >
                 <LogIn className="mr-1.5 h-3.5 w-3.5" />
-                {isJoining ? "Joining..." : "Join to participate"}
+                {isJoining ? "Joining..." : joinButtonLabel}
               </Button>
             </div>
           ) : (

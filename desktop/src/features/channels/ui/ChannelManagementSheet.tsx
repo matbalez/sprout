@@ -15,6 +15,7 @@ import * as React from "react";
 import { toast } from "sonner";
 
 import {
+  getPaidJoinAmount,
   useArchiveChannelMutation,
   useChannelDetailsQuery,
   useChannelMembersQuery,
@@ -33,6 +34,7 @@ import {
 } from "@/features/channels/lib/ephemeralChannel";
 import { ChannelBitcoinGiftsCard } from "@/features/klaim-gifts/ui/ChannelBitcoinGiftsCard";
 import { CreateWorkflowDialog } from "@/features/workflows/ui/CreateWorkflowDialog";
+import { formatBitcoinAmount } from "@/features/wallet/api";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { useTheme } from "@/shared/theme/ThemeProvider";
@@ -160,6 +162,11 @@ export function ChannelManagementSheet({
     detail?.channelType !== "dm" &&
     !isArchived &&
     selfMember !== null;
+  const paidJoinAmountBaseUnits = getPaidJoinAmount(detail);
+  const joinButtonLabel =
+    paidJoinAmountBaseUnits !== null
+      ? `Pay ${formatBitcoinAmount(paidJoinAmountBaseUnits)} to join`
+      : "Join channel";
   const memberCount =
     members.length || detail?.memberCount || channel?.memberCount || 0;
 
@@ -348,7 +355,7 @@ export function ChannelManagementSheet({
                 type="button"
               >
                 <DoorOpen className="h-4 w-4" />
-                {joinChannelMutation.isPending ? "Joining..." : "Join channel"}
+                {joinChannelMutation.isPending ? "Joining..." : joinButtonLabel}
               </Button>
               {joinChannelMutation.error instanceof Error ? (
                 <p className="text-sm text-destructive">

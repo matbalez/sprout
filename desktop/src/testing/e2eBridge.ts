@@ -1074,6 +1074,15 @@ const mockChannels: MockChannel[] = [
     topic_required: false,
     max_members: null,
     nip29_group_id: null,
+    payment_policy: {
+      join_payment_required: true,
+      join_amount_base_units: 1234,
+      post_payment_required: true,
+      post_amount_base_units: 100,
+      payment_recipient_pubkey: BOB_PUBKEY,
+      payment_recipient_bolt12_offer: "lno1mockpaidjoin",
+      payment_rail: "lexe-bolt12",
+    },
     created_minutes_ago: 1300,
     updated_minutes_ago: 30,
     members: [
@@ -3663,7 +3672,7 @@ function handleGetChannelPostSpendTotal(args: { channelId?: string }) {
       (payment) =>
         payment.channelId === args.channelId &&
         payment.pubkey === currentPubkey &&
-        payment.purpose === "post",
+        (payment.purpose === "join" || payment.purpose === "post"),
     )
     .reduce((sum, payment) => sum + payment.amountSats, 0);
 }

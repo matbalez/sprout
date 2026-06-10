@@ -1,11 +1,16 @@
 import * as React from "react";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { getCachedSearchHitEvent } from "@/app/navigation/searchHitEventCache";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import {
+  channelsQueryKey,
+  shouldHydrateChannelForJoinPayment,
+  sortChannels,
   useChannelDetailsQuery,
   useChannelsQuery,
 } from "@/features/channels/hooks";
+import type { Channel } from "@/shared/api/types";
 import { ChannelScreen } from "@/features/channels/ui/ChannelScreen";
 import { useProfileQuery } from "@/features/profile/hooks";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -29,6 +34,7 @@ export function ChannelRouteScreen({
   targetThreadRootId,
 }: ChannelRouteScreenProps) {
   const { closeForumPost, goForumPost } = useAppNavigation();
+  const queryClient = useQueryClient();
   const channelsQuery = useChannelsQuery();
   const identityQuery = useIdentityQuery();
   const profileQuery = useProfileQuery();
@@ -37,20 +43,41 @@ export function ChannelRouteScreen({
     channels.find((channel) => channel.id === channelId) ?? null;
   const channelDetailsQuery = useChannelDetailsQuery(
     channelId,
-    activeChannel !== null && activeChannel.paymentPolicy === null,
+    activeChannel !== null && shouldHydrateChannelForJoinPayment(activeChannel),
   );
   const hydratedActiveChannel = React.useMemo(() => {
     const paymentPolicy = channelDetailsQuery.data?.paymentPolicy ?? null;
-    if (!activeChannel || activeChannel.paymentPolicy || !paymentPolicy) {
+    if (!activeChannel || !paymentPolicy) {
       return activeChannel;
     }
     return {
       ...activeChannel,
       metadataEventId:
-        channelDetailsQuery.data?.metadataEventId ?? activeChannel.metadataEventId,
+        channelDetailsQuery.data?.metadataEventId ??
+        activeChannel.metadataEventId,
       paymentPolicy,
     };
   }, [activeChannel, channelDetailsQuery.data]);
+  React.useEffect(() => {
+    const detail = channelDetailsQuery.data;
+    if (!detail?.paymentPolicy) {
+      return;
+    }
+
+    queryClient.setQueryData<Channel[]>(channelsQueryKey, (current = []) =>
+      sortChannels(
+        current.map((channel) =>
+          channel.id === detail.id
+            ? {
+                ...channel,
+                metadataEventId: detail.metadataEventId,
+                paymentPolicy: detail.paymentPolicy,
+              }
+            : channel,
+        ),
+      ),
+    );
+  }, [channelDetailsQuery.data, queryClient]);
   const [targetMessageEvents, setTargetMessageEvents] = React.useState<
     RelayEvent[]
   >(() => {

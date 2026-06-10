@@ -5,6 +5,7 @@ import type { EphemeralChannelDisplay } from "@/features/channels/lib/ephemeralC
 import { getChannelDescription } from "@/features/channels/lib/channelDescription";
 import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderStatusBadge";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
+import { getPaidJoinAmount } from "@/features/channels/hooks";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import { formatBitcoinAmount } from "@/features/wallet/api";
 import { Button } from "@/shared/ui/button";
@@ -55,13 +56,18 @@ export function ChannelScreenHeader({
     activeChannel.visibility === "open" &&
     !activeChannel.archivedAt &&
     onJoinChannel;
+  const paidJoinAmountBaseUnits = getPaidJoinAmount(activeChannel);
+  const joinButtonLabel =
+    paidJoinAmountBaseUnits !== null
+      ? `Pay ${formatBitcoinAmount(paidJoinAmountBaseUnits)} to join`
+      : "Join";
 
   const spendBadge =
     activeChannel && showPostSpend ? (
       <div
         className="rounded-md border border-border/60 bg-muted/45 px-2 py-1 text-xs font-medium text-muted-foreground"
         data-testid="channel-post-spend-total"
-        title="Total spent posting in this channel"
+        title="Total spent on paid joins and posts in this channel"
       >
         Spent {formatBitcoinAmount(postSpendBaseUnits)}
       </div>
@@ -90,7 +96,7 @@ export function ChannelScreenHeader({
           variant="default"
         >
           <LogIn className="mr-1.5 h-3.5 w-3.5" />
-          {isJoining ? "Joining…" : "Join"}
+          {isJoining ? "Joining…" : joinButtonLabel}
         </Button>
       ) : (
         <ChannelMembersBar

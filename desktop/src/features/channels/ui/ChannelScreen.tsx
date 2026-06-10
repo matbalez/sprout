@@ -3,6 +3,7 @@ import { useAppShell } from "@/app/AppShellContext";
 import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHeader";
 import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandlers";
 import {
+  getPaidJoinAmount,
   getPaidPostAmountForCurrentUser,
   useChannelEarnedTotalQuery,
   useChannelMembersQuery,
@@ -175,21 +176,25 @@ export function ChannelScreen({
     !isWalletBotActive,
   );
   const channelMembers = channelMembersQuery.data;
-  const paidPostAmountBaseUnits = getPaidPostAmountForCurrentUser(activeChannel);
-  const postPriceLabel =
-    paidPostAmountBaseUnits !== null
-      ? `Post ${formatBitcoinAmount(paidPostAmountBaseUnits)}`
-      : null;
-  const showPostSpendTotal = paidPostAmountBaseUnits !== null;
-  const postSpendTotalQuery = useChannelPostSpendTotalQuery(
-    activeChannelId,
-    showPostSpendTotal && activeChannel?.isMember === true,
-  );
   const isChannelPaymentRecipient = Boolean(
     activeChannel?.paymentPolicy &&
       currentPubkey &&
       activeChannel.paymentPolicy.paymentRecipientPubkey.toLowerCase() ===
         currentPubkey.toLowerCase(),
+  );
+  const paidJoinAmountBaseUnits = getPaidJoinAmount(activeChannel);
+  const paidPostAmountBaseUnits =
+    getPaidPostAmountForCurrentUser(activeChannel);
+  const postPriceLabel =
+    paidPostAmountBaseUnits !== null
+      ? `Post ${formatBitcoinAmount(paidPostAmountBaseUnits)}`
+      : null;
+  const showSpendTotal =
+    !isChannelPaymentRecipient &&
+    (paidJoinAmountBaseUnits !== null || paidPostAmountBaseUnits !== null);
+  const postSpendTotalQuery = useChannelPostSpendTotalQuery(
+    activeChannelId,
+    showSpendTotal && activeChannel?.isMember === true,
   );
   const showEarnedTotal = Boolean(
     activeChannel?.paymentPolicy && isChannelPaymentRecipient,
@@ -567,7 +572,7 @@ export function ChannelScreen({
           earnedBaseUnits={earnedTotalQuery.data ?? 0}
           postSpendBaseUnits={postSpendTotalQuery.data ?? 0}
           showEarned={showEarnedTotal}
-          showPostSpend={showPostSpendTotal}
+          showPostSpend={showSpendTotal}
           showHeaderContent={!isSinglePanelView}
         />
 

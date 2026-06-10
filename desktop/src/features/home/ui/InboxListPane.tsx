@@ -126,7 +126,7 @@ export function InboxListPane({
                   className={cn(
                     "flex w-full items-start gap-2.5 border-l px-5 py-2 text-left transition-colors",
                     shouldHighlightBounty
-                      ? "border-l-emerald-500 bg-emerald-50/80 hover:bg-emerald-50 dark:bg-emerald-950/20 dark:hover:bg-emerald-950/30"
+                      ? "border-l-emerald-500 bg-emerald-500/10 hover:bg-emerald-500/15 dark:bg-emerald-500/10 dark:hover:bg-emerald-500/15"
                       : isSelected
                         ? "border-l-transparent bg-muted/30"
                         : "border-l-transparent hover:bg-muted/25 active:bg-muted/40",
@@ -164,7 +164,7 @@ export function InboxListPane({
                             </span>
                           ) : null}
                           {item.bounty ? (
-                            <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/55 bg-emerald-300 px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-emerald-950 dark:bg-emerald-400/90">
+                            <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/60 bg-emerald-300 px-1.5 py-0.5 text-[10px] font-bold uppercase leading-none text-emerald-950 shadow-sm dark:bg-emerald-400/90">
                               Bounty:{" "}
                               {formatBountyAmount(item.bounty.amountSats)}
                             </span>

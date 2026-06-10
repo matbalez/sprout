@@ -100,6 +100,23 @@ export async function postPaidJoinNotice(
   );
 }
 
+export async function hydrateChannelForJoinPayment(
+  channel: Channel | string,
+): Promise<Channel> {
+  if (
+    typeof channel !== "string" &&
+    !shouldHydrateChannelForJoinPayment(channel)
+  ) {
+    return channel;
+  }
+
+  return getChannelDetails(typeof channel === "string" ? channel : channel.id);
+}
+
+export function shouldHydrateChannelForJoinPayment(channel: Channel | string) {
+  return typeof channel === "string" || getPaidJoinAmount(channel) === null;
+}
+
 export function incrementChannelPostSpendTotal(
   queryClient: ReturnType<typeof useQueryClient>,
   channelId: string,
@@ -145,11 +162,35 @@ export async function payForChannelAction(
   return result.receiptEventId;
 }
 
-function sortChannels(channels: Channel[]) {
+export function sortChannels(channels: Channel[]) {
   const uniqueChannels = new Map<string, Channel>();
 
   for (const channel of channels) {
-    uniqueChannels.set(channel.id, channel);
+    const existing = uniqueChannels.get(channel.id);
+    if (!existing) {
+      uniqueChannels.set(channel.id, channel);
+      continue;
+    }
+
+    uniqueChannels.set(channel.id, {
+      ...existing,
+      ...channel,
+      isMember: existing.isMember || channel.isMember,
+      currentUserRole: channel.currentUserRole ?? existing.currentUserRole,
+      memberPubkeys:
+        channel.memberPubkeys.length > 0
+          ? channel.memberPubkeys
+          : existing.memberPubkeys,
+      participantPubkeys:
+        channel.participantPubkeys.length > 0
+          ? channel.participantPubkeys
+          : existing.participantPubkeys,
+      participants:
+        channel.participants.length > 0
+          ? channel.participants
+          : existing.participants,
+      paymentPolicy: channel.paymentPolicy ?? existing.paymentPolicy,
+    });
   }
 
   return [...uniqueChannels.values()].sort((left, right) => {
@@ -545,18 +586,20 @@ export function useJoinChannelMutation(channel: Channel | string | null) {
         throw new Error("No channel selected.");
       }
 
-      const paymentReceiptEventId =
-        typeof channel === "string" || channel === null
-          ? null
-          : await payForChannelAction(channel, "join");
+      const joinPaymentChannel = await hydrateChannelForJoinPayment(
+        channel ?? channelId,
+      );
+      const paymentReceiptEventId = await payForChannelAction(
+        joinPaymentChannel,
+        "join",
+      );
       await joinChannel(channelId, paymentReceiptEventId ?? undefined);
-      if (
-        typeof channel !== "string" &&
-        channel !== null &&
-        paymentReceiptEventId
-      ) {
+      if (paymentReceiptEventId) {
         try {
-          await postPaidJoinNotice(channel, getPaidJoinAmount(channel));
+          await postPaidJoinNotice(
+            joinPaymentChannel,
+            getPaidJoinAmount(joinPaymentChannel),
+          );
         } catch (error) {
           console.warn("Failed to post paid join notice", error);
         }

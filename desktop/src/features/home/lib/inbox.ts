@@ -4,6 +4,7 @@ import {
 } from "@/features/profile/lib/identity";
 import {
   getDecayedMessageBountyAmount,
+  parseMessageBountyPaidTags,
   parseMessageBountyTags,
   type MessageBounty,
 } from "@/features/messages/lib/messageBounties";
@@ -15,6 +16,7 @@ import type {
   HomeFeedResponse,
   RelayEvent,
 } from "@/shared/api/types";
+import { resolveEventAuthorPubkey } from "@/shared/lib/authors";
 import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
 
 export type InboxFilter =
@@ -208,6 +210,148 @@ function getInboxThreadKey(item: FeedItem) {
   return thread.rootId ?? thread.parentId ?? item.id;
 }
 
+function getReferencedBountyId(
+  item: FeedItem,
+  bountyByEventId: ReadonlyMap<string, MessageBounty>,
+) {
+  const thread = getThreadReference(item.tags);
+  return thread.parentId && bountyByEventId.has(thread.parentId)
+    ? thread.parentId
+    : thread.rootId && bountyByEventId.has(thread.rootId)
+      ? thread.rootId
+      : null;
+}
+
+function buildInboxBountyForItem({
+  currentPubkey,
+  groupItems,
+  item,
+}: {
+  currentPubkey?: string;
+  groupItems: FeedItem[];
+  item: FeedItem;
+}): InboxBounty | null {
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const bountyByEventId = new Map<string, MessageBounty>();
+
+  for (const groupItem of groupItems) {
+    const parsedBounty = parseMessageBountyTags(groupItem.tags);
+    if (!parsedBounty) {
+      continue;
+    }
+
+    bountyByEventId.set(groupItem.id, {
+      ...parsedBounty,
+      amountSats: getDecayedMessageBountyAmount({
+        createdAt: groupItem.createdAt,
+        initialAmountSats: parsedBounty.amountSats,
+        now: nowSeconds,
+      }),
+      createdAt: groupItem.createdAt,
+      initialAmountSats: parsedBounty.amountSats,
+      lockedAmountSats: null,
+      lockedResponseMessageId: null,
+      paid: false,
+    });
+  }
+
+  if (bountyByEventId.size === 0) {
+    return null;
+  }
+
+  const firstResponseByBountyId = new Map<
+    string,
+    {
+      amountSats: number;
+      eventIndex: number;
+      responseCreatedAt: number;
+      responseMessageId: string;
+    }
+  >();
+
+  for (const [eventIndex, groupItem] of groupItems.entries()) {
+    const bountyMessageId = getReferencedBountyId(groupItem, bountyByEventId);
+    if (!bountyMessageId) {
+      continue;
+    }
+
+    const bounty = bountyByEventId.get(bountyMessageId);
+    if (!bounty) {
+      continue;
+    }
+
+    const authorPubkey = resolveEventAuthorPubkey({
+      pubkey: groupItem.pubkey,
+      tags: groupItem.tags,
+      preferActorTag: true,
+      requireChannelTagForPTags: true,
+    }).toLowerCase();
+    if (authorPubkey !== bounty.recipientPubkey) {
+      continue;
+    }
+
+    const existing = firstResponseByBountyId.get(bountyMessageId);
+    if (
+      existing &&
+      (existing.responseCreatedAt < groupItem.createdAt ||
+        (existing.responseCreatedAt === groupItem.createdAt &&
+          existing.eventIndex <= eventIndex))
+    ) {
+      continue;
+    }
+
+    firstResponseByBountyId.set(bountyMessageId, {
+      amountSats: getDecayedMessageBountyAmount({
+        createdAt: bounty.createdAt,
+        initialAmountSats: bounty.initialAmountSats,
+        now: groupItem.createdAt,
+      }),
+      eventIndex,
+      responseCreatedAt: groupItem.createdAt,
+      responseMessageId: groupItem.id,
+    });
+  }
+
+  for (const [bountyMessageId, response] of firstResponseByBountyId) {
+    const bounty = bountyByEventId.get(bountyMessageId);
+    if (!bounty) {
+      continue;
+    }
+
+    bounty.amountSats = response.amountSats;
+    bounty.lockedAmountSats = response.amountSats;
+    bounty.lockedResponseMessageId = response.responseMessageId;
+  }
+
+  for (const groupItem of groupItems) {
+    const receipt = parseMessageBountyPaidTags(groupItem.tags);
+    if (!receipt) {
+      continue;
+    }
+
+    const bounty = bountyByEventId.get(receipt.bountyMessageId);
+    if (!bounty) {
+      continue;
+    }
+
+    bounty.amountSats = receipt.amountSats;
+    bounty.lockedAmountSats = receipt.amountSats;
+    bounty.lockedResponseMessageId = receipt.responseMessageId;
+    bounty.paid = true;
+  }
+
+  const bounty = bountyByEventId.get(item.id);
+  if (!bounty) {
+    return null;
+  }
+
+  return {
+    ...bounty,
+    recipientIsCurrentUser:
+      currentPubkey?.trim().toLowerCase() === bounty.recipientPubkey,
+  };
+}
+
 function formatInboxTimestamp(unixSeconds: number) {
   const date = new Date(unixSeconds * 1_000);
   const now = new Date();
@@ -348,26 +492,11 @@ export function buildInboxItems({
       const subject = feedHeadline(item);
       const preview = feedPreview(item);
       const mentionNames = resolveMentionNames(item.tags, profiles) ?? [];
-      const parsedBounty = parseMessageBountyTags(item.tags);
-      const nowSeconds = Math.floor(Date.now() / 1_000);
-      const bounty = parsedBounty
-        ? {
-            ...parsedBounty,
-            amountSats: getDecayedMessageBountyAmount({
-              createdAt: item.createdAt,
-              initialAmountSats: parsedBounty.amountSats,
-              now: nowSeconds,
-            }),
-            createdAt: item.createdAt,
-            initialAmountSats: parsedBounty.amountSats,
-            lockedAmountSats: null,
-            lockedResponseMessageId: null,
-            paid: false,
-            recipientIsCurrentUser:
-              currentPubkey?.trim().toLowerCase() ===
-              parsedBounty.recipientPubkey,
-          }
-        : null;
+      const bounty = buildInboxBountyForItem({
+        currentPubkey,
+        groupItems: group.items,
+        item,
+      });
       const channelLabel = item.channelName.trim() || null;
       const categoryLabel = categoryLabelFor(categories[0] ?? item.category);
 

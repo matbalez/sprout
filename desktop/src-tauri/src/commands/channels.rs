@@ -404,7 +404,7 @@ pub async fn get_channel_post_spend_total(
 
     Ok(receipt_events
         .iter()
-        .filter_map(|event| channel_payment_receipt_amount(event, &channel_id, &["post"]))
+        .filter_map(|event| channel_payment_receipt_amount(event, &channel_id, &["join", "post"]))
         .sum())
 }
 

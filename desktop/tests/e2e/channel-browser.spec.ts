@@ -80,6 +80,56 @@ test("channel browser search filters by description", async ({ page }) => {
   await expect(page.getByTestId("browse-channel-design")).toHaveCount(0);
 });
 
+test("channel browser labels paid join amount", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("browse-channels").click();
+  const salesChannel = page.getByTestId("browse-channel-sales");
+
+  await expect(salesChannel).toContainText("Pay ₿1,234 to join");
+  await expect(
+    salesChannel.getByRole("button", { name: "Pay ₿1,234 to join" }),
+  ).toBeVisible();
+});
+
+test("viewing an unjoined paid channel labels the join action", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByTestId("browse-channels").click();
+  await page.getByTestId("browse-channel-sales").click();
+
+  await expect(page.getByTestId("channel-browser-dialog")).not.toBeVisible();
+  await expect(page.getByTestId("chat-title")).toHaveText("sales");
+  await expect(
+    page
+      .getByTestId("chat-header")
+      .getByRole("button", { name: "Pay ₿1,234 to join" }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("join-banner")
+      .getByRole("button", { name: "Pay ₿1,234 to join" }),
+  ).toBeVisible();
+});
+
+test("paid join contributes to channel spent total", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("browse-channels").click();
+  const salesChannel = page.getByTestId("browse-channel-sales");
+  await salesChannel
+    .getByRole("button", { name: "Pay ₿1,234 to join" })
+    .click();
+
+  await expect(page.getByTestId("channel-browser-dialog")).not.toBeVisible();
+  await expect(page.getByTestId("chat-title")).toHaveText("sales");
+  await expect(page.getByTestId("channel-post-spend-total")).toHaveText(
+    "Spent ₿1,234",
+  );
+});
+
 test("channel browser shows no results for unmatched search", async ({
   page,
 }) => {

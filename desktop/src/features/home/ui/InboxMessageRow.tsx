@@ -82,7 +82,7 @@ export function InboxMessageRow({
         className={cn(
           "group/message relative flex items-start gap-2.5 px-0 py-0",
           message.bounty?.recipientIsCurrentUser && !message.bounty.paid
-            ? "rounded-2xl border border-emerald-500/30 bg-emerald-50/80 dark:bg-emerald-950/20"
+            ? "rounded-2xl border border-emerald-500/35 bg-emerald-500/10 dark:bg-emerald-500/10"
             : message.bounty?.recipientIsCurrentUser && message.bounty.paid
               ? "rounded-2xl border border-emerald-500/25 bg-emerald-500/5"
               : !message.isSelected && "hover:bg-muted/20",
