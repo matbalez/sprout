@@ -68,11 +68,11 @@ if "sprout" in schemes:
 PY
 
 required_sidecars=(
-    sprout-acp
-    sprout-agent
-    sprout-dev-mcp
+    buzz-acp
+    buzz-agent
+    buzz-dev-mcp
     git-credential-nostr
-    sprout
+    buzz
 )
 
 missing=()

@@ -1,6 +1,6 @@
 //! Signed-event builders for desktop write operations.
 //!
-//! Mirrors the sprout-sdk builder patterns but uses nostr 0.37 API
+//! Mirrors the buzz-sdk builder patterns but uses nostr 0.37 API
 //! (the desktop is excluded from the workspace which pins nostr 0.36).
 //!
 //! Mental model:
@@ -16,18 +16,19 @@ pub use channel_payments::{build_channel_payment_policy, build_channel_payment_r
 use message_annotations::annotation_tags;
 pub use message_tips::build_message_tip_receipt;
 
+use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
-use sprout_core::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use uuid::Uuid;
 
 // ── Constants ────────────────────────────────────────────────────────────────
-/// Maximum content size — matches sprout-sdk (64 KiB).
+
+/// Maximum content size — matches buzz-sdk (64 KiB).
 const MAX_CONTENT_BYTES: usize = 64 * 1024;
 
-/// Maximum mention count — matches sprout-sdk.
+/// Maximum mention count — matches buzz-sdk.
 const MAX_MENTIONS: usize = 50;
 
-/// Maximum emoji length in characters — matches sprout-sdk.
+/// Maximum emoji length in characters — matches buzz-sdk.
 const MAX_EMOJI_CHARS: usize = 64;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -80,6 +81,23 @@ fn mention_tags(mentions: &[&str]) -> Result<Vec<Tag>, String> {
         }
     }
     Ok(tags)
+}
+
+fn mention_reference_tags(mentions: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
+    for mention in mentions {
+        if mention.first().map(String::as_str) != Some("mention") {
+            return Err(format!(
+                "mention reference tags must use 'mention' prefix (got {:?})",
+                mention.first()
+            ));
+        }
+        let Some(pubkey) = mention.get(1) else {
+            return Err("mention reference tag missing pubkey".into());
+        };
+        check_pubkey(pubkey)?;
+        tags.push(tag(vec!["mention", &pubkey.to_ascii_lowercase()])?);
+    }
+    Ok(())
 }
 
 /// Validate and append imeta tags. Rejects any tag whose first element is not "imeta"
@@ -318,6 +336,41 @@ pub fn build_message(
     annotations: &[Vec<String>],
     custom_emoji_tags: &[Vec<String>],
     payment_receipt_event_id: Option<&str>,
+    mention_ref_tags: &[Vec<String>],
+) -> Result<EventBuilder, String> {
+    build_message_with_client_tags(
+        channel_id,
+        content,
+        actor_pubkey,
+        thread_ref,
+        mentions,
+        media_tags,
+        annotations,
+        custom_emoji_tags,
+        payment_receipt_event_id,
+        mention_ref_tags,
+        &[],
+    )
+}
+
+/// Kind 9 — stream message with internal client marker tags.
+///
+/// This is intentionally narrower than arbitrary extra tags: callers can add
+/// only `["client", ...]` tags, which are useful for idempotency markers but
+/// cannot forge channel/thread/mention metadata.
+#[allow(clippy::too_many_arguments)]
+pub fn build_message_with_client_tags(
+    channel_id: Uuid,
+    content: &str,
+    actor_pubkey: Option<&str>,
+    thread_ref: Option<&ThreadRef>,
+    mentions: &[&str],
+    media_tags: &[Vec<String>],
+    annotations: &[Vec<String>],
+    custom_emoji_tags: &[Vec<String>],
+    payment_receipt_event_id: Option<&str>,
+    mention_ref_tags: &[Vec<String>],
+    client_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -334,7 +387,26 @@ pub fn build_message(
     annotation_tags(annotations, &mut tags)?;
     emoji_tags(custom_emoji_tags, &mut tags)?;
     payment_tag(payment_receipt_event_id, &mut tags)?;
+    mention_reference_tags(mention_ref_tags, &mut tags)?;
+    append_client_tags(client_tags, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
+}
+
+fn append_client_tags(client_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
+    for client_tag in client_tags {
+        if client_tag.first().map(String::as_str) != Some("client") {
+            return Err(format!(
+                "client tags must use 'client' prefix (got {:?})",
+                client_tag.first()
+            ));
+        }
+        if client_tag.len() < 2 {
+            return Err("client tag missing marker".into());
+        }
+        let parts: Vec<&str> = client_tag.iter().map(String::as_str).collect();
+        tags.push(Tag::parse(parts).map_err(|e| format!("invalid client tag: {e}"))?);
+    }
+    Ok(())
 }
 
 /// Kind 45001 — forum post.
@@ -344,12 +416,14 @@ pub fn build_forum_post(
     mentions: &[&str],
     media_tags: &[Vec<String>],
     payment_receipt_event_id: Option<&str>,
+    mention_ref_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
     payment_tag(payment_receipt_event_id, &mut tags)?;
+    mention_reference_tags(mention_ref_tags, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(45001), content).tags(tags))
 }
 
@@ -361,6 +435,7 @@ pub fn build_forum_comment(
     mentions: &[&str],
     media_tags: &[Vec<String>],
     payment_receipt_event_id: Option<&str>,
+    mention_ref_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -368,6 +443,7 @@ pub fn build_forum_comment(
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
     payment_tag(payment_receipt_event_id, &mut tags)?;
+    mention_reference_tags(mention_ref_tags, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(45003), content).tags(tags))
 }
 
@@ -393,9 +469,16 @@ pub fn build_message_edit(
     Ok(EventBuilder::new(Kind::Custom(40003), content).tags(tags))
 }
 
-/// Kind 5 — NIP-09 deletion (messages).
-pub fn build_delete_compat(target_event_id: EventId) -> Result<EventBuilder, String> {
-    let tags = vec![tag(vec!["e", &target_event_id.to_hex()])?];
+/// Kind 5 — NIP-09 deletion. The `h` tag is non-standard for NIP-09 but is
+/// required so channel-scoped subscriptions observe the delete.
+pub fn build_delete_compat(
+    channel_id: Uuid,
+    target_event_id: EventId,
+) -> Result<EventBuilder, String> {
+    let tags = vec![
+        tag(vec!["h", &channel_id.to_string()])?,
+        tag(vec!["e", &target_event_id.to_hex()])?,
+    ];
     Ok(EventBuilder::new(Kind::Custom(5), "").tags(tags))
 }
 

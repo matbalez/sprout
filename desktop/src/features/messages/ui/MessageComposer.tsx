@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { EditorContent } from "@tiptap/react";
+import { X } from "lucide-react";
 import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
 import { useComposerAutofocus } from "@/features/messages/lib/useComposerAutofocus";
 import type { ChannelSuggestion } from "@/features/messages/lib/useChannelLinks";
@@ -17,7 +18,10 @@ import {
 } from "@/features/messages/lib/imetaMediaMarkdown";
 import { resolveBountyTargetPubkey } from "@/features/messages/lib/messageBounties";
 
-import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
+import {
+  type MediaUploadController,
+  useMediaUpload,
+} from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import {
@@ -30,13 +34,14 @@ import {
   useRichTextEditor,
 } from "@/features/messages/lib/useRichTextEditor";
 import { useTypingBroadcast } from "@/features/messages/useTypingBroadcast";
-import { getSproutCodeBlockClipboardText } from "@/shared/lib/codeBlockClipboard";
+import { getBuzzCodeBlockClipboardText } from "@/shared/lib/codeBlockClipboard";
 import { cn } from "@/shared/lib/cn";
+import type { ChannelType } from "@/shared/api/types";
+import { Button } from "@/shared/ui/button";
 import { ChannelAutocomplete } from "./ChannelAutocomplete";
 import { ComposerAttachments, DropZoneOverlay } from "./ComposerAttachments";
 import { ComposerBountyChip } from "./ComposerBountyChip";
 import { ComposerBountyDialog } from "./ComposerBountyDialog";
-import { ComposerContextBanner } from "./ComposerContextBanner";
 import { ComposerKudosChip } from "./ComposerKudosChip";
 import { EmojiAutocomplete } from "./EmojiAutocomplete";
 import {
@@ -46,10 +51,13 @@ import {
 import { MessageComposerToolbar } from "./MessageComposerToolbar";
 import { useComposerBounty } from "./useComposerBounty";
 import { useComposerKudos } from "./useComposerKudos";
+import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
+import { useMentionSendFlow } from "./useMentionSendFlow";
 
 type MessageComposerProps = {
   channelId?: string | null;
   channelName: string;
+  channelType?: ChannelType | null;
   containerClassName?: string;
   disabled?: boolean;
   draftKey?: string;
@@ -60,6 +68,7 @@ type MessageComposerProps = {
     imetaMedia?: ImetaMedia[];
   } | null;
   isSending?: boolean;
+  mediaController?: MediaUploadController;
   onCancelEdit?: () => void;
   onCancelReply?: () => void;
   /**
@@ -95,6 +104,7 @@ type MessageComposerProps = {
 export function MessageComposer({
   channelId = null,
   channelName,
+  channelType = null,
   containerClassName,
   disabled = false,
   draftKey,
@@ -109,6 +119,7 @@ export function MessageComposer({
   placeholder,
   profiles,
   replyTarget = null,
+  mediaController,
   showTopBorder = false,
   toolbarExtraActions,
   typingParentEventId = null,
@@ -136,7 +147,9 @@ export function MessageComposer({
     content: string;
     pendingImeta: ImetaMedia[];
   } | null>(null);
-  const mentions = useMentions(channelId, undefined, profiles);
+  const mentions = useMentions(channelId, undefined, profiles, {
+    channelType,
+  });
   const channelLinks = useChannelLinks();
   const customEmoji = useCustomEmoji();
   const emojiAutocomplete = useEmojiAutocomplete(customEmoji);
@@ -148,7 +161,9 @@ export function MessageComposer({
 
   // We pass a custom setter that both updates React state AND inserts
   // markdown into the Tiptap editor when media upload completes.
-  const media = useMediaUpload();
+  const internalMedia = useMediaUpload();
+  const media = mediaController ?? internalMedia;
+  const ownsDropZone = mediaController === undefined;
 
   const disabledRef = React.useRef(disabled);
   const isSendingRef = React.useRef(isSending);
@@ -193,6 +208,7 @@ export function MessageComposer({
     placeholder: computedPlaceholder,
     editable: !disabled,
     mentionNames: mentions.knownNames,
+    agentMentionNames: mentions.agentKnownNames,
     channelNames: channelLinks.knownChannelNames,
     customEmoji,
     onSubmit: () => submitMessageRef.current(),
@@ -241,6 +257,22 @@ export function MessageComposer({
     disabled,
     editTargetActive: Boolean(editTarget),
     focusEditor: richText.focus,
+  });
+
+  const mentionSendFlow = useMentionSendFlow({
+    channelId,
+    channelLinks,
+    channelType,
+    contentRef,
+    customEmoji,
+    drafts,
+    emojiAutocomplete,
+    mentions,
+    onSendRef,
+    richText,
+    setContent,
+    setIsEmojiPickerOpen,
+    setPendingImeta: media.setPendingImeta,
   });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
@@ -520,7 +552,8 @@ export function MessageComposer({
       (!trimmed && !hasMedia) ||
       disabledRef.current ||
       isSendingRef.current ||
-      isUploadingRef.current
+      isUploadingRef.current ||
+      mentionSendFlow.isPreparingMentionSend
     ) {
       return;
     }
@@ -539,69 +572,52 @@ export function MessageComposer({
       }
     }
 
-    // Send semantics use `undefined` for "no attachments" (no imeta tags
-    // emitted on the publish), which is what `buildOutgoingMessage`
-    // returns by default.
-    const { content: finalContent, mediaTags } = buildOutgoingMessage(
-      trimmed,
-      currentPendingImeta,
-    );
-
-    // NIP-30: attach ["emoji", shortcode, url] tags for custom emoji in the
-    // final content, so the event is self-contained.
-    const outgoingTags = mergeOutgoingTags(
-      mediaTags,
-      buildCustomEmojiTags(finalContent, customEmoji),
-    );
-
     const savedContent = trimmed;
     const savedImeta = [...currentPendingImeta];
     const savedKudos = isKudosActive;
     const savedBountyAmountSats = bountyAmountSats;
 
-    setContent("");
-    contentRef.current = "";
-    richText.clearContent();
-    media.setPendingImeta([]);
-    mentions.clearMentions();
-    channelLinks.clearChannels();
-    emojiAutocomplete.clearEmojis();
-    setIsKudosActive(false);
-    setBountyAmountSats(null);
-    setIsEmojiPickerOpen(false);
-
-    const sentDraftKey = effectiveDraftKeyRef.current;
     setSendError(null);
     try {
-      await onSendRef.current(finalContent, pubkeys, outgoingTags, {
-        bountyAmountSats: savedBountyAmountSats,
-        kudos: savedKudos,
+      await mentionSendFlow.sendMessageWithMentionFlow({
+        onClearExtras: () => {
+          setIsKudosActive(false);
+          setBountyAmountSats(null);
+          setSendError(null);
+        },
+        onRestoreExtras: () => {
+          setContent(savedContent);
+          contentRef.current = savedContent;
+          richText.setContent(savedContent);
+          media.setPendingImeta(savedImeta);
+          setIsKudosActive(savedKudos);
+          setBountyAmountSats(savedBountyAmountSats);
+          setSendError("Failed to send message.");
+        },
+        pendingImeta: currentPendingImeta,
+        sendOptions: {
+          bountyAmountSats: savedBountyAmountSats,
+          kudos: savedKudos,
+        },
+        sentDraftKey: effectiveDraftKeyRef.current,
+        trimmed,
       });
-      if (sentDraftKey) {
-        drafts.clearDraft(sentDraftKey);
-      }
     } catch (error) {
-      setContent(savedContent);
-      contentRef.current = savedContent;
-      richText.setContent(savedContent);
-      media.setPendingImeta(savedImeta);
-      setIsKudosActive(savedKudos);
-      setBountyAmountSats(savedBountyAmountSats);
       setSendError(
         error instanceof Error ? error.message : "Failed to send message.",
       );
     }
   }, [
-    drafts.clearDraft,
-    customEmoji,
+    channelLinks.clearChannels,
+    emojiAutocomplete.clearEmojis,
     media.pendingImetaRef,
     media.setPendingImeta,
-    mentions.extractMentionPubkeys,
+    mentionSendFlow.isPreparingMentionSend,
+    mentionSendFlow.sendMessageWithMentionFlow,
     mentions.clearMentions,
-    channelLinks.clearChannels,
+    mentions.extractMentionPubkeys,
     richText.clearContent,
     richText.setContent,
-    emojiAutocomplete.clearEmojis,
     isKudosActive,
     bountyAmountSats,
     setIsKudosActive,
@@ -692,11 +708,11 @@ export function MessageComposer({
             return true;
           }
 
-          // --- Sprout code-block paste ---
-          // The code block copy button writes a small Sprout marker alongside
+          // --- Buzz code-block paste ---
+          // The code block copy button writes a small Buzz marker alongside
           // plain text. Use it to paste back as a literal code block so Markdown
           // parsing cannot reshape indentation, fence markers, or headings.
-          const codeBlockText = getSproutCodeBlockClipboardText(
+          const codeBlockText = getBuzzCodeBlockClipboardText(
             event.clipboardData,
           );
           if (codeBlockText !== null) {
@@ -749,8 +765,15 @@ export function MessageComposer({
     () =>
       disabled ||
       media.isUploading ||
+      mentionSendFlow.isPreparingMentionSend ||
       (content.trim().length === 0 && media.pendingImeta.length === 0),
-    [disabled, media.isUploading, content, media.pendingImeta.length],
+    [
+      disabled,
+      media.isUploading,
+      mentionSendFlow.isPreparingMentionSend,
+      content,
+      media.pendingImeta.length,
+    ],
   );
 
   const handleCaptureSelection = React.useCallback(() => {
@@ -763,171 +786,235 @@ export function MessageComposer({
 
   // ── Render ──────────────────────────────────────────────────────────
   return (
-    <footer
-      className={cn(
-        "relative z-10 shrink-0 bg-transparent px-4 pb-2 pt-0",
-        showTopBorder ? "border-t border-border/40 pt-3" : "",
-        containerClassName,
-      )}
-    >
-      <div
-        aria-hidden="true"
-        className="absolute inset-x-0 bottom-0 h-5 bg-background"
-      />
-      <div className="relative flex w-full flex-col gap-3">
-        <form
-          className="relative isolate rounded-2xl border border-border/50 bg-background/80 px-3 pb-2 pt-3 shadow-none backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55 sm:px-4"
-          data-testid="message-composer"
-          onDragEnter={media.handleDragEnter}
-          onDragLeave={media.handleDragLeave}
-          onDragOver={media.handleDragOver}
-          onDrop={(e) => {
-            void media.handleDrop(e);
-          }}
-          onSubmit={(event) => {
-            handleSubmit(event);
-          }}
-        >
-          {media.isDragOver && <DropZoneOverlay />}
-          <EmojiAutocomplete
-            onSelect={applyEmojiInsert}
-            selectedIndex={emojiAutocomplete.emojiSelectedIndex}
-            suggestions={
-              emojiAutocomplete.isEmojiAutocompleteOpen
-                ? emojiAutocomplete.emojiSuggestions
-                : []
-            }
-          />
-          <ChannelAutocomplete
-            onSelect={applyChannelInsert}
-            selectedIndex={channelLinks.channelSelectedIndex}
-            suggestions={
-              channelLinks.isChannelOpen ? channelLinks.channelSuggestions : []
-            }
-          />
-          <MentionAutocomplete
-            onSelect={applyMentionInsert}
-            selectedIndex={mentions.mentionSelectedIndex}
-            suggestions={mentions.isMentionOpen ? mentions.suggestions : []}
-          />
-          <ComposerContextBanner
-            editTarget={editTarget}
-            onCancelEdit={onCancelEdit}
-            onCancelReply={onCancelReply}
-            replyTarget={replyTarget}
-          />
-
-          {media.uploadState.status === "error" ? (
-            <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              Upload failed: {media.uploadState.message}
-              <button
-                className="ml-2 underline"
-                onClick={() => media.setUploadState({ status: "idle" })}
-                type="button"
-              >
-                Dismiss
-              </button>
-            </div>
-          ) : null}
-
-          {sendError ? (
-            <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {sendError}
-              <button
-                className="ml-2 underline"
-                onClick={() => setSendError(null)}
-                type="button"
-              >
-                Dismiss
-              </button>
-            </div>
-          ) : null}
-
-          {isKudosActive ? (
-            <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
-          ) : null}
-          {bountyAmountSats !== null ? (
-            <ComposerBountyChip
-              amountSats={bountyAmountSats}
-              onRemove={() => setBountyAmountSats(null)}
-            />
-          ) : null}
-
-          {(media.pendingImeta.length > 0 || media.isUploading) && (
-            <div className="mb-2 flex items-center gap-2">
-              <ComposerAttachments
-                attachments={media.pendingImeta}
-                isUploading={media.isUploading}
-                uploadingCount={media.uploadingCount}
-                onRemove={media.removeAttachment}
-              />
-            </div>
-          )}
-
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
-          <div
-            className="rich-text-composer max-h-32 overflow-y-auto"
-            data-testid="message-input-scroll"
-            ref={composerScrollRef}
-            onKeyDown={handleEditorKeyDown}
-          >
-            <EditorContent editor={richText.editor} />
-          </div>
-
-          {paymentAnnotation && !editTarget ? (
-            <div
-              className="mt-2 flex justify-end text-xs font-medium text-muted-foreground"
-              data-testid="composer-post-price"
-            >
-              <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
-                {paymentAnnotation}
-              </span>
-            </div>
-          ) : null}
-
-          <MessageComposerToolbar
-            composerDisabled={disabled}
-            editor={richText.editor}
-            extraActions={toolbarExtraActions}
-            formattingDisabled={disabled}
-            isEmojiPickerOpen={isEmojiPickerOpen}
-            isFormattingOpen={isFormattingOpen}
-            isBountyActive={bountyAmountSats !== null}
-            isKudosActive={isKudosActive}
-            isSending={isSending}
-            isUploading={media.isUploading}
-            kudosDisabled={kudosDisabled}
-            bountyDisabled={bountyDisabled}
-            onCaptureSelection={handleCaptureSelection}
-            onAddBounty={() => {
-              setIsEmojiPickerOpen(false);
-              setIsFormattingOpen(false);
-              handleAddBounty();
-            }}
-            onEmojiPickerOpenChange={setIsEmojiPickerOpen}
-            onEmojiSelect={insertEmoji}
-            onFormattingToggle={handleFormattingToggle}
-            onGiveKudos={() => {
-              setIsEmojiPickerOpen(false);
-              setIsFormattingOpen(false);
-              activateKudos();
-            }}
-            onOpenMentionPicker={openMentionPicker}
-            onPaperclip={handlePaperclipClick}
-            sendDisabled={sendDisabled}
-          />
-        </form>
-        <ComposerBountyDialog
-          amountValue={bountyDialog.amountValue}
-          error={bountyDialog.error}
-          isWalletLoading={bountyDialog.isWalletLoading}
-          onAmountValueChange={bountyDialog.onAmountValueChange}
-          onOpenChange={bountyDialog.onOpenChange}
-          onSubmit={bountyDialog.onSubmit}
-          open={bountyDialog.open}
-          sendableBalanceSats={bountyDialog.sendableBalanceSats}
+    <>
+      <footer
+        className={cn(
+          "relative z-10 shrink-0 bg-transparent px-4 pb-2 pt-0",
+          showTopBorder ? "border-t border-border/40 pt-3" : "",
+          containerClassName,
+        )}
+      >
+        <div
+          aria-hidden="true"
+          className="absolute inset-x-0 bottom-0 h-5 bg-background"
         />
-      </div>
-    </footer>
+        <div className="relative flex w-full flex-col gap-3">
+          <form
+            className="relative isolate rounded-2xl border border-border/50 bg-background/80 px-3 pb-2 pt-3 shadow-none backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55 sm:px-4"
+            data-testid="message-composer"
+            onDragEnter={ownsDropZone ? media.handleDragEnter : undefined}
+            onDragLeave={ownsDropZone ? media.handleDragLeave : undefined}
+            onDragOver={ownsDropZone ? media.handleDragOver : undefined}
+            onDrop={
+              ownsDropZone
+                ? (e) => {
+                    void media.handleDrop(e);
+                  }
+                : undefined
+            }
+            onSubmit={(event) => {
+              handleSubmit(event);
+            }}
+          >
+            {ownsDropZone && media.isDragOver && <DropZoneOverlay />}
+            <EmojiAutocomplete
+              onSelect={applyEmojiInsert}
+              selectedIndex={emojiAutocomplete.emojiSelectedIndex}
+              suggestions={
+                emojiAutocomplete.isEmojiAutocompleteOpen
+                  ? emojiAutocomplete.emojiSuggestions
+                  : []
+              }
+            />
+            <ChannelAutocomplete
+              onSelect={applyChannelInsert}
+              selectedIndex={channelLinks.channelSelectedIndex}
+              suggestions={
+                channelLinks.isChannelOpen
+                  ? channelLinks.channelSuggestions
+                  : []
+              }
+            />
+            <MentionAutocomplete
+              onSelect={applyMentionInsert}
+              selectedIndex={mentions.mentionSelectedIndex}
+              suggestions={mentions.isMentionOpen ? mentions.suggestions : []}
+            />
+            {editTarget ? (
+              <div
+                className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-primary/30 bg-primary/5 px-3 py-2"
+                data-testid="edit-target"
+              >
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Editing message
+                  </p>
+                  <p className="truncate text-sm text-foreground/80">
+                    {editTarget.body}
+                  </p>
+                </div>
+                <Button
+                  className="shrink-0"
+                  onClick={onCancelEdit}
+                  size="sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  Cancel
+                </Button>
+              </div>
+            ) : replyTarget ? (
+              <div
+                className="mb-3 flex items-start justify-between gap-3 rounded-2xl border border-border/70 bg-muted/40 px-3 py-2"
+                data-testid="reply-target"
+              >
+                <div className="min-w-0">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Replying to {replyTarget.author}
+                  </p>
+                  <p className="truncate text-sm text-foreground/80">
+                    {replyTarget.body}
+                  </p>
+                </div>
+                {onCancelReply ? (
+                  <Button
+                    aria-label="Cancel reply"
+                    className="h-7 w-7 shrink-0 px-0"
+                    onClick={onCancelReply}
+                    size="icon"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {media.uploadState.status === "error" ? (
+              <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                Upload failed: {media.uploadState.message}
+                <button
+                  className="ml-2 underline"
+                  onClick={() => media.setUploadState({ status: "idle" })}
+                  type="button"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ) : null}
+
+            {(media.pendingImeta.length > 0 || media.isUploading) && (
+              <div className="mb-2 flex items-center gap-2">
+                <ComposerAttachments
+                  attachments={media.pendingImeta}
+                  isUploading={media.isUploading}
+                  onCancelUpload={media.cancelUpload}
+                  uploadingCount={media.uploadingCount}
+                  uploadingPreviews={media.uploadingPreviews}
+                  onRemove={media.removeAttachment}
+                />
+              </div>
+            )}
+
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
+            <div
+              className="rich-text-composer max-h-32 overflow-y-auto"
+              data-testid="message-input-scroll"
+              ref={composerScrollRef}
+              onKeyDown={handleEditorKeyDown}
+            >
+              <EditorContent editor={richText.editor} />
+            </div>
+
+            {sendError ? (
+              <div className="mb-2 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {sendError}
+                <button
+                  className="ml-2 underline"
+                  onClick={() => setSendError(null)}
+                  type="button"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ) : null}
+
+            {isKudosActive ? (
+              <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
+            ) : null}
+            {bountyAmountSats !== null ? (
+              <ComposerBountyChip
+                amountSats={bountyAmountSats}
+                onRemove={() => setBountyAmountSats(null)}
+              />
+            ) : null}
+
+            {paymentAnnotation && !editTarget ? (
+              <div
+                className="mt-2 flex justify-end text-xs font-medium text-muted-foreground"
+                data-testid="composer-post-price"
+              >
+                <span className="rounded-md border border-border/60 bg-muted/40 px-2 py-1">
+                  {paymentAnnotation}
+                </span>
+              </div>
+            ) : null}
+
+            <MessageComposerToolbar
+              composerDisabled={disabled}
+              editor={richText.editor}
+              extraActions={toolbarExtraActions}
+              formattingDisabled={disabled}
+              isEmojiPickerOpen={isEmojiPickerOpen}
+              isFormattingOpen={isFormattingOpen}
+              isBountyActive={bountyAmountSats !== null}
+              isKudosActive={isKudosActive}
+              isSending={isSending}
+              isUploading={media.isUploading}
+              kudosDisabled={kudosDisabled}
+              bountyDisabled={bountyDisabled}
+              onCaptureSelection={handleCaptureSelection}
+              onAddBounty={() => {
+                setIsEmojiPickerOpen(false);
+                setIsFormattingOpen(false);
+                handleAddBounty();
+              }}
+              onEmojiPickerOpenChange={setIsEmojiPickerOpen}
+              onEmojiSelect={insertEmoji}
+              onFormattingToggle={handleFormattingToggle}
+              onGiveKudos={() => {
+                setIsEmojiPickerOpen(false);
+                setIsFormattingOpen(false);
+                activateKudos();
+              }}
+              onOpenMentionPicker={openMentionPicker}
+              onPaperclip={handlePaperclipClick}
+              sendDisabled={sendDisabled}
+            />
+          </form>
+          <ComposerBountyDialog
+            amountValue={bountyDialog.amountValue}
+            error={bountyDialog.error}
+            isWalletLoading={bountyDialog.isWalletLoading}
+            onAmountValueChange={bountyDialog.onAmountValueChange}
+            onOpenChange={bountyDialog.onOpenChange}
+            onSubmit={bountyDialog.onSubmit}
+            open={bountyDialog.open}
+            sendableBalanceSats={bountyDialog.sendableBalanceSats}
+          />
+        </div>
+      </footer>
+
+      <NonMemberMentionDialog
+        error={mentionSendFlow.nonMemberPromptError}
+        isInvitePending={mentionSendFlow.isInvitePending}
+        names={mentionSendFlow.pendingNonMemberNames}
+        onDismiss={mentionSendFlow.dismissNonMemberPrompt}
+        onDoNothing={mentionSendFlow.sendWithoutInviting}
+        onInvite={mentionSendFlow.inviteNonMembers}
+        open={mentionSendFlow.pendingNonMemberSend !== null}
+      />
+    </>
   );
 }

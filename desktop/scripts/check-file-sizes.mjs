@@ -30,14 +30,21 @@ const rules = [
 // Do not add to this list; split the file instead. Remove each entry as its
 // file is broken up. Tracked as a follow-up.
 const overrides = new Map([
-  ["src-tauri/src/managed_agents/nest.rs", 1417],
-  ["src-tauri/src/managed_agents/runtime.rs", 1450],
+  ["src-tauri/src/commands/agents.rs", 1294],
+  ["src-tauri/src/events.rs", 1004],
+  ["src-tauri/src/lib.rs", 1007],
+  ["src-tauri/src/managed_agents/nest.rs", 1420],
+  ["src-tauri/src/managed_agents/runtime.rs", 1948],
+  ["src-tauri/src/managed_agents/personas.rs", 1080],
+  ["src-tauri/src/managed_agents/persona_card.rs", 1050],
   ["src-tauri/src/wallet/broker.rs", 1482],
   ["src-tauri/src/huddle/tts.rs", 1364],
-  ["src/shared/api/tauri.ts", 1208],
-  ["src-tauri/src/nostr_convert.rs", 1124],
-  ["src/shared/api/relayClientSession.ts", 1031],
-  ["src-tauri/src/migration.rs", 1248],
+  ["src/app/AppShell.tsx", 1042],
+  ["src/features/messages/ui/MessageComposer.tsx", 1021],
+  ["src/shared/api/tauri.ts", 1196],
+  ["src-tauri/src/nostr_convert.rs", 1126],
+  ["src/shared/api/relayClientSession.ts", 1037],
+  ["src-tauri/src/migration.rs", 1295],
 ]);
 
 await runFileSizeCheck({

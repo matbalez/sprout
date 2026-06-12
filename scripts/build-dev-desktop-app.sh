@@ -26,11 +26,11 @@ if [[ "$TARGET" != "$HOST_TARGET" ]]; then
 fi
 
 cargo build --release \
-    -p sprout-acp \
-    -p sprout-agent \
-    -p sprout-dev-mcp \
+    -p buzz-acp \
+    -p buzz-agent \
+    -p buzz-dev-mcp \
     -p git-credential-nostr \
-    -p sprout-cli
+    -p buzz-cli
 
 ./scripts/bundle-sidecars.sh "$TARGET"
 

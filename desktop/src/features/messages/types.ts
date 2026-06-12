@@ -45,6 +45,8 @@ export type TimelineMessageBountyPayment = {
 
 export type TimelineMessage = {
   id: string;
+  /** Stable local key used to avoid remounting optimistic rows on send ack. */
+  renderKey?: string;
   createdAt: number;
   pubkey?: string;
   author: string;

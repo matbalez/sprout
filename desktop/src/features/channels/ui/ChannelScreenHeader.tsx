@@ -1,4 +1,5 @@
 import { LogIn } from "lucide-react";
+import type * as React from "react";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
 import type { EphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
@@ -15,17 +16,19 @@ type ChannelScreenHeaderProps = {
   activeChannel: Channel | null;
   activeChannelEphemeralDisplay: EphemeralChannelDisplay | null;
   activeChannelTitle: string;
-  actionsRightInset?: string;
   actionsVariant?: "inline" | "compact";
   activeDmAvatarUrl: string | null;
   activeDmPresenceStatus: PresenceStatus | null;
+  chromeWrapperRef?: React.Ref<HTMLDivElement>;
   currentPubkey?: string;
   earnedBaseUnits?: number;
+  isAddBotOpen?: boolean;
   isJoining?: boolean;
   postSpendBaseUnits?: number;
   showHeaderContent?: boolean;
   showEarned?: boolean;
   showPostSpend?: boolean;
+  onAddBotOpenChange?: (open: boolean) => void;
   onJoinChannel?: () => Promise<void>;
   onManageChannel: () => void;
   onToggleMembers: () => void;
@@ -35,13 +38,15 @@ export function ChannelScreenHeader({
   activeChannel,
   activeChannelEphemeralDisplay,
   activeChannelTitle,
-  actionsRightInset,
   actionsVariant = "inline",
   activeDmAvatarUrl,
   activeDmPresenceStatus,
+  chromeWrapperRef,
   currentPubkey,
   earnedBaseUnits = 0,
+  isAddBotOpen,
   isJoining = false,
+  onAddBotOpenChange,
   postSpendBaseUnits = 0,
   showHeaderContent = true,
   showEarned = false,
@@ -102,6 +107,8 @@ export function ChannelScreenHeader({
         <ChannelMembersBar
           channel={activeChannel}
           currentPubkey={currentPubkey}
+          isAddBotOpen={isAddBotOpen}
+          onAddBotOpenChange={onAddBotOpenChange}
           onManageChannel={onManageChannel}
           onToggleMembers={onToggleMembers}
           variant={actionsVariant}
@@ -117,16 +124,16 @@ export function ChannelScreenHeader({
   return (
     <ChatHeader
       belowSystemChrome
+      chromeWrapperRef={chromeWrapperRef}
       density="compact"
       actions={actions}
-      actionsRightInset={actionsRightInset}
       channelType={activeChannel?.channelType}
       description={getChannelDescription(activeChannel)}
       leadingContent={
         activeChannel?.channelType === "dm" ? (
           <ProfileAvatar
             avatarUrl={activeDmAvatarUrl}
-            className="h-6 w-6 rounded-md text-[10px]"
+            className="h-6 w-6 rounded-full text-[10px]"
             iconClassName="h-3.5 w-3.5"
             label={activeChannelTitle}
             testId="chat-header-dm-avatar"

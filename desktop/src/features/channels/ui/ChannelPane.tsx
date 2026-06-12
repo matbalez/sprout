@@ -1,7 +1,9 @@
 import * as React from "react";
-import { Hash, LogIn } from "lucide-react";
+import { Bot, Hash, LogIn, Plus, Sparkles, UserPlus } from "lucide-react";
 
+import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
+import { DropZoneOverlay } from "@/features/messages/ui/ComposerAttachments";
 import { MessageThreadPanel } from "@/features/messages/ui/MessageThreadPanel";
 import { MessageTimeline } from "@/features/messages/ui/MessageTimeline";
 import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
@@ -16,10 +18,21 @@ import {
 } from "@/features/wallet/api";
 import { AgentSessionThreadPanel } from "@/features/channels/ui/AgentSessionThreadPanel";
 import { getPaidJoinAmount } from "@/features/channels/hooks";
+import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import {
   BotActivityComposerAction,
   type BotActivityAgent,
 } from "@/features/channels/ui/BotActivityBar";
+import {
+  containsWelcomePersonaMention,
+  WelcomeComposerBanner,
+  WELCOME_COMPOSER_BANNER_DISMISS_DURATION_SECONDS,
+  WELCOME_COMPOSER_BANNER_HIDE_BUFFER_MS,
+  WELCOME_COMPOSER_BANNER_SUCCESS_SETTLE_MS,
+  WELCOME_PERSONA_ROTATION_MS,
+  type WelcomeComposerBannerState,
+} from "@/features/channels/ui/WelcomeComposerBanner";
+import { isEphemeralChannel } from "@/features/channels/lib/ephemeralChannel";
 import type { ChannelAgentSessionAgent } from "@/features/channels/ui/useChannelAgentSessions";
 import { Button } from "@/shared/ui/button";
 import type { useChannelFind } from "@/features/search/useChannelFind";
@@ -29,11 +42,17 @@ import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
+import { isWelcomeChannel } from "@/features/onboarding/welcome";
+import { KIND_SYSTEM_MESSAGE } from "@/shared/constants/kinds";
 import type { Channel } from "@/shared/api/types";
+import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
+import { channelChrome } from "@/shared/layout/chromeLayout";
+import { cn } from "@/shared/lib/cn";
 
 type ChannelPaneProps = {
   activeChannel: Channel | null;
   activityAgents?: BotActivityAgent[];
+  agentPubkeys?: ReadonlySet<string>;
   agentSessionAgents: ChannelAgentSessionAgent[];
   botTypingEntries: TypingIndicatorEntry[];
   channelFind: ReturnType<typeof useChannelFind>;
@@ -45,6 +64,7 @@ type ChannelPaneProps = {
     imetaMedia?: ImetaMedia[];
   } | null;
   fetchOlder?: () => Promise<void>;
+  header?: React.ReactNode;
   hasOlderMessages?: boolean;
   isFetchingOlder?: boolean;
   isJoining?: boolean;
@@ -57,6 +77,8 @@ type ChannelPaneProps = {
   onCancelThreadReply: () => void;
   onCloseAgentSession: () => void;
   onCloseProfilePanel: () => void;
+  onAddAgent?: () => void;
+  onCreateChannel?: () => void;
   onCloseThread: () => void;
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
@@ -66,6 +88,8 @@ type ChannelPaneProps = {
   onJoinChannel?: () => Promise<void>;
   onOpenAgentSession: (pubkey: string) => void;
   onOpenDm?: (pubkeys: string[]) => void;
+  onOpenMembers?: () => void;
+  onOpenProfilePanel: (pubkey: string) => void;
   onOpenThread: (message: TimelineMessage) => void;
   onResetThreadPanelWidth: () => void;
   onSelectThreadReplyTarget: (message: TimelineMessage) => void;
@@ -74,6 +98,13 @@ type ChannelPaneProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
     options?: { bountyAmountSats?: number | null; kudos?: boolean },
+  ) => Promise<void>;
+  onSendVideoReviewComment?: (
+    message: TimelineMessage,
+    content: string,
+    mentionPubkeys: string[],
+    mediaTags?: string[][],
+    parentEventId?: string,
   ) => Promise<void>;
   onSendThreadReply: (
     content: string,
@@ -114,8 +145,58 @@ type ChannelPaneProps = {
   isFollowingThreadById?: (rootId: string) => boolean;
 };
 
+function getChannelIntroKind(channel: Channel): string {
+  const isPrivate = channel.visibility === "private";
+  const isEphemeral = isEphemeralChannel(channel);
+
+  if (isPrivate && isEphemeral) {
+    return "private ephemeral channel";
+  }
+  if (isPrivate) {
+    return "private channel";
+  }
+  if (isEphemeral) {
+    return "ephemeral channel";
+  }
+  return "regular channel";
+}
+
+function getChannelIntroDescription(channel: Channel): string | null {
+  return (
+    channel.topic?.trim() ||
+    channel.purpose?.trim() ||
+    channel.description.trim() ||
+    null
+  );
+}
+
+function isWelcomeSetupSystemMessage(message: TimelineMessage) {
+  if (message.kind !== KIND_SYSTEM_MESSAGE) {
+    return false;
+  }
+
+  try {
+    const payload = JSON.parse(message.body) as { type?: string };
+    return (
+      payload.type === "channel_created" || payload.type === "member_joined"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function mentionsKnownAgent(
+  mentionPubkeys: string[],
+  knownAgentPubkeys: ReadonlySet<string>,
+) {
+  return mentionPubkeys.some((pubkey) =>
+    knownAgentPubkeys.has(pubkey.toLowerCase()),
+  );
+}
+
 export const ChannelPane = React.memo(function ChannelPane({
   activeChannel,
+  agentPubkeys,
   agentSessionAgents,
   activityAgents = agentSessionAgents,
   botTypingEntries,
@@ -123,6 +204,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   currentPubkey,
   editTarget = null,
   fetchOlder,
+  header,
   hasOlderMessages,
   isFetchingOlder,
   followThreadById,
@@ -138,6 +220,8 @@ export const ChannelPane = React.memo(function ChannelPane({
   onCancelThreadReply,
   onCloseAgentSession,
   onCloseProfilePanel,
+  onAddAgent,
+  onCreateChannel,
   onCloseThread,
   onDelete,
   onEdit,
@@ -148,10 +232,13 @@ export const ChannelPane = React.memo(function ChannelPane({
   onJoinChannel,
   onOpenAgentSession,
   onOpenDm,
+  onOpenMembers,
+  onOpenProfilePanel,
   onOpenThread,
   onResetThreadPanelWidth,
   onSelectThreadReplyTarget,
   onSendMessage,
+  onSendVideoReviewComment,
   onSendThreadReply,
   onThreadScrollTargetResolved,
   onThreadPanelResizeStart,
@@ -177,6 +264,12 @@ export const ChannelPane = React.memo(function ChannelPane({
   const timelineScrollRef = React.useRef<HTMLDivElement>(null);
   const composerWrapperRef = React.useRef<HTMLDivElement>(null);
   const isWalletBotActive = isWalletBotChannelId(activeChannel?.id);
+  const completedWelcomeBannerChannelIdsRef = React.useRef(new Set<string>());
+  const welcomeComposerDismissTimerRef = React.useRef<number | null>(null);
+  const welcomeComposerHideTimerRef = React.useRef<number | null>(null);
+  const [welcomeComposerBannerState, setWelcomeComposerBannerState] =
+    React.useState<WelcomeComposerBannerState>("prompt");
+  const mainComposerMedia = useMediaUpload();
   const isNonMemberView =
     activeChannel !== null &&
     !isWalletBotActive &&
@@ -189,11 +282,50 @@ export const ChannelPane = React.memo(function ChannelPane({
       ? `Pay ${formatBitcoinAmount(paidJoinAmountBaseUnits)} to join`
       : "Join to participate";
   const hasMainComposerOverlay = !isNonMemberView;
+  const activeChannelId = activeChannel?.id ?? null;
+  const isActiveWelcomeChannel =
+    activeChannel !== null && isWelcomeChannel(activeChannel);
   useComposerHeightPadding(
     timelineScrollRef,
     composerWrapperRef,
     `${isSinglePanelView}:${hasMainComposerOverlay}`,
   );
+
+  const clearWelcomeComposerDismissTimer = React.useCallback(() => {
+    if (welcomeComposerDismissTimerRef.current !== null) {
+      window.clearTimeout(welcomeComposerDismissTimerRef.current);
+      welcomeComposerDismissTimerRef.current = null;
+    }
+
+    if (welcomeComposerHideTimerRef.current !== null) {
+      window.clearTimeout(welcomeComposerHideTimerRef.current);
+      welcomeComposerHideTimerRef.current = null;
+    }
+  }, []);
+
+  React.useEffect(
+    () => () => clearWelcomeComposerDismissTimer(),
+    [clearWelcomeComposerDismissTimer],
+  );
+
+  React.useEffect(() => {
+    clearWelcomeComposerDismissTimer();
+
+    if (
+      activeChannelId &&
+      isActiveWelcomeChannel &&
+      completedWelcomeBannerChannelIdsRef.current.has(activeChannelId)
+    ) {
+      setWelcomeComposerBannerState("hidden");
+      return;
+    }
+
+    setWelcomeComposerBannerState("prompt");
+  }, [
+    activeChannelId,
+    clearWelcomeComposerDismissTimer,
+    isActiveWelcomeChannel,
+  ]);
 
   // Scope the edit target to the correct composer: if the message being edited
   // lives inside the open thread (thread head or a reply), show the editing UI
@@ -220,7 +352,13 @@ export const ChannelPane = React.memo(function ChannelPane({
       if (!onEdit || !currentPubkey) return null;
       let best: TimelineMessage | null = null;
       for (const message of candidates) {
-        if (message.pubkey !== currentPubkey || message.pending) continue;
+        if (
+          message.kind === KIND_SYSTEM_MESSAGE ||
+          message.pubkey !== currentPubkey ||
+          message.pending
+        ) {
+          continue;
+        }
         if (!best || message.createdAt >= best.createdAt) {
           best = message;
         }
@@ -256,6 +394,72 @@ export const ChannelPane = React.memo(function ChannelPane({
     activeChannel.archivedAt !== null ||
     activeChannel.channelType === "forum" ||
     isSending;
+  const knownAgentPubkeys = React.useMemo(() => {
+    const pubkeys = new Set<string>();
+
+    for (const pubkey of agentPubkeys ?? []) {
+      pubkeys.add(pubkey.toLowerCase());
+    }
+    for (const agent of agentSessionAgents) {
+      pubkeys.add(agent.pubkey.toLowerCase());
+    }
+    for (const agent of activityAgents) {
+      pubkeys.add(agent.pubkey.toLowerCase());
+    }
+
+    return pubkeys;
+  }, [activityAgents, agentPubkeys, agentSessionAgents]);
+  const completeWelcomeComposerBanner = React.useCallback(() => {
+    if (!activeChannelId || !isActiveWelcomeChannel) {
+      return;
+    }
+
+    clearWelcomeComposerDismissTimer();
+    completedWelcomeBannerChannelIdsRef.current.add(activeChannelId);
+    setWelcomeComposerBannerState("complete");
+    welcomeComposerDismissTimerRef.current = window.setTimeout(() => {
+      setWelcomeComposerBannerState("dismissing");
+      welcomeComposerDismissTimerRef.current = null;
+      welcomeComposerHideTimerRef.current = window.setTimeout(
+        () => {
+          setWelcomeComposerBannerState("hidden");
+          welcomeComposerHideTimerRef.current = null;
+        },
+        WELCOME_COMPOSER_BANNER_DISMISS_DURATION_SECONDS * 1000 +
+          WELCOME_COMPOSER_BANNER_HIDE_BUFFER_MS,
+      );
+    }, WELCOME_PERSONA_ROTATION_MS + WELCOME_COMPOSER_BANNER_SUCCESS_SETTLE_MS);
+  }, [
+    activeChannelId,
+    clearWelcomeComposerDismissTimer,
+    isActiveWelcomeChannel,
+  ]);
+  const handleSendMessage = React.useCallback(
+    async (
+      content: string,
+      mentionPubkeys: string[],
+      mediaTags?: string[][],
+    ) => {
+      const shouldCompleteWelcomeBanner =
+        isActiveWelcomeChannel &&
+        (containsWelcomePersonaMention(content) ||
+          mentionsKnownAgent(mentionPubkeys, knownAgentPubkeys));
+
+      await onSendMessage(content, mentionPubkeys, mediaTags);
+
+      if (shouldCompleteWelcomeBanner) {
+        completeWelcomeComposerBanner();
+      }
+    },
+    [
+      completeWelcomeComposerBanner,
+      isActiveWelcomeChannel,
+      knownAgentPubkeys,
+      onSendMessage,
+    ],
+  );
+  const canDropInMainColumn =
+    hasMainComposerOverlay && !isComposerDisabled && !isSinglePanelView;
   const hasTypingActivity = typingPubkeys.length > 0;
   const composerBotTypingPubkeys = React.useMemo(() => {
     const pubkeys: string[] = [];
@@ -336,6 +540,81 @@ export const ChannelPane = React.memo(function ChannelPane({
     };
   }, [activeChannel, currentPubkey, profiles]);
 
+  const channelIntro = React.useMemo(() => {
+    if (!activeChannel || activeChannel.channelType === "dm") {
+      return null;
+    }
+
+    const actions = [];
+    if (isWelcomeChannel(activeChannel)) {
+      if (onCreateChannel) {
+        actions.push({
+          icon: <Plus aria-hidden className="h-6 w-6" />,
+          label: "Create a channel",
+          onClick: onCreateChannel,
+          testId: "welcome-intro-action-create-channel",
+        });
+      }
+
+      if (onAddAgent) {
+        actions.push({
+          icon: <Bot aria-hidden className="h-6 w-6" />,
+          label: "Create a custom agent",
+          onClick: onAddAgent,
+          testId: "welcome-intro-action-create-agent",
+        });
+      }
+
+      return {
+        actions,
+        channelKindLabel: "private welcome channel",
+        channelName: activeChannel.name,
+        description: null,
+        icon: <Sparkles aria-hidden className="h-7 w-7" />,
+      };
+    }
+
+    if (!activeChannel.archivedAt && activeChannel.isMember) {
+      if (onAddAgent) {
+        actions.push({
+          description: "Add an agent here.",
+          icon: <Bot aria-hidden className="h-6 w-6" />,
+          label: "Create agent",
+          onClick: onAddAgent,
+          testId: "channel-intro-action-create-agent",
+        });
+      }
+
+      if (onOpenMembers) {
+        actions.push({
+          description: "Invite members.",
+          icon: <UserPlus aria-hidden className="h-6 w-6" />,
+          label: "Add people",
+          onClick: onOpenMembers,
+          testId: "channel-intro-action-add-people",
+        });
+      }
+    }
+
+    return {
+      actions,
+      channelKindLabel: getChannelIntroKind(activeChannel),
+      channelName: activeChannel.name,
+      description: getChannelIntroDescription(activeChannel),
+    };
+  }, [activeChannel, onAddAgent, onCreateChannel, onOpenMembers]);
+
+  const visibleMessages = React.useMemo(() => {
+    if (!isWelcomeChannel(activeChannel)) {
+      return messages;
+    }
+
+    return messages.filter((message) => !isWelcomeSetupSystemMessage(message));
+  }, [activeChannel, messages]);
+
+  const isOverlay = useIsThreadPanelOverlay();
+  const useSplitAuxiliaryPane = !isSinglePanelView && !isOverlay;
+
   const selectedAgent = React.useMemo(
     () =>
       openAgentSessionPubkey
@@ -348,21 +627,46 @@ export const ChannelPane = React.memo(function ChannelPane({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-row overflow-hidden">
       {!isSinglePanelView ? (
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <section
+          aria-label="Channel messages and composer"
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+          data-testid="channel-drop-zone"
+          onDragEnter={
+            canDropInMainColumn ? mainComposerMedia.handleDragEnter : undefined
+          }
+          onDragLeave={
+            canDropInMainColumn ? mainComposerMedia.handleDragLeave : undefined
+          }
+          onDragOver={
+            canDropInMainColumn ? mainComposerMedia.handleDragOver : undefined
+          }
+          onDrop={
+            canDropInMainColumn
+              ? (event) => {
+                  void mainComposerMedia.handleDrop(event);
+                }
+              : undefined
+          }
+        >
+          {header}
           {channelFind.isOpen ? (
-            <ChannelFindBar
-              matchCount={channelFind.matchCount}
-              matchIndex={channelFind.activeIndex}
-              onClose={channelFind.close}
-              onNext={channelFind.goToNext}
-              onPrevious={channelFind.goToPrevious}
-              onQueryChange={channelFind.setQuery}
-              query={channelFind.query}
-            />
+            <div className={cn("absolute inset-x-0 z-40", channelChrome.top)}>
+              <ChannelFindBar
+                matchCount={channelFind.matchCount}
+                matchIndex={channelFind.activeIndex}
+                onClose={channelFind.close}
+                onNext={channelFind.goToNext}
+                onPrevious={channelFind.goToPrevious}
+                onQueryChange={channelFind.setQuery}
+                query={channelFind.query}
+              />
+            </div>
           ) : null}
           <MessageTimeline
+            agentPubkeys={agentPubkeys}
             channelId={activeChannel?.id}
             activeReplyTargetId={openThreadHeadId}
+            channelIntro={channelIntro}
             directMessageIntro={directMessageIntro}
             scrollContainerRef={timelineScrollRef}
             currentPubkey={currentPubkey}
@@ -388,7 +692,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 : "No channel selected"
             }
             isLoading={isTimelineLoading}
-            messages={messages}
+            messages={visibleMessages}
             onDelete={onDelete}
             onEdit={onEdit}
             onMarkUnread={onMarkUnread}
@@ -396,6 +700,12 @@ export const ChannelPane = React.memo(function ChannelPane({
               activeChannel?.archivedAt || isWalletBotActive
                 ? undefined
                 : onOpenThread
+            }
+            channelName={activeChannel?.name}
+            channelType={activeChannel?.channelType ?? null}
+            isSendingVideoReviewComment={isSending}
+            onSendVideoReviewComment={
+              activeChannel?.archivedAt ? undefined : onSendVideoReviewComment
             }
             onTargetReached={onTargetReached}
             onToggleReaction={onToggleReaction}
@@ -436,17 +746,22 @@ export const ChannelPane = React.memo(function ChannelPane({
               ref={composerWrapperRef}
             >
               <div className="pointer-events-auto">
+                {isActiveWelcomeChannel ? (
+                  <WelcomeComposerBanner state={welcomeComposerBannerState} />
+                ) : null}
                 <MessageComposer
                   channelId={activeChannel?.id ?? null}
                   channelName={activeChannel?.name ?? "channel"}
+                  channelType={activeChannel?.channelType ?? null}
                   disabled={isComposerDisabled}
                   editTarget={mainEditTarget}
                   isSending={isSending}
+                  mediaController={mainComposerMedia}
                   onCancelEdit={onCancelEdit}
                   onEditLastOwnMessage={handleEditLastOwnMainMessage}
                   onEditSave={onEditSave}
-                  onSend={onSendMessage}
                   paymentAnnotation={postPriceLabel}
+                  onSend={handleSendMessage}
                   profiles={profiles}
                   placeholder={
                     activeChannel?.archivedAt
@@ -490,91 +805,150 @@ export const ChannelPane = React.memo(function ChannelPane({
               </div>
             </div>
           )}
-        </div>
+          {canDropInMainColumn && mainComposerMedia.isDragOver ? (
+            <DropZoneOverlay className="z-30 rounded-none" />
+          ) : null}
+        </section>
       ) : null}
 
-      {threadHeadMessage ? (
-        <MessageThreadPanel
-          channel={activeChannel}
-          channelId={activeChannel?.id ?? null}
-          channelName={activeChannel?.name ?? "channel"}
-          currentPubkey={currentPubkey}
-          disabled={isComposerDisabled}
-          editTarget={threadEditTarget}
-          isFollowingThread={isFollowingThread}
-          isSending={isSending}
-          isSinglePanelView={isSinglePanelView}
-          postPriceLabel={postPriceLabel}
-          onCancelEdit={onCancelEdit}
-          onCancelReply={onCancelThreadReply}
-          onClose={onCloseThread}
-          onDelete={onDelete}
-          onEdit={onEdit}
-          onEditLastOwnMessage={handleEditLastOwnThreadMessage}
-          onEditSave={onEditSave}
-          onFollowThread={onFollowThread}
-          onMarkUnread={onMarkUnread}
-          onExpandReplies={onExpandThreadReplies}
-          onSelectReplyTarget={onSelectThreadReplyTarget}
-          onSend={onSendThreadReply}
-          onScrollTargetResolved={onThreadScrollTargetResolved}
-          onToggleReaction={onToggleReaction}
-          onUnfollowThread={onUnfollowThread}
-          profiles={profiles}
-          replyTargetMessage={threadReplyTargetMessage}
-          scrollTargetId={threadScrollTargetId}
-          canResetWidth={canResetThreadPanelWidth}
-          onResetWidth={onResetThreadPanelWidth}
-          onResizeStart={onThreadPanelResizeStart}
-          threadHead={threadHeadMessage}
-          widthPx={threadPanelWidthPx}
-          threadReplies={threadMessages}
-          threadTypingPubkeys={threadTypingPubkeys}
-          toolbarExtraActions={
-            hasThreadComposerBotActivity ? (
-              <BotActivityComposerAction
-                agents={activityAgents}
+      {threadHeadMessage
+        ? (() => {
+            const panel = (
+              <MessageThreadPanel
+                agentPubkeys={agentPubkeys}
+                channel={activeChannel}
                 channelId={activeChannel?.id ?? null}
-                onOpenAgentSession={onOpenAgentSession}
-                openAgentSessionPubkey={openAgentSessionPubkey}
+                channelName={activeChannel?.name ?? "channel"}
+                currentPubkey={currentPubkey}
+                disabled={isComposerDisabled}
+                editTarget={threadEditTarget}
+                isFollowingThread={isFollowingThread}
+                isSending={isSending}
+                isSinglePanelView={
+                  useSplitAuxiliaryPane ? false : isSinglePanelView
+                }
+                layout={useSplitAuxiliaryPane ? "split" : "standalone"}
+                postPriceLabel={postPriceLabel}
+                onCancelEdit={onCancelEdit}
+                onCancelReply={onCancelThreadReply}
+                onClose={onCloseThread}
+                onDelete={onDelete}
+                onEdit={onEdit}
+                onEditLastOwnMessage={handleEditLastOwnThreadMessage}
+                onEditSave={onEditSave}
+                onFollowThread={onFollowThread}
+                onMarkUnread={onMarkUnread}
+                onExpandReplies={onExpandThreadReplies}
+                onSelectReplyTarget={onSelectThreadReplyTarget}
+                onSend={onSendThreadReply}
+                onScrollTargetResolved={onThreadScrollTargetResolved}
+                onToggleReaction={onToggleReaction}
+                onUnfollowThread={onUnfollowThread}
                 profiles={profiles}
-                typingBotPubkeys={threadComposerBotTypingPubkeys}
-                variant="inline"
+                replyTargetMessage={threadReplyTargetMessage}
+                scrollTargetId={threadScrollTargetId}
+                threadHead={threadHeadMessage}
+                widthPx={threadPanelWidthPx}
+                threadReplies={threadMessages}
+                threadTypingPubkeys={threadTypingPubkeys}
+                toolbarExtraActions={
+                  hasThreadComposerBotActivity ? (
+                    <BotActivityComposerAction
+                      agents={activityAgents}
+                      channelId={activeChannel?.id ?? null}
+                      onOpenAgentSession={onOpenAgentSession}
+                      openAgentSessionPubkey={openAgentSessionPubkey}
+                      profiles={profiles}
+                      typingBotPubkeys={threadComposerBotTypingPubkeys}
+                      variant="inline"
+                    />
+                  ) : null
+                }
               />
-            ) : null
-          }
-        />
-      ) : activeChannel && selectedAgent ? (
-        <AgentSessionThreadPanel
-          agent={selectedAgent}
-          canResetWidth={canResetThreadPanelWidth}
-          canInterruptTurn={selectedAgent.canInterruptTurn}
-          channel={activeChannel}
-          isWorking={botTypingEntries.some(
-            (entry) =>
-              entry.pubkey.toLowerCase() === selectedAgent.pubkey.toLowerCase(),
-          )}
-          isSinglePanelView={isSinglePanelView}
-          profiles={profiles}
-          onClose={onCloseAgentSession}
-          onResetWidth={onResetThreadPanelWidth}
-          onResizeStart={onThreadPanelResizeStart}
-          widthPx={threadPanelWidthPx}
-        />
-      ) : profilePanelPubkey ? (
-        <UserProfilePanel
-          canResetWidth={canResetThreadPanelWidth}
-          currentPubkey={currentPubkey}
-          isSinglePanelView={isSinglePanelView}
-          onClose={onCloseProfilePanel}
-          onOpenDm={onOpenDm}
-          onResetWidth={onResetThreadPanelWidth}
-          onResizeStart={onThreadPanelResizeStart}
-          pubkey={profilePanelPubkey}
-          splitPaneClamp
-          widthPx={threadPanelWidthPx}
-        />
-      ) : null}
+            );
+            return useSplitAuxiliaryPane ? (
+              <RightAuxiliaryPane
+                canResetWidth={canResetThreadPanelWidth}
+                onResetWidth={onResetThreadPanelWidth}
+                onResizeStart={onThreadPanelResizeStart}
+                testId="message-thread-panel"
+                widthPx={threadPanelWidthPx}
+              >
+                {panel}
+              </RightAuxiliaryPane>
+            ) : (
+              panel
+            );
+          })()
+        : activeChannel && selectedAgent
+          ? (() => {
+              const panel = (
+                <AgentSessionThreadPanel
+                  agent={selectedAgent}
+                  canInterruptTurn={selectedAgent.canInterruptTurn}
+                  channel={activeChannel}
+                  isWorking={botTypingEntries.some(
+                    (entry) =>
+                      entry.pubkey.toLowerCase() ===
+                      selectedAgent.pubkey.toLowerCase(),
+                  )}
+                  isSinglePanelView={
+                    useSplitAuxiliaryPane ? false : isSinglePanelView
+                  }
+                  layout={useSplitAuxiliaryPane ? "split" : "standalone"}
+                  profiles={profiles}
+                  onBackToProfile={() =>
+                    onOpenProfilePanel(selectedAgent.pubkey)
+                  }
+                  onClose={onCloseAgentSession}
+                  widthPx={threadPanelWidthPx}
+                />
+              );
+              return useSplitAuxiliaryPane ? (
+                <RightAuxiliaryPane
+                  canResetWidth={canResetThreadPanelWidth}
+                  onResetWidth={onResetThreadPanelWidth}
+                  onResizeStart={onThreadPanelResizeStart}
+                  testId="agent-session-thread-panel"
+                  widthPx={threadPanelWidthPx}
+                >
+                  {panel}
+                </RightAuxiliaryPane>
+              ) : (
+                panel
+              );
+            })()
+          : profilePanelPubkey
+            ? (() => {
+                const panel = (
+                  <UserProfilePanel
+                    currentPubkey={currentPubkey}
+                    isSinglePanelView={
+                      useSplitAuxiliaryPane ? false : isSinglePanelView
+                    }
+                    layout={useSplitAuxiliaryPane ? "split" : "standalone"}
+                    onClose={onCloseProfilePanel}
+                    onOpenDm={onOpenDm}
+                    pubkey={profilePanelPubkey}
+                    splitPaneClamp
+                    widthPx={threadPanelWidthPx}
+                  />
+                );
+                return useSplitAuxiliaryPane ? (
+                  <RightAuxiliaryPane
+                    canResetWidth={canResetThreadPanelWidth}
+                    onResetWidth={onResetThreadPanelWidth}
+                    onResizeStart={onThreadPanelResizeStart}
+                    testId="user-profile-panel"
+                    widthPx={threadPanelWidthPx}
+                  >
+                    {panel}
+                  </RightAuxiliaryPane>
+                ) : (
+                  panel
+                );
+              })()
+            : null}
     </div>
   );
 });

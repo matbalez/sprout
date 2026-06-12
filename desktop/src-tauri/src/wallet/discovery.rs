@@ -217,7 +217,7 @@ fn lexebot_discovery_from_profile(event: &Event) -> Option<LexeBotDiscovery> {
 
     let owner_auth = lexebot.get("owner_auth")?;
     let attested_owner =
-        sprout_sdk::nip_oa::verify_auth_tag(&owner_auth.to_string(), &event.pubkey).ok()?;
+        buzz_sdk_pkg::nip_oa::verify_auth_tag(&owner_auth.to_string(), &event.pubkey).ok()?;
     if attested_owner != owner {
         return None;
     }
@@ -278,7 +278,7 @@ mod tests {
         let owner_secret =
             nostr::SecretKey::from_slice(owner.secret_key().as_secret_bytes()).unwrap();
         let owner_keys = nostr::Keys::new(owner_secret);
-        let tag_json = sprout_sdk::nip_oa::compute_auth_tag(&owner_keys, &agent_pubkey, "")
+        let tag_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&owner_keys, &agent_pubkey, "")
             .expect("compute auth tag");
         serde_json::from_str(&tag_json).expect("owner auth json")
     }

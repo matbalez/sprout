@@ -53,6 +53,7 @@ export type RawChannelDetail = RawChannel & {
 export type RawChannelMember = {
   pubkey: string;
   role: ChannelMember["role"];
+  is_agent?: boolean;
   joined_at: string;
   display_name: string | null;
 };
@@ -113,6 +114,7 @@ export function fromRawChannelMember(member: RawChannelMember): ChannelMember {
   return {
     pubkey: member.pubkey,
     role: member.role,
+    isAgent: member.is_agent ?? false,
     joinedAt: member.joined_at,
     displayName: member.display_name,
   };

@@ -109,6 +109,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
             agent.status === "running" || agent.status === "deployed"
               ? "online"
               : "offline",
+          respondTo: agent.respondTo,
         });
       }
     }
@@ -229,6 +230,7 @@ export function PulseView({ currentPubkey }: PulseViewProps) {
       members.push({
         pubkey,
         role: "member",
+        isAgent: profile?.isAgent ?? false,
         joinedAt: "",
         displayName: profile?.displayName ?? null,
       });

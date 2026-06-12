@@ -30,7 +30,7 @@ fn extract_agent_owner_pubkey(event: &nostr::Event) -> Option<String> {
         }
 
         let tag_json = serde_json::to_string(slice).ok()?;
-        if let Ok(owner) = sprout_sdk::nip_oa::verify_auth_tag(&tag_json, &agent_pubkey) {
+        if let Ok(owner) = buzz_sdk_pkg::nip_oa::verify_auth_tag(&tag_json, &agent_pubkey) {
             return Some(owner.to_hex());
         }
     }
@@ -457,9 +457,9 @@ mod tests {
         let owner_secret =
             nostr::SecretKey::from_slice(owner.secret_key().as_secret_bytes()).unwrap();
         let owner_compat = nostr::Keys::new(owner_secret);
-        let tag_json = sprout_sdk::nip_oa::compute_auth_tag(&owner_compat, &agent_compat, "")
+        let tag_json = buzz_sdk_pkg::nip_oa::compute_auth_tag(&owner_compat, &agent_compat, "")
             .expect("compute auth tag");
-        let tag = sprout_sdk::nip_oa::parse_auth_tag(&tag_json).expect("parse auth tag");
+        let tag = buzz_sdk_pkg::nip_oa::parse_auth_tag(&tag_json).expect("parse auth tag");
         let tag = Tag::parse(tag.as_slice()).expect("convert auth tag");
 
         EventBuilder::new(kind, "{}")

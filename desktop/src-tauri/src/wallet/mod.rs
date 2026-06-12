@@ -378,6 +378,7 @@ async fn create_invoice_reply(
             expiration_secs: None,
             amount: Some(amount),
             description: Some("Sprout WalletBot invoice".to_string()),
+            personal_note: None,
             partner_pk: None,
             partner_prop_fee: None,
             partner_base_fee: None,

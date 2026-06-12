@@ -29,6 +29,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
 import { useFeedbackToasts } from "@/shared/hooks/useToastEffect";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import {
@@ -162,6 +163,21 @@ export function MembersSidebar({
 
   useFeedbackToasts(actionNoticeMessage, actionErrorMessage);
 
+  const { openProfilePanel } = useProfilePanel();
+  // UserProfilePanel only renders inside ChannelPane, which forums replace
+  // with ForumView — opening there would close the sheet and show nothing.
+  const isForumChannel = channel?.channelType === "forum";
+  const handleOpenProfile = React.useMemo(
+    () =>
+      openProfilePanel && !isForumChannel
+        ? (pubkey: string) => {
+            onOpenChange(false);
+            openProfilePanel(pubkey);
+          }
+        : undefined,
+    [isForumChannel, onOpenChange, openProfilePanel],
+  );
+
   const [editRespondToAgent, setEditRespondToAgent] =
     React.useState<ManagedAgent | null>(null);
 
@@ -193,6 +209,7 @@ export function MembersSidebar({
         onManagedAgentAction={(agent) => {
           void handleAgentLifecycleAction(agent);
         }}
+        onOpenProfile={handleOpenProfile}
         onRemoveMember={handleRemoveMember}
         onViewActivity={
           onViewActivity

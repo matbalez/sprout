@@ -90,11 +90,13 @@ function findMentionCandidateAt(
 }
 
 export function extractMentionPubkeysFromText({
+  excludedDisplayNames = [],
   managedAgentNamesByPubkey = new Map(),
   members = [],
   mentionMap,
   text,
 }: {
+  excludedDisplayNames?: Iterable<string>;
   managedAgentNamesByPubkey?: ReadonlyMap<string, string>;
   members?: readonly MentionMember[];
   mentionMap: ReadonlyMap<string, string>;
@@ -103,6 +105,13 @@ export function extractMentionPubkeysFromText({
   const pubkeys: string[] = [];
   const candidates: MentionCandidate[] = [];
   const displayNames = new Set<string>();
+
+  for (const displayName of excludedDisplayNames) {
+    const normalized = normalizeDisplayName(displayName);
+    if (normalized) {
+      displayNames.add(normalized);
+    }
+  }
 
   const pushPubkey = (pubkey: string) => {
     const normalized = normalizePubkey(pubkey);

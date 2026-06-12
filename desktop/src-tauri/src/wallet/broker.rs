@@ -570,7 +570,7 @@ async fn check_ssrf(host: &str, port: u16) -> Result<IpAddr, String> {
         return Err("DNS resolution returned no addresses".to_string());
     }
     for ip in &addrs {
-        if sprout_core::network::is_private_ip(ip) {
+        if buzz_core_pkg::network::is_private_ip(ip) {
             return Err(format!(
                 "SSRF blocked: {host} resolved to private/reserved address {ip}"
             ));
