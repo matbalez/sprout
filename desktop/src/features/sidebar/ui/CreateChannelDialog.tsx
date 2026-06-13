@@ -1,4 +1,4 @@
-import { Lock, Zap } from "lucide-react";
+import { Lock, Wallet, Zap } from "lucide-react";
 import * as React from "react";
 
 import { useChannelTemplatesQuery } from "@/features/channel-templates/hooks";
@@ -28,6 +28,7 @@ type CreateChannelDialogProps = {
     templateId?: string;
     paidJoinAmount?: number;
     paidPostAmount?: number;
+    hiveChannel?: boolean;
   }) => Promise<void>;
 };
 
@@ -48,6 +49,7 @@ export function CreateChannelDialog({
   const [ephemeral, setEphemeral] = React.useState(false);
   const [paidJoinEnabled, setPaidJoinEnabled] = React.useState(false);
   const [paidPostEnabled, setPaidPostEnabled] = React.useState(false);
+  const [hiveChannel, setHiveChannel] = React.useState(false);
   const [paidJoinAmount, setPaidJoinAmount] = React.useState("");
   const [paidPostAmount, setPaidPostAmount] = React.useState("");
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
@@ -71,6 +73,7 @@ export function CreateChannelDialog({
     setEphemeral(false);
     setPaidJoinEnabled(false);
     setPaidPostEnabled(false);
+    setHiveChannel(false);
     setPaidJoinAmount("");
     setPaidPostAmount("");
     setErrorMessage(null);
@@ -149,6 +152,7 @@ export function CreateChannelDialog({
         templateId: selectedTemplateId ?? undefined,
         paidJoinAmount: parsedPaidJoinAmount,
         paidPostAmount: parsedPaidPostAmount,
+        hiveChannel,
       });
 
       onOpenChange(false);
@@ -283,6 +287,30 @@ export function CreateChannelDialog({
             <div className="flex items-center justify-between gap-3">
               <label
                 className="flex items-center gap-1.5 text-sm text-muted-foreground"
+                htmlFor="create-channel-hive"
+              >
+                <Wallet className="h-3.5 w-3.5" />
+                Hive channel — create a channel wallet
+              </label>
+              <Switch
+                checked={hiveChannel}
+                data-testid="create-channel-hive"
+                disabled={isCreating}
+                id="create-channel-hive"
+                onCheckedChange={(checked) => {
+                  setHiveChannel(checked);
+                  setErrorMessage(null);
+                  if (checked) {
+                    setVisibility("private");
+                    setPaidJoinEnabled(false);
+                    setPaidPostEnabled(false);
+                  }
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <label
+                className="flex items-center gap-1.5 text-sm text-muted-foreground"
                 htmlFor="create-channel-ephemeral"
               >
                 <Zap className="h-3.5 w-3.5" />
@@ -305,7 +333,7 @@ export function CreateChannelDialog({
                 </label>
                 <Switch
                   checked={paidJoinEnabled}
-                  disabled={isCreating}
+                  disabled={isCreating || hiveChannel}
                   id="create-channel-paid-join"
                   onCheckedChange={(checked) => {
                     setPaidJoinEnabled(checked);
@@ -340,7 +368,7 @@ export function CreateChannelDialog({
                 </label>
                 <Switch
                   checked={paidPostEnabled}
-                  disabled={isCreating}
+                  disabled={isCreating || hiveChannel}
                   id="create-channel-paid-post"
                   onCheckedChange={(checked) => {
                     setPaidPostEnabled(checked);

@@ -6,15 +6,21 @@ import {
   DoorOpen,
   FileText,
   Hash,
+  History,
   Lock,
   MessageSquare,
+  RefreshCw,
   Users,
+  Wallet,
   Zap,
 } from "lucide-react";
 import * as React from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QRCodeSVG } from "qrcode.react";
 import { toast } from "sonner";
 
 import {
+  channelsQueryKey,
   getPaidJoinAmount,
   useArchiveChannelMutation,
   useChannelDetailsQuery,
@@ -34,7 +40,18 @@ import {
 } from "@/features/channels/lib/ephemeralChannel";
 import { ChannelBitcoinGiftsCard } from "@/features/klaim-gifts/ui/ChannelBitcoinGiftsCard";
 import { CreateWorkflowDialog } from "@/features/workflows/ui/CreateWorkflowDialog";
-import { formatBitcoinAmount } from "@/features/wallet/api";
+import {
+  formatBitcoinAmount,
+  generateHiveChannelWalletBolt12Offer,
+  getHiveChannelWalletTransactions,
+  getHiveChannelWalletSummary,
+  revealHiveChannelWalletSeed,
+} from "@/features/wallet/api";
+import type { WalletTransaction } from "@/features/wallet/api";
+import {
+  formatWalletTransactionTitle,
+  walletTransactionNotes,
+} from "@/features/wallet/transactions";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { useTheme } from "@/shared/theme/ThemeProvider";
@@ -117,6 +134,190 @@ function ChannelIdRow({ channelId }: { channelId: string }) {
   );
 }
 
+function HiveWalletOffer({
+  isGenerating,
+  isLoading,
+  onGenerate,
+  offer,
+}: {
+  isGenerating: boolean;
+  isLoading: boolean;
+  onGenerate: () => void;
+  offer: string | null;
+}) {
+  async function handleCopyOffer() {
+    if (!offer) return;
+    await navigator.clipboard.writeText(offer);
+    toast.success("BOLT12 offer copied");
+  }
+
+  return (
+    <div className="space-y-2" data-testid="channel-management-hive-offer">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">
+          BOLT12 offer
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            data-testid="channel-management-generate-hive-offer"
+            disabled={isGenerating}
+            onClick={onGenerate}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <RefreshCw
+              className={cn("h-4 w-4", isGenerating && "animate-spin")}
+            />
+            {isGenerating ? "Generating..." : "New offer"}
+          </Button>
+          <Button
+            data-testid="channel-management-copy-hive-offer"
+            disabled={!offer}
+            onClick={() => {
+              void handleCopyOffer();
+            }}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <Copy className="h-4 w-4" />
+            Copy
+          </Button>
+        </div>
+      </div>
+      {offer ? (
+        <>
+          <div className="flex justify-center rounded-lg border border-border/70 bg-background/70 px-3 py-4">
+            <div className="rounded-lg bg-white p-3 shadow-sm">
+              <QRCodeSVG
+                bgColor="#ffffff"
+                className="h-auto max-w-full"
+                fgColor="#000000"
+                level="M"
+                size={220}
+                value={offer}
+              />
+            </div>
+          </div>
+          <code
+            className="block max-h-24 overflow-y-auto break-all rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs"
+            data-testid="channel-management-hive-offer-value"
+          >
+            {offer}
+          </code>
+        </>
+      ) : (
+        <p className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          {isLoading ? "Loading BOLT12 offer..." : "BOLT12 offer unavailable"}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatTransactionTimestamp(createdAtMs: number) {
+  if (!Number.isFinite(createdAtMs) || createdAtMs <= 0) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(createdAtMs));
+}
+
+function HiveWalletTransactionRow({ tx }: { tx: WalletTransaction }) {
+  const direction = tx.direction.trim().toLowerCase();
+  const amountPrefix =
+    direction === "inbound" ? "+" : direction === "outbound" ? "-" : "";
+  const amount =
+    tx.amountSats === null
+      ? "amountless"
+      : `${amountPrefix}${formatBitcoinAmount(tx.amountSats)}`;
+  const timestamp = formatTransactionTimestamp(tx.createdAtMs);
+  const status = tx.status.trim() || "unknown";
+  const statusMessage = tx.statusMessage.trim();
+  const notes = [
+    ...walletTransactionNotes(tx),
+    statusMessage && statusMessage.toLowerCase() !== status.toLowerCase()
+      ? statusMessage
+      : null,
+  ].filter((note): note is string => Boolean(note));
+
+  return (
+    <li className="space-y-1 border-t border-border/60 py-2 first:border-t-0 first:pt-0 last:pb-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-0.5">
+          <div className="truncate text-sm font-medium">
+            {formatWalletTransactionTitle(tx)}
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            {timestamp ? <span>{timestamp}</span> : null}
+            <span className="rounded border border-border/60 px-1.5 py-0.5">
+              {status}
+            </span>
+          </div>
+        </div>
+        <div
+          className={cn(
+            "shrink-0 text-right text-sm font-medium",
+            direction === "inbound"
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-muted-foreground",
+          )}
+        >
+          {amount}
+        </div>
+      </div>
+      {notes.length ? (
+        <div className="space-y-0.5">
+          {notes.map((note) => (
+            <p className="break-words text-xs text-muted-foreground" key={note}>
+              {note}
+            </p>
+          ))}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function HiveWalletTransactions({
+  isLoading,
+  transactions,
+}: {
+  isLoading: boolean;
+  transactions: WalletTransaction[] | undefined;
+}) {
+  const records = transactions ?? [];
+
+  return (
+    <div
+      className="space-y-2"
+      data-testid="channel-management-hive-transactions"
+    >
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <History className="h-3.5 w-3.5" />
+        Transaction history
+      </div>
+      {records.length ? (
+        <ul className="rounded-lg border border-border/70 px-3 py-2">
+          {records.map((tx) => (
+            <HiveWalletTransactionRow key={tx.id} tx={tx} />
+          ))}
+        </ul>
+      ) : (
+        <p className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+          {isLoading ? "Loading transactions..." : "No transactions yet"}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ChannelManagementSheet({
   channel,
   currentPubkey,
@@ -125,6 +326,7 @@ export function ChannelManagementSheet({
   open,
 }: ChannelManagementSheetProps) {
   const { isDark } = useTheme();
+  const queryClient = useQueryClient();
   const channelId = channel?.id ?? null;
   const detailsQuery = useChannelDetailsQuery(channelId, open);
   const membersQuery = useChannelMembersQuery(channelId, open);
@@ -182,6 +384,46 @@ export function ChannelManagementSheet({
   const [ttlDraft, setTtlDraft] = React.useState("");
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [isCreateWorkflowOpen, setIsCreateWorkflowOpen] = React.useState(false);
+  const [hiveSeed, setHiveSeed] = React.useState<string | null>(null);
+  const [hiveSeedError, setHiveSeedError] = React.useState<string | null>(null);
+  const [isRevealingHiveSeed, setIsRevealingHiveSeed] = React.useState(false);
+  const hiveSummaryQueryKey = ["hive-channel-wallet-summary", detail?.id];
+  const hiveSummaryQuery = useQuery({
+    enabled: Boolean(open && detail?.hiveChannel),
+    queryKey: hiveSummaryQueryKey,
+    queryFn: () => getHiveChannelWalletSummary(detail?.id ?? ""),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const hiveTransactionsQuery = useQuery({
+    enabled: Boolean(open && detail?.hiveChannel),
+    queryKey: ["hive-channel-wallet-transactions", detail?.id],
+    queryFn: () => getHiveChannelWalletTransactions(detail?.id ?? "", 20),
+    retry: false,
+    staleTime: 30_000,
+  });
+  const generateHiveOfferMutation = useMutation({
+    mutationFn: () => {
+      const selectedChannel = detail ?? channel;
+      if (!selectedChannel?.hiveChannel) {
+        throw new Error("No hive channel selected.");
+      }
+      return generateHiveChannelWalletBolt12Offer(selectedChannel.id);
+    },
+    onSuccess: async (summary) => {
+      queryClient.setQueryData(
+        ["hive-channel-wallet-summary", summary.channelId],
+        summary,
+      );
+      toast.success("Generated new BOLT12 offer");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: channelsQueryKey }),
+        queryClient.invalidateQueries({
+          queryKey: ["channels", summary.channelId, "detail"],
+        }),
+      ]);
+    },
+  });
 
   // Sync drafts from server only when the sheet opens or the channel changes —
   // not on every background refetch, which would clobber in-flight edits.
@@ -192,6 +434,8 @@ export function ChannelManagementSheet({
       syncedForRef.current = null;
       setIsDeleteDialogOpen(false);
       setIsCreateWorkflowOpen(false);
+      setHiveSeed(null);
+      setHiveSeedError(null);
       return;
     }
     if (!detail) {
@@ -270,7 +514,28 @@ export function ChannelManagementSheet({
     });
   }
 
+  async function handleRevealHiveSeed() {
+    if (!resolvedChannel.hiveChannel) return;
+    setIsRevealingHiveSeed(true);
+    setHiveSeedError(null);
+    try {
+      setHiveSeed(await revealHiveChannelWalletSeed(resolvedChannel.id));
+    } catch (error) {
+      setHiveSeedError(
+        error instanceof Error
+          ? error.message
+          : "Failed to reveal hive wallet seed.",
+      );
+    } finally {
+      setIsRevealingHiveSeed(false);
+    }
+  }
+
   const resolvedChannel = detail ?? channel;
+  const hiveWalletBolt12Offer =
+    hiveSummaryQuery.data?.bolt12Offer.trim() ||
+    resolvedChannel.hiveWalletBolt12Offer ||
+    null;
 
   return (
     <Sheet onOpenChange={handleSheetOpenChange} open={open}>
@@ -320,6 +585,87 @@ export function ChannelManagementSheet({
 
         <div className="flex-1 space-y-6 overflow-y-auto bg-background px-6 py-6">
           <ChannelIdRow channelId={resolvedChannel.id} />
+          {resolvedChannel.hiveChannel ? (
+            <div
+              className="space-y-3 rounded-xl border border-border/70 bg-muted/20 p-3"
+              data-testid="channel-management-hive-wallet"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Wallet className="h-4 w-4 text-muted-foreground" />
+                  Hive wallet
+                </div>
+                <div className="rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
+                  {hiveSummaryQuery.data
+                    ? formatBitcoinAmount(hiveSummaryQuery.data.balanceSats)
+                    : "Local seed required"}
+                </div>
+              </div>
+              {hiveSummaryQuery.data?.ownershipShares.length ? (
+                <div className="space-y-1">
+                  {hiveSummaryQuery.data.ownershipShares.map((share) => (
+                    <div
+                      className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
+                      key={share.memberPubkey ?? "unknown"}
+                    >
+                      <span className="truncate font-mono">
+                        {share.memberPubkey ?? "unknown"}
+                      </span>
+                      <span>
+                        {share.ownershipPercent.toFixed(1)}% ·{" "}
+                        {formatBitcoinAmount(share.amountSats)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <HiveWalletOffer
+                isGenerating={generateHiveOfferMutation.isPending}
+                isLoading={hiveSummaryQuery.isPending}
+                onGenerate={() => {
+                  void generateHiveOfferMutation.mutateAsync();
+                }}
+                offer={hiveWalletBolt12Offer}
+              />
+              <HiveWalletTransactions
+                isLoading={hiveTransactionsQuery.isPending}
+                transactions={hiveTransactionsQuery.data}
+              />
+              {hiveTransactionsQuery.error instanceof Error ? (
+                <p className="text-sm text-destructive">
+                  {hiveTransactionsQuery.error.message}
+                </p>
+              ) : null}
+              {generateHiveOfferMutation.error instanceof Error ? (
+                <p className="text-sm text-destructive">
+                  {generateHiveOfferMutation.error.message}
+                </p>
+              ) : null}
+              <Button
+                data-testid="channel-management-reveal-hive-seed"
+                disabled={isRevealingHiveSeed}
+                onClick={() => {
+                  void handleRevealHiveSeed();
+                }}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {isRevealingHiveSeed ? "Revealing..." : "Reveal seed phrase"}
+              </Button>
+              {hiveSeed ? (
+                <Textarea
+                  className="min-h-20 font-mono text-xs"
+                  data-testid="channel-management-hive-seed"
+                  readOnly
+                  value={hiveSeed}
+                />
+              ) : null}
+              {hiveSeedError ? (
+                <p className="text-sm text-destructive">{hiveSeedError}</p>
+              ) : null}
+            </div>
+          ) : null}
           {detailsQuery.error instanceof Error ? (
             <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {detailsQuery.error.message}

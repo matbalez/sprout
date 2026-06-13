@@ -46,12 +46,12 @@ run_pnpm tauri build \
     --no-sign \
     --ci
 
-APP="$ROOT/desktop/src-tauri/target/$TARGET/release/bundle/macos/Sprout Dev.app"
+APP="$ROOT/desktop/src-tauri/target/$TARGET/release/bundle/macos/Buzz Dev.app"
 if [[ ! -d "$APP" ]]; then
-    APP="$ROOT/desktop/src-tauri/target/release/bundle/macos/Sprout Dev.app"
+    APP="$ROOT/desktop/src-tauri/target/release/bundle/macos/Buzz Dev.app"
 fi
 
 cd "$ROOT"
 ./scripts/validate-dev-app-bundle.sh "$APP"
 
-echo "Built clean Sprout Dev app: $APP"
+echo "Built clean Buzz Dev app: $APP"

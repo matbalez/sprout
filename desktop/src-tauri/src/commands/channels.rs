@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use nostr::EventId;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::{
     app_state::AppState,
@@ -9,6 +9,7 @@ use crate::{
     models::{ChannelDetailInfo, ChannelInfo, ChannelMembersResponse, ChannelPaymentPolicyInfo},
     nostr_convert,
     relay::{query_relay, submit_event},
+    wallet,
 };
 
 // ── Reads (pure-nostr via /query) ────────────────────────────────────────────
@@ -38,6 +39,11 @@ fn keep_newest_policy(
     }
 }
 
+#[derive(Clone, Default)]
+struct ChannelHiveMetadata {
+    hive_wallet_bolt12_offer: Option<String>,
+}
+
 fn collect_payment_policies(
     events: Vec<nostr::Event>,
     newest_by_key: &mut HashMap<String, (u64, ChannelPaymentPolicyInfo)>,
@@ -60,6 +66,41 @@ fn collect_payment_policies(
         }
         if let Some(channel_id) = first_tag_value(&event, "h") {
             keep_newest_policy(newest_by_key, channel_id, created_at, &policy);
+        }
+    }
+}
+
+fn collect_hive_metadata(
+    events: Vec<nostr::Event>,
+    newest_by_channel: &mut HashMap<String, (u64, ChannelHiveMetadata)>,
+) {
+    for event in events {
+        let kind = event.kind.as_u16();
+        let marker_event =
+            kind == KIND_REACTION && events::is_hive_channel_wallet_content(&event.content);
+        let create_event = kind == KIND_CHANNEL_CREATE;
+        if !marker_event && !create_event {
+            continue;
+        }
+        let Some(channel_id) = first_tag_value(&event, "h") else {
+            continue;
+        };
+        let hive_channel = first_tag_value(&event, "hive_channel")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !hive_channel {
+            continue;
+        }
+        let metadata = ChannelHiveMetadata {
+            hive_wallet_bolt12_offer: first_tag_value(&event, "hive_wallet_bolt12_offer")
+                .map(str::to_string),
+        };
+        let created_at = event.created_at.as_secs();
+        let entry = newest_by_channel
+            .entry(channel_id.to_string())
+            .or_insert_with(|| (created_at, metadata.clone()));
+        if created_at >= entry.0 {
+            *entry = (created_at, metadata);
         }
     }
 }
@@ -129,6 +170,39 @@ async fn fetch_channel_payment_policies(
         .collect())
 }
 
+async fn fetch_channel_hive_metadata(
+    state: &AppState,
+    metadata_events: &[nostr::Event],
+) -> Result<HashMap<String, ChannelHiveMetadata>, String> {
+    let mut channel_ids: Vec<String> = metadata_events
+        .iter()
+        .filter_map(|event| first_tag_value(event, "d").map(str::to_string))
+        .collect();
+    channel_ids.sort();
+    channel_ids.dedup();
+    if channel_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let create_events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [KIND_CHANNEL_CREATE, KIND_REACTION],
+            "#h": channel_ids,
+            "limit": 5000,
+        })],
+    )
+    .await
+    .unwrap_or_default();
+
+    let mut newest_by_channel = HashMap::new();
+    collect_hive_metadata(create_events, &mut newest_by_channel);
+    Ok(newest_by_channel
+        .into_iter()
+        .map(|(key, (_, metadata))| (key, metadata))
+        .collect())
+}
+
 fn apply_payment_policy(
     mut channel: ChannelInfo,
     policies: &HashMap<String, ChannelPaymentPolicyInfo>,
@@ -142,6 +216,17 @@ fn apply_payment_policy(
     channel
 }
 
+fn apply_hive_metadata(
+    mut channel: ChannelInfo,
+    metadata_by_channel: &HashMap<String, ChannelHiveMetadata>,
+) -> ChannelInfo {
+    if let Some(metadata) = metadata_by_channel.get(&channel.id) {
+        channel.hive_channel = true;
+        channel.hive_wallet_bolt12_offer = metadata.hive_wallet_bolt12_offer.clone();
+    }
+    channel
+}
+
 fn apply_detail_payment_policy(
     mut channel: ChannelDetailInfo,
     policies: &HashMap<String, ChannelPaymentPolicyInfo>,
@@ -151,6 +236,17 @@ fn apply_detail_payment_policy(
             .get(&channel.metadata_event_id)
             .or_else(|| policies.get(&channel.id))
             .cloned();
+    }
+    channel
+}
+
+fn apply_detail_hive_metadata(
+    mut channel: ChannelDetailInfo,
+    metadata_by_channel: &HashMap<String, ChannelHiveMetadata>,
+) -> ChannelDetailInfo {
+    if let Some(metadata) = metadata_by_channel.get(&channel.id) {
+        channel.hive_channel = true;
+        channel.hive_wallet_bolt12_offer = metadata.hive_wallet_bolt12_offer.clone();
     }
     channel
 }
@@ -237,6 +333,9 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
     let payment_policies = fetch_channel_payment_policies(&state, &all_meta_events)
         .await
         .unwrap_or_default();
+    let hive_metadata = fetch_channel_hive_metadata(&state, &all_meta_events)
+        .await
+        .unwrap_or_default();
 
     // Merge: member channels (marked as member) + open channels (not yet joined).
     let member_d_tags: std::collections::HashSet<String> = meta_events
@@ -256,7 +355,10 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
     let mut channels = Vec::with_capacity(meta_events.len() + open_meta_events.len());
     for ev in &meta_events {
         if let Ok(info) = nostr_convert::channel_info_from_event(ev, None, Some(true)) {
-            channels.push(apply_payment_policy(info, &payment_policies));
+            channels.push(apply_hive_metadata(
+                apply_payment_policy(info, &payment_policies),
+                &hive_metadata,
+            ));
         }
     }
     for ev in &open_meta_events {
@@ -275,7 +377,10 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
             }
         }
         if let Ok(info) = nostr_convert::channel_info_from_event(ev, None, Some(false)) {
-            channels.push(apply_payment_policy(info, &payment_policies));
+            channels.push(apply_hive_metadata(
+                apply_payment_policy(info, &payment_policies),
+                &hive_metadata,
+            ));
         }
     }
 
@@ -537,8 +642,14 @@ pub async fn get_channel_details(
     let payment_policies = fetch_channel_payment_policies(&state, std::slice::from_ref(event))
         .await
         .unwrap_or_default();
+    let hive_metadata = fetch_channel_hive_metadata(&state, std::slice::from_ref(event))
+        .await
+        .unwrap_or_default();
     let detail = nostr_convert::channel_detail_from_event(event)?;
-    Ok(apply_detail_payment_policy(detail, &payment_policies))
+    Ok(apply_detail_hive_metadata(
+        apply_detail_payment_policy(detail, &payment_policies),
+        &hive_metadata,
+    ))
 }
 
 #[tauri::command]
@@ -624,6 +735,8 @@ pub async fn create_channel(
     paid_join_amount: Option<u64>,
     paid_post_amount: Option<u64>,
     payment_bolt12_offer: Option<String>,
+    hive_channel: Option<bool>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ChannelInfo, String> {
     let channel_uuid = uuid::Uuid::new_v4();
@@ -636,6 +749,22 @@ pub async fn create_channel(
         "stream" | "forum" => channel_type.as_str(),
         other => return Err(format!("invalid channel_type: {other}")),
     };
+    let hive_channel = hive_channel.unwrap_or(false);
+    let join_amount = paid_join_amount.unwrap_or(0);
+    let post_amount = paid_post_amount.unwrap_or(0);
+    if hive_channel && vis != "private" {
+        return Err("hive channels must be private".to_string());
+    }
+    if hive_channel && (join_amount > 0 || post_amount > 0) {
+        return Err("hive channels cannot also be paid channels".to_string());
+    }
+    let hive_wallet_bolt12_offer = if hive_channel {
+        wallet::create_hive_channel_wallet(&app, &state, channel_uuid)
+            .await?
+            .bolt12_offer
+    } else {
+        None
+    };
 
     let builder = events::build_create_channel(
         channel_uuid,
@@ -647,6 +776,8 @@ pub async fn create_channel(
         paid_join_amount,
         paid_post_amount,
         payment_bolt12_offer.as_deref(),
+        hive_channel,
+        hive_wallet_bolt12_offer.as_deref(),
     )?;
     submit_event(builder, &state).await?;
 
@@ -668,9 +799,11 @@ pub async fn create_channel(
         .transpose()?
         .ok_or_else(|| "channel created but metadata not yet available".to_string())?;
     channel.current_user_role = Some("owner".to_string());
+    if hive_channel {
+        channel.hive_channel = true;
+        channel.hive_wallet_bolt12_offer = hive_wallet_bolt12_offer.clone();
+    }
 
-    let join_amount = paid_join_amount.unwrap_or(0);
-    let post_amount = paid_post_amount.unwrap_or(0);
     if join_amount > 0 || post_amount > 0 {
         let offer = payment_bolt12_offer
             .as_deref()
@@ -752,8 +885,14 @@ pub async fn update_channel(
     let payment_policies = fetch_channel_payment_policies(&state, std::slice::from_ref(event))
         .await
         .unwrap_or_default();
+    let hive_metadata = fetch_channel_hive_metadata(&state, std::slice::from_ref(event))
+        .await
+        .unwrap_or_default();
     let detail = nostr_convert::channel_detail_from_event(event)?;
-    Ok(apply_detail_payment_policy(detail, &payment_policies))
+    Ok(apply_detail_hive_metadata(
+        apply_detail_payment_policy(detail, &payment_policies),
+        &hive_metadata,
+    ))
 }
 
 #[tauri::command]

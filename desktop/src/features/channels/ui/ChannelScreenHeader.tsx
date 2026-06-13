@@ -1,5 +1,6 @@
-import { LogIn } from "lucide-react";
-import type * as React from "react";
+import { LogIn, Wallet } from "lucide-react";
+import * as React from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
 import type { EphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
@@ -8,8 +9,14 @@ import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderSt
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
 import { getPaidJoinAmount } from "@/features/channels/hooks";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
-import { formatBitcoinAmount } from "@/features/wallet/api";
+import {
+  formatBitcoinAmount,
+  getHiveChannelWalletSummary,
+  sendHiveChannelFunds,
+} from "@/features/wallet/api";
 import { Button } from "@/shared/ui/button";
+import { Input } from "@/shared/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
 
 type ChannelScreenHeaderProps = {
@@ -55,6 +62,9 @@ export function ChannelScreenHeader({
   onManageChannel,
   onToggleMembers,
 }: ChannelScreenHeaderProps) {
+  const queryClient = useQueryClient();
+  const [hiveFundAmount, setHiveFundAmount] = React.useState("");
+  const [isHiveFundingOpen, setIsHiveFundingOpen] = React.useState(false);
   const showJoinButton =
     activeChannel !== null &&
     !activeChannel.isMember &&
@@ -89,10 +99,112 @@ export function ChannelScreenHeader({
       </div>
     ) : null;
 
+  const hiveSummaryQuery = useQuery({
+    enabled: Boolean(activeChannel?.hiveChannel && activeChannel.isMember),
+    queryKey: ["hive-channel-wallet-summary", activeChannel?.id],
+    queryFn: () => getHiveChannelWalletSummary(activeChannel?.id ?? ""),
+    retry: false,
+    staleTime: 30_000,
+  });
+
+  const sendHiveFundsMutation = useMutation({
+    mutationFn: (amountSats: number) => {
+      if (!activeChannel) {
+        throw new Error("No active channel.");
+      }
+      return sendHiveChannelFunds({
+        channelId: activeChannel.id,
+        amountSats,
+      });
+    },
+    onSuccess: async () => {
+      const queryKey = ["hive-channel-wallet-summary", activeChannel?.id];
+      await queryClient.invalidateQueries({ queryKey });
+      await queryClient.refetchQueries({ queryKey, type: "active" });
+      setHiveFundAmount("");
+      setIsHiveFundingOpen(false);
+    },
+  });
+
+  const parsedHiveFundAmount = Number(hiveFundAmount);
+  const canSendHiveFunds =
+    Number.isSafeInteger(parsedHiveFundAmount) && parsedHiveFundAmount > 0;
+  const hiveControls =
+    activeChannel?.hiveChannel && activeChannel.isMember ? (
+      <Popover onOpenChange={setIsHiveFundingOpen} open={isHiveFundingOpen}>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="rounded-md border border-border/60 bg-muted/45 px-2 py-1 text-xs font-medium text-muted-foreground"
+            data-testid="hive-channel-balance"
+            title="Hive channel wallet balance"
+          >
+            {hiveSummaryQuery.data
+              ? formatBitcoinAmount(hiveSummaryQuery.data.balanceSats)
+              : "Hive"}
+          </div>
+          <PopoverTrigger asChild>
+            <Button
+              data-testid="hive-channel-add-funds"
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Wallet className="mr-1.5 h-3.5 w-3.5" />
+              Add funds
+            </Button>
+          </PopoverTrigger>
+        </div>
+        <PopoverContent align="end" className="w-64">
+          <form
+            className="space-y-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!canSendHiveFunds) return;
+              void sendHiveFundsMutation.mutateAsync(parsedHiveFundAmount);
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">₿</span>
+              <Input
+                autoFocus
+                data-testid="hive-channel-fund-amount"
+                disabled={sendHiveFundsMutation.isPending}
+                inputMode="numeric"
+                min={1}
+                onChange={(event) => {
+                  sendHiveFundsMutation.reset();
+                  setHiveFundAmount(event.target.value);
+                }}
+                placeholder="100"
+                step={1}
+                type="number"
+                value={hiveFundAmount}
+              />
+            </div>
+            <Button
+              className="w-full"
+              data-testid="hive-channel-send-funds"
+              disabled={!canSendHiveFunds || sendHiveFundsMutation.isPending}
+              size="sm"
+              type="submit"
+            >
+              {sendHiveFundsMutation.isPending ? "Sending..." : "Send"}
+            </Button>
+            {sendHiveFundsMutation.error instanceof Error ? (
+              <p className="text-xs text-destructive">
+                {sendHiveFundsMutation.error.message}
+              </p>
+            ) : null}
+          </form>
+        </PopoverContent>
+      </Popover>
+    ) : null;
+
   const actions = activeChannel ? (
     <div className="flex items-center gap-2">
       {spendBadge}
       {earnedBadge}
+      {hiveControls}
       {showJoinButton ? (
         <Button
           disabled={isJoining}

@@ -115,6 +115,7 @@ type AppSidebarProps = {
     templateId?: string;
     paidJoinAmount?: number;
     paidPostAmount?: number;
+    hiveChannel?: boolean;
   }) => Promise<void>;
   onCreateForum: (input: {
     name: string;
@@ -124,6 +125,7 @@ type AppSidebarProps = {
     templateId?: string;
     paidJoinAmount?: number;
     paidPostAmount?: number;
+    hiveChannel?: boolean;
   }) => Promise<void>;
   onOpenAddWorkspace: () => void;
   onOpenBrowseChannels: () => void;
@@ -416,6 +418,7 @@ export function AppSidebar({
       templateId?: string;
       paidJoinAmount?: number;
       paidPostAmount?: number;
+      hiveChannel?: boolean;
     }) => {
       if (createDialogKind === "stream") {
         await onCreateChannel(input);

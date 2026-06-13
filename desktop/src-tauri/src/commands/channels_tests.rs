@@ -181,3 +181,42 @@ fn collects_payment_policies_by_metadata_and_channel_id() {
         Some(25)
     );
 }
+
+#[test]
+fn collects_hive_metadata_from_create_and_marker_events() {
+    let create = ev(
+        9007,
+        "",
+        vec![
+            vec!["h", "chan-1"],
+            vec!["hive_channel", "1"],
+            vec!["hive_wallet_provider", "lexe"],
+        ],
+    );
+    let marker = ev(
+        7,
+        "sprout-hive-wallet:v1:11111111-1111-4111-8111-111111111111",
+        vec![
+            vec!["h", "chan-1"],
+            vec![
+                "e",
+                "1111111111111111111111111111111111111111111111111111111111111111",
+                "",
+                "root",
+            ],
+            vec!["hive_channel", "1"],
+            vec!["hive_wallet_provider", "lexe"],
+            vec!["hive_wallet_bolt12_offer", "lno1hive"],
+        ],
+    );
+
+    let mut metadata = std::collections::HashMap::new();
+    collect_hive_metadata(vec![create, marker], &mut metadata);
+
+    assert_eq!(
+        metadata
+            .get("chan-1")
+            .and_then(|(_, metadata)| metadata.hive_wallet_bolt12_offer.as_deref()),
+        Some("lno1hive")
+    );
+}

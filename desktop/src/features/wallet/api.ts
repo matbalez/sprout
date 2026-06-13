@@ -84,6 +84,24 @@ export type WalletPaymentResult = {
   amountSats: number;
 };
 
+export type HiveChannelContributionShare = {
+  memberPubkey: string | null;
+  amountSats: number;
+  ownershipPercent: number;
+};
+
+export type HiveChannelWalletSummary = {
+  channelId: string;
+  seedPath: string;
+  balanceSats: number;
+  lightningBalanceSats: number;
+  lightningSendableBalanceSats: number;
+  onchainBalanceSats: number;
+  bolt12Offer: string;
+  totalContributedSats: number;
+  ownershipShares: HiveChannelContributionShare[];
+};
+
 export type MessageTipResult = {
   paymentId: string;
   amountSats: number;
@@ -135,6 +153,8 @@ export function walletBotChannel(): Channel {
     ttlSeconds: null,
     ttlDeadline: null,
     paymentPolicy: null,
+    hiveChannel: false,
+    hiveWalletBolt12Offer: null,
   };
 }
 
@@ -234,6 +254,41 @@ export function sendLightningWalletPayment(
     amountSats,
     payable,
   });
+}
+
+export function getHiveChannelWalletSummary(channelId: string) {
+  return invokeTauri<HiveChannelWalletSummary>(
+    "get_hive_channel_wallet_summary",
+    { channelId },
+  );
+}
+
+export function getHiveChannelWalletTransactions(
+  channelId: string,
+  limit = 20,
+) {
+  return invokeTauri<WalletTransaction[]>(
+    "get_hive_channel_wallet_transactions",
+    { channelId, limit },
+  );
+}
+
+export function generateHiveChannelWalletBolt12Offer(channelId: string) {
+  return invokeTauri<HiveChannelWalletSummary>(
+    "generate_hive_channel_wallet_bolt12_offer",
+    { channelId },
+  );
+}
+
+export function revealHiveChannelWalletSeed(channelId: string) {
+  return invokeTauri<string>("reveal_hive_channel_wallet_seed", { channelId });
+}
+
+export function sendHiveChannelFunds(input: {
+  channelId: string;
+  amountSats: number;
+}) {
+  return invokeTauri<WalletPaymentResult>("send_hive_channel_funds", input);
 }
 
 export function sendMessageKudos(input: {

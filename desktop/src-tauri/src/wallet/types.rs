@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use lexe::wallet::LexeWallet;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,8 @@ pub(crate) const EXISTING_CLIENT_CREDENTIAL_FILE_NAME: &str = "lexe_client_crede
 pub(crate) const MESSAGES_FILE_NAME: &str = "walletbot_messages.json";
 pub(crate) const AGENT_PAYMENT_ANNOTATIONS_FILE_NAME: &str = "agent_payment_annotations.json";
 pub(crate) const AGENT_PAYMENT_SETTINGS_FILE_NAME: &str = "agent_payment_settings.json";
+pub(crate) const HIVE_CHANNELS_DIR_NAME: &str = "hive-channels";
+pub(crate) const WALLET_BOLT12_OFFER_DESCRIPTION: &str = "Sprout WalletBot BOLT12 offer";
 pub(crate) const WALLETBOT_WELCOME: &str = "WalletBot is local to this Sprout app.\n\nAvailable commands:\n- help\n- get balance\n- get BOLT12\n- fund wallet\n- get transactions\n- create invoice for ₿1,000\n- send ₿500 to <payment target>";
 pub(crate) const DEFAULT_TRANSACTION_LIMIT: usize = 20;
 pub(crate) const MAX_TRANSACTION_LIMIT: usize = 100;
@@ -24,6 +26,7 @@ pub struct WalletRuntimeState {
     pub(crate) wallet: tokio::sync::Mutex<Option<Arc<LexeWallet>>>,
     pub(crate) wallet_source: tokio::sync::Mutex<Option<WalletSource>>,
     pub(crate) summary: tokio::sync::Mutex<Option<WalletSummary>>,
+    pub(crate) hive_wallets: tokio::sync::Mutex<HashMap<String, Arc<LexeWallet>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +101,28 @@ pub struct WalletSummary {
 pub struct WalletPaymentResult {
     pub payment_id: String,
     pub amount_sats: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelContributionShare {
+    pub member_pubkey: Option<String>,
+    pub amount_sats: u64,
+    pub ownership_percent: f64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelWalletSummary {
+    pub channel_id: String,
+    pub seed_path: String,
+    pub balance_sats: u64,
+    pub lightning_balance_sats: u64,
+    pub lightning_sendable_balance_sats: u64,
+    pub onchain_balance_sats: u64,
+    pub bolt12_offer: String,
+    pub total_contributed_sats: u64,
+    pub ownership_shares: Vec<HiveChannelContributionShare>,
 }
 
 #[derive(Serialize)]

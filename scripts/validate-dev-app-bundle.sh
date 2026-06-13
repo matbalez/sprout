@@ -2,12 +2,12 @@
 set -euo pipefail
 
 APP_PATH=${1:-}
-EXPECTED_IDENTIFIER=${SPROUT_DEV_BUNDLE_IDENTIFIER:-xyz.block.sprout.app.dev}
-EXPECTED_NAME=${SPROUT_DEV_PRODUCT_NAME:-Sprout Dev}
-EXPECTED_SCHEME=${SPROUT_DEV_URL_SCHEME:-sprout-dev}
+EXPECTED_IDENTIFIER=${BUZZ_DEV_BUNDLE_IDENTIFIER:-xyz.block.buzz.app.dev}
+EXPECTED_NAME=${BUZZ_DEV_PRODUCT_NAME:-Buzz Dev}
+EXPECTED_SCHEME=${BUZZ_DEV_URL_SCHEME:-buzz-dev}
 
 if [[ -z "$APP_PATH" ]]; then
-    echo "usage: $0 /path/to/Sprout Dev.app" >&2
+    echo "usage: $0 /path/to/Buzz Dev.app" >&2
     exit 1
 fi
 
@@ -63,8 +63,8 @@ if expected_scheme not in schemes:
         f"Error: missing URL scheme {expected_scheme!r}; found {sorted(schemes)!r}"
     )
 
-if "sprout" in schemes:
-    raise SystemExit("Error: dev app registers production URL scheme 'sprout'")
+if "buzz" in schemes:
+    raise SystemExit("Error: dev app registers production URL scheme 'buzz'")
 PY
 
 required_sidecars=(
@@ -88,8 +88,8 @@ for bin in "${required_sidecars[@]}"; do
 done
 
 if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "Error: invalid Sprout Dev sidecar(s): ${missing[*]}" >&2
+    echo "Error: invalid Buzz Dev sidecar(s): ${missing[*]}" >&2
     exit 1
 fi
 
-echo "Validated Sprout Dev app bundle: $APP_PATH"
+echo "Validated Buzz Dev app bundle: $APP_PATH"

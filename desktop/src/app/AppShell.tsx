@@ -884,6 +884,7 @@ export function AppShell() {
                         name,
                         paidJoinAmount,
                         paidPostAmount,
+                        hiveChannel,
                         visibility,
                         ttlSeconds,
                         templateId,
@@ -904,6 +905,7 @@ export function AppShell() {
                             paidJoinAmount,
                             paidPostAmount,
                             paymentBolt12Offer,
+                            hiveChannel,
                           });
 
                         await applyCanvas(templateId, createdChannel.id, name);
@@ -915,6 +917,7 @@ export function AppShell() {
                         name,
                         paidJoinAmount,
                         paidPostAmount,
+                        hiveChannel,
                         visibility,
                         ttlSeconds,
                         templateId,
@@ -935,6 +938,7 @@ export function AppShell() {
                             paidJoinAmount,
                             paidPostAmount,
                             paymentBolt12Offer,
+                            hiveChannel,
                           });
 
                         await applyCanvas(templateId, createdForum.id, name);

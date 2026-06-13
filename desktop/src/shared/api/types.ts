@@ -32,6 +32,8 @@ export type Channel = {
   ttlSeconds: number | null;
   ttlDeadline: string | null;
   paymentPolicy: ChannelPaymentPolicy | null;
+  hiveChannel: boolean;
+  hiveWalletBolt12Offer: string | null;
 };
 
 export type ChannelDetail = Channel & {
@@ -64,6 +66,7 @@ export type CreateChannelInput = {
   paidJoinAmount?: number;
   paidPostAmount?: number;
   paymentBolt12Offer?: string;
+  hiveChannel?: boolean;
 };
 
 export type OpenDmInput = {

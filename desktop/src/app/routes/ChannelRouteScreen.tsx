@@ -46,21 +46,22 @@ export function ChannelRouteScreen({
     activeChannel !== null && shouldHydrateChannelForJoinPayment(activeChannel),
   );
   const hydratedActiveChannel = React.useMemo(() => {
-    const paymentPolicy = channelDetailsQuery.data?.paymentPolicy ?? null;
-    if (!activeChannel || !paymentPolicy) {
+    const detail = channelDetailsQuery.data;
+    if (!activeChannel || !detail) {
       return activeChannel;
     }
     return {
       ...activeChannel,
-      metadataEventId:
-        channelDetailsQuery.data?.metadataEventId ??
-        activeChannel.metadataEventId,
-      paymentPolicy,
+      metadataEventId: detail.metadataEventId ?? activeChannel.metadataEventId,
+      paymentPolicy: detail.paymentPolicy ?? activeChannel.paymentPolicy,
+      hiveChannel: activeChannel.hiveChannel || detail.hiveChannel,
+      hiveWalletBolt12Offer:
+        detail.hiveWalletBolt12Offer ?? activeChannel.hiveWalletBolt12Offer,
     };
   }, [activeChannel, channelDetailsQuery.data]);
   React.useEffect(() => {
     const detail = channelDetailsQuery.data;
-    if (!detail?.paymentPolicy) {
+    if (!detail?.paymentPolicy && !detail?.hiveChannel) {
       return;
     }
 
@@ -71,7 +72,11 @@ export function ChannelRouteScreen({
             ? {
                 ...channel,
                 metadataEventId: detail.metadataEventId,
-                paymentPolicy: detail.paymentPolicy,
+                paymentPolicy: detail.paymentPolicy ?? channel.paymentPolicy,
+                hiveChannel: channel.hiveChannel || detail.hiveChannel,
+                hiveWalletBolt12Offer:
+                  detail.hiveWalletBolt12Offer ??
+                  channel.hiveWalletBolt12Offer,
               }
             : channel,
         ),

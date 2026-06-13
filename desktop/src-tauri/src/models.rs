@@ -116,6 +116,10 @@ pub struct ChannelInfo {
     pub ttl_deadline: Option<String>,
     #[serde(default)]
     pub payment_policy: Option<ChannelPaymentPolicyInfo>,
+    #[serde(default)]
+    pub hive_channel: bool,
+    #[serde(default)]
+    pub hive_wallet_bolt12_offer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -148,6 +152,10 @@ pub struct ChannelDetailInfo {
     pub current_user_role: Option<String>,
     #[serde(default)]
     pub payment_policy: Option<ChannelPaymentPolicyInfo>,
+    #[serde(default)]
+    pub hive_channel: bool,
+    #[serde(default)]
+    pub hive_wallet_bolt12_offer: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

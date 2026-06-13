@@ -156,6 +156,7 @@ pub fn channel_info_from_event(
     let ttl_seconds = first_tag_value(event, "ttl").and_then(|v| v.parse::<i32>().ok());
     let ttl_deadline = first_tag_value(event, "ttl_deadline").map(str::to_string);
     let payment_policy = payment_policy_from_event(event);
+    let (hive_channel, hive_wallet_bolt12_offer) = hive_metadata_from_event(event);
     Ok(ChannelInfo {
         metadata_event_id: event.id.to_hex(),
         id,
@@ -176,6 +177,8 @@ pub fn channel_info_from_event(
         ttl_seconds,
         ttl_deadline,
         payment_policy,
+        hive_channel,
+        hive_wallet_bolt12_offer,
     })
 }
 
@@ -215,6 +218,7 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
         None
     };
 
+    let (hive_channel, hive_wallet_bolt12_offer) = hive_metadata_from_event(event);
     Ok(ChannelDetailInfo {
         metadata_event_id: event.id.to_hex(),
         id,
@@ -240,7 +244,21 @@ pub fn channel_detail_from_event(event: &Event) -> Result<ChannelDetailInfo, Str
         ttl_deadline: first_tag_value(event, "ttl_deadline").map(str::to_string),
         current_user_role: None,
         payment_policy: payment_policy_from_event(event),
+        hive_channel,
+        hive_wallet_bolt12_offer,
     })
+}
+
+fn hive_metadata_from_event(event: &Event) -> (bool, Option<String>) {
+    let hive_channel = first_tag_value(event, "hive_channel")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let hive_wallet_bolt12_offer = if hive_channel {
+        first_tag_value(event, "hive_wallet_bolt12_offer").map(str::to_string)
+    } else {
+        None
+    };
+    (hive_channel, hive_wallet_bolt12_offer)
 }
 
 /// Convert a NIP-29 kind:39002 members event to [`ChannelMembersResponse`].

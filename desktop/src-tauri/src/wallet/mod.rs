@@ -2,6 +2,7 @@ mod balance;
 mod broker;
 mod discovery;
 mod format;
+mod hive;
 mod parser;
 mod runtime;
 mod storage;
@@ -11,7 +12,7 @@ mod types;
 use lexe::types::{
     auth::ClientCredentials,
     command::{CreateInvoiceRequest, PayRequest},
-    payment::{Order, PaymentFilter},
+    payment::{Order, PaymentFilter, PaymentStatus},
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -23,6 +24,11 @@ use discovery::{resolve_bolt12_offer_for_pubkey, resolve_send_payable};
 use format::{
     amount_from_sats, format_amount, format_bolt12_offer_message, format_payment,
     wallet_transaction_with_annotation,
+};
+pub(crate) use hive::create_hive_channel_wallet;
+pub use hive::{
+    generate_hive_channel_wallet_bolt12_offer, get_hive_channel_wallet_summary,
+    get_hive_channel_wallet_transactions, reveal_hive_channel_wallet_seed, send_hive_channel_funds,
 };
 use parser::parse_wallet_command;
 use runtime::{
@@ -435,10 +441,26 @@ async fn send_payment(
         })
         .await
         .map_err(|error| format!("send Lexe payment: {error}"))?;
+    if response.status != PaymentStatus::Completed {
+        let status_message = payment_status_message(response.status_msg.as_str());
+        return Err(format!(
+            "Lexe payment failed for {}: {status_message}",
+            format_amount(amount_sats)
+        ));
+    }
     *state.wallet_state.summary.lock().await = None;
 
     Ok(WalletPaymentResult {
         payment_id: response.index.to_string(),
         amount_sats,
     })
+}
+
+fn payment_status_message(status_message: &str) -> String {
+    let status_message = status_message.trim();
+    if status_message.is_empty() {
+        "Lexe marked the payment failed".to_string()
+    } else {
+        status_message.to_string()
+    }
 }

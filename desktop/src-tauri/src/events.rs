@@ -31,6 +31,19 @@ const MAX_MENTIONS: usize = 50;
 /// Maximum emoji length in characters — matches buzz-sdk.
 const MAX_EMOJI_CHARS: usize = 64;
 
+pub(crate) const HIVE_CHANNEL_WALLET_CONTENT: &str = "sprout-hive-wallet:v1";
+
+pub(crate) fn is_hive_channel_wallet_content(content: &str) -> bool {
+    content == HIVE_CHANNEL_WALLET_CONTENT
+        || content
+            .strip_prefix(HIVE_CHANNEL_WALLET_CONTENT)
+            .is_some_and(|suffix| suffix.starts_with(':') && suffix.len() > 1)
+}
+
+fn hive_channel_wallet_marker_content() -> String {
+    format!("{HIVE_CHANNEL_WALLET_CONTENT}:{}", Uuid::new_v4())
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn tag(parts: Vec<&str>) -> Result<Tag, String> {
@@ -164,6 +177,8 @@ pub fn build_create_channel(
     paid_join_amount: Option<u64>,
     paid_post_amount: Option<u64>,
     payment_bolt12_offer: Option<&str>,
+    hive_channel: bool,
+    hive_wallet_bolt12_offer: Option<&str>,
 ) -> Result<EventBuilder, String> {
     let mut tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
@@ -179,6 +194,22 @@ pub fn build_create_channel(
     }
     let join_amount = paid_join_amount.unwrap_or(0);
     let post_amount = paid_post_amount.unwrap_or(0);
+    if hive_channel {
+        if visibility != "private" {
+            return Err("hive channels must be private".to_string());
+        }
+        if join_amount > 0 || post_amount > 0 {
+            return Err("hive channels cannot also be paid channels".to_string());
+        }
+        tags.push(tag(vec!["hive_channel", "1"])?);
+        tags.push(tag(vec!["hive_wallet_provider", "lexe"])?);
+        if let Some(offer) = hive_wallet_bolt12_offer
+            .map(str::trim)
+            .filter(|offer| !offer.is_empty())
+        {
+            tags.push(tag(vec!["hive_wallet_bolt12_offer", offer])?);
+        }
+    }
     if join_amount > 0 || post_amount > 0 {
         let offer = payment_bolt12_offer
             .map(str::trim)
@@ -194,6 +225,30 @@ pub fn build_create_channel(
         tags.push(tag(vec!["payment_rail", "lexe-bolt12"])?);
     }
     Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
+}
+
+/// Kind 7 — hive wallet metadata encoded as a relay-compatible reaction.
+pub fn build_hive_channel_wallet_metadata(
+    channel_id: Uuid,
+    metadata_event_id: EventId,
+    hive_wallet_bolt12_offer: &str,
+) -> Result<EventBuilder, String> {
+    let offer = hive_wallet_bolt12_offer.trim();
+    if offer.is_empty() {
+        return Err("hive channel wallet metadata requires a BOLT12 offer".into());
+    }
+
+    let channel_id = channel_id.to_string();
+    let metadata_event_id = metadata_event_id.to_hex();
+    let tags = vec![
+        tag(vec!["h", &channel_id])?,
+        tag(vec!["e", &metadata_event_id, "", "root"])?,
+        tag(vec!["hive_channel", "1"])?,
+        tag(vec!["hive_wallet_provider", "lexe"])?,
+        tag(vec!["hive_wallet_bolt12_offer", offer])?,
+        tag(vec!["status", "active"])?,
+    ];
+    Ok(EventBuilder::new(Kind::Custom(7), hive_channel_wallet_marker_content()).tags(tags))
 }
 
 /// Kind 9021 — join channel.
@@ -947,6 +1002,61 @@ mod tests {
         let err = build_archive_identity_request(TARGET_HEX, "", None, Some(TARGET_HEX), None)
             .unwrap_err();
         assert!(err.contains("replaced-by"));
+    }
+
+    #[test]
+    fn hive_channel_create_allows_offer_to_be_attached_later() {
+        let event = build_create_channel(
+            Uuid::new_v4(),
+            "hive",
+            "private",
+            "stream",
+            None,
+            None,
+            None,
+            None,
+            None,
+            true,
+            None,
+        )
+        .unwrap()
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+
+        assert!(tags.contains(&vec!["hive_channel".into(), "1".into()]));
+        assert!(tags.contains(&vec!["hive_wallet_provider".into(), "lexe".into()]));
+        assert!(!tags.iter().any(|tag| tag
+            .first()
+            .is_some_and(|name| name == "hive_wallet_bolt12_offer")));
+    }
+
+    #[test]
+    fn hive_wallet_metadata_marker_targets_channel_metadata_event() {
+        let metadata_event_id =
+            EventId::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let event =
+            build_hive_channel_wallet_metadata(Uuid::new_v4(), metadata_event_id, "lno1wallet")
+                .unwrap()
+                .sign_with_keys(&Keys::generate())
+                .unwrap();
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+
+        assert_eq!(event.kind, Kind::Custom(7));
+        assert!(is_hive_channel_wallet_content(&event.content));
+        assert_ne!(event.content, HIVE_CHANNEL_WALLET_CONTENT);
+        assert!(event.content.chars().count() <= MAX_EMOJI_CHARS);
+        assert!(tags.contains(&vec![
+            "e".into(),
+            "1111111111111111111111111111111111111111111111111111111111111111".into(),
+            "".into(),
+            "root".into()
+        ]));
+        assert!(tags.contains(&vec![
+            "hive_wallet_bolt12_offer".into(),
+            "lno1wallet".into()
+        ]));
     }
 
     #[test]

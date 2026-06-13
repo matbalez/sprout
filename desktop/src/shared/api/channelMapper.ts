@@ -25,6 +25,8 @@ export type RawChannel = {
   ttl_seconds: number | null;
   ttl_deadline: string | null;
   payment_policy?: RawChannelPaymentPolicy | null;
+  hive_channel?: boolean;
+  hive_wallet_bolt12_offer?: string | null;
 };
 
 type RawChannelPaymentPolicy = {
@@ -91,6 +93,8 @@ export function fromRawChannel(channel: RawChannel): Channel {
           paymentRail: channel.payment_policy.payment_rail,
         }
       : null,
+    hiveChannel: channel.hive_channel ?? false,
+    hiveWalletBolt12Offer: channel.hive_wallet_bolt12_offer ?? null,
   };
 }
 

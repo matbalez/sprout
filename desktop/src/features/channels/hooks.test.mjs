@@ -43,6 +43,8 @@ function channel(overrides) {
     ttlSeconds: null,
     ttlDeadline: null,
     paymentPolicy: null,
+    hiveChannel: false,
+    hiveWalletBolt12Offer: null,
     ...overrides,
   };
 }
@@ -57,6 +59,21 @@ describe("sortChannels", () => {
     assert.equal(sorted.length, 1);
     assert.equal(sorted[0]?.metadataEventId, "metadata-2");
     assert.equal(sorted[0]?.paymentPolicy?.joinAmountBaseUnits, 1234);
+  });
+
+  it("keeps hive metadata when deduping stale channel rows", () => {
+    const sorted = sortChannels([
+      channel({
+        hiveChannel: true,
+        hiveWalletBolt12Offer: "lno1hive",
+      }),
+      channel({ metadataEventId: "metadata-2" }),
+    ]);
+
+    assert.equal(sorted.length, 1);
+    assert.equal(sorted[0]?.metadataEventId, "metadata-2");
+    assert.equal(sorted[0]?.hiveChannel, true);
+    assert.equal(sorted[0]?.hiveWalletBolt12Offer, "lno1hive");
   });
 });
 

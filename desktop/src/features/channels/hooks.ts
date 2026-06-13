@@ -190,6 +190,9 @@ export function sortChannels(channels: Channel[]) {
           ? channel.participants
           : existing.participants,
       paymentPolicy: channel.paymentPolicy ?? existing.paymentPolicy,
+      hiveChannel: existing.hiveChannel || channel.hiveChannel,
+      hiveWalletBolt12Offer:
+        channel.hiveWalletBolt12Offer ?? existing.hiveWalletBolt12Offer,
     });
   }
 

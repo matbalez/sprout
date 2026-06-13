@@ -1,10 +1,10 @@
 {
-  "identifier": "xyz.block.sprout.app.dev",
-  "productName": "Sprout Dev",
+  "identifier": "xyz.block.buzz.app.dev",
+  "productName": "Buzz Dev",
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["sprout-dev"]
+        "schemes": ["buzz-dev"]
       }
     }
   },

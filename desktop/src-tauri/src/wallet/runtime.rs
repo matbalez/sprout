@@ -22,7 +22,7 @@ use super::{
         current_pubkey, load_existing_client_credential, load_root_seed, load_wallet_source,
         write_atomic_text, WalletStorage,
     },
-    types::WalletSource,
+    types::{WalletSource, WALLET_BOLT12_OFFER_DESCRIPTION},
 };
 
 pub(super) async fn ensure_wallet(
@@ -153,7 +153,7 @@ pub(super) async fn ensure_bolt12_offer(
     let wallet = ensure_wallet(app, state).await?;
     let response = wallet
         .create_offer(CreateOfferRequest {
-            description: Some("Sprout WalletBot BOLT12 offer".to_string()),
+            description: Some(WALLET_BOLT12_OFFER_DESCRIPTION.to_string()),
             min_amount: None,
             expiration_secs: None,
         })
