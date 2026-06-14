@@ -688,6 +688,18 @@ const MOCK_LEXE_PROVIDER_CAPABILITIES = {
   canCreateBolt11Invoice: true,
   canPayWithPreimage: true,
 };
+const MOCK_MDK_PROVIDER_CAPABILITIES = {
+  canCreateWallet: true,
+  canConnectExistingWallet: false,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: true,
+  canCreateBolt11Invoice: true,
+  canPayWithPreimage: true,
+};
 const MOCK_WALLET_PROVIDER_OPTIONS = [
   {
     provider: "lexe",
@@ -695,6 +707,13 @@ const MOCK_WALLET_PROVIDER_OPTIONS = [
     paymentRail: "lexe-bolt12",
     available: true,
     capabilities: MOCK_LEXE_PROVIDER_CAPABILITIES,
+  },
+  {
+    provider: "mdk",
+    label: "MDK Agent Wallet",
+    paymentRail: "mdk-bolt12",
+    available: true,
+    capabilities: MOCK_MDK_PROVIDER_CAPABILITIES,
   },
 ];
 
@@ -6362,19 +6381,37 @@ export function maybeInstallE2eTauriMocks() {
       case "get_lightning_wallet_source_config":
       case "set_lightning_wallet_provider":
       case "set_lightning_wallet_source": {
+        const requestedProvider = (payload as { provider?: string } | null)
+          ?.provider;
         const requestedSource = (payload as { source?: string } | null)?.source;
+        const provider = requestedProvider === "mdk" ? "mdk" : "lexe";
         return {
-          provider: "lexe",
+          provider,
           availableProviders: MOCK_WALLET_PROVIDER_OPTIONS,
           source:
-            requestedSource === "existing" || requestedSource === "default"
-              ? requestedSource
-              : "default",
+            provider === "mdk"
+              ? "default"
+              : requestedSource === "existing" || requestedSource === "default"
+                ? requestedSource
+                : "default",
           seedPath: "/mock/sprout-wallet-seed",
           existingClientCredentialPath: "/mock/lexe-client-credential",
           hasExistingClientCredential: false,
         };
       }
+      case "get_mdk_agent_wallet_status":
+      case "restart_mdk_agent_wallet_daemon":
+        return {
+          running: true,
+          pid: 42420,
+          port: 3456,
+          expectedPort: 3456,
+          healthy: true,
+          nodeRunning: true,
+          healthError: null,
+          homeDir: "/mock/mdk-wallet-home",
+          logPath: "/mock/mdk-wallet-home/.mdk-wallet/daemon.log",
+        };
       case "get_user_wallet_bolt12_offer": {
         const pubkey = (payload as { pubkey?: string } | null)?.pubkey
           ?.trim()

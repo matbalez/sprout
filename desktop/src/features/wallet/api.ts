@@ -25,7 +25,7 @@ export type WalletSummary = {
   bolt12Offer: string;
 };
 
-export type WalletProvider = "lexe";
+export type WalletProvider = "lexe" | "mdk";
 
 export type WalletProviderCapabilities = {
   canCreateWallet: boolean;
@@ -46,6 +46,18 @@ export type WalletProviderOption = {
   paymentRail: string;
   available: boolean;
   capabilities: WalletProviderCapabilities;
+};
+
+export type MdkAgentWalletStatus = {
+  running: boolean;
+  pid: number | null;
+  port: number | null;
+  expectedPort: number;
+  healthy: boolean;
+  nodeRunning: boolean;
+  healthError: string | null;
+  homeDir: string;
+  logPath: string;
 };
 
 export type WalletSource = "default" | "existing";
@@ -210,6 +222,8 @@ export function walletProviderLabel(provider: WalletProvider) {
   switch (provider) {
     case "lexe":
       return "Lexe";
+    case "mdk":
+      return "MDK Agent Wallet";
   }
 }
 
@@ -311,6 +325,14 @@ export function setLightningWalletProvider(input: {
     "set_lightning_wallet_provider",
     input,
   );
+}
+
+export function getMdkAgentWalletStatus() {
+  return invokeTauri<MdkAgentWalletStatus>("get_mdk_agent_wallet_status");
+}
+
+export function restartMdkAgentWalletDaemon() {
+  return invokeTauri<MdkAgentWalletStatus>("restart_mdk_agent_wallet_daemon");
 }
 
 export function setLightningWalletSource(input: {

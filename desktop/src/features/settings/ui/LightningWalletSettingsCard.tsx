@@ -17,15 +17,18 @@ import { toast } from "sonner";
 
 import {
   formatBitcoinAmount,
+  getMdkAgentWalletStatus,
   getLightningWalletAgentPaymentSettings,
   getLightningWalletSummary,
   getLightningWalletSourceConfig,
   getLightningWalletTransactions,
   refreshLightningWallet,
   revealLightningWalletSeed,
+  restartMdkAgentWalletDaemon,
   setLightningWalletAgentPaymentSettings,
   setLightningWalletProvider,
   setLightningWalletSource,
+  type MdkAgentWalletStatus,
   walletProviderLabel,
   type WalletProvider,
   type WalletProviderOption,
@@ -53,10 +56,27 @@ const walletAgentPaymentSettingsQueryKey = [
   "lightning-wallet",
   "agent-payment-settings",
 ] as const;
+const mdkAgentWalletStatusQueryKey = [
+  "lightning-wallet",
+  "mdk-agent-wallet-status",
+] as const;
 
 const lexeProviderCapabilities = {
   canCreateWallet: true,
   canConnectExistingWallet: true,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: true,
+  canCreateBolt11Invoice: true,
+  canPayWithPreimage: true,
+};
+
+const mdkProviderCapabilities = {
+  canCreateWallet: true,
+  canConnectExistingWallet: false,
   canReceiveReusableBolt12: true,
   canSendBolt12: true,
   canGetBalance: true,
@@ -75,10 +95,43 @@ const defaultWalletProviderOptions: WalletProviderOption[] = [
     available: true,
     capabilities: lexeProviderCapabilities,
   },
+  {
+    provider: "mdk",
+    label: walletProviderLabel("mdk"),
+    paymentRail: "mdk-bolt12",
+    available: true,
+    capabilities: mdkProviderCapabilities,
+  },
 ];
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Wallet request failed";
+}
+
+function formatMdkLastCheckedAt(value: number) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatMdkStatusToast(status: MdkAgentWalletStatus) {
+  const displayedPort = status.port ?? status.expectedPort;
+  if (!status.running) {
+    return "MDK daemon is not running";
+  }
+  if (!status.healthy) {
+    return `MDK daemon is unhealthy on port ${displayedPort}: ${
+      status.healthError ?? "health check failed"
+    }`;
+  }
+  if (!status.nodeRunning) {
+    return `MDK daemon is listening on port ${displayedPort}, node is still starting`;
+  }
+  return `MDK daemon running on port ${displayedPort}${
+    status.pid ? `, pid ${status.pid}` : ""
+  }`;
 }
 
 async function copyToClipboard(value: string, label: string) {
@@ -148,6 +201,7 @@ function WalletProviderSettings({
   isLoading,
   isPending,
   onProviderChange,
+  pendingProvider,
 }: {
   actionError: unknown;
   config: WalletSourceConfig | undefined;
@@ -155,6 +209,7 @@ function WalletProviderSettings({
   isLoading: boolean;
   isPending: boolean;
   onProviderChange: (provider: WalletProvider) => void;
+  pendingProvider: WalletProvider | undefined;
 }) {
   const options = config?.availableProviders?.length
     ? config.availableProviders
@@ -203,6 +258,16 @@ function WalletProviderSettings({
           ))}
         </select>
       )}
+      {isPending ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="h-4 w-4" />
+          <span>
+            {pendingProvider === "mdk"
+              ? "Provisioning new wallet..."
+              : `Switching to ${walletProviderLabel(pendingProvider ?? selectedProvider)}...`}
+          </span>
+        </div>
+      ) : null}
       {actionError ? (
         <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
           <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
@@ -392,6 +457,127 @@ function WalletSourceSettings({
   );
 }
 
+function MdkAgentWalletControls({
+  error,
+  isChecking,
+  isLoading,
+  isRestarting,
+  lastCheckedAt,
+  onCheckStatus,
+  onRestart,
+  restartError,
+  status,
+}: {
+  error: unknown;
+  isChecking: boolean;
+  isLoading: boolean;
+  isRestarting: boolean;
+  lastCheckedAt: number | null;
+  onCheckStatus: () => void;
+  onRestart: () => void;
+  restartError: unknown;
+  status: MdkAgentWalletStatus | undefined;
+}) {
+  const actionError = error ?? restartError;
+  const displayedPort = status?.port ?? status?.expectedPort;
+  const statusLabel = status?.running
+    ? status.nodeRunning
+      ? "Running"
+      : status.healthy
+        ? "Starting"
+        : "Unhealthy"
+    : "Not running";
+  const statusDetail = status?.running
+    ? [
+        displayedPort ? `port ${displayedPort}` : null,
+        status.pid ? `pid ${status.pid}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "Daemon is not running";
+
+  return (
+    <div className="mt-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <Zap className="h-4 w-4" />
+            MDK agent wallet
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {isLoading
+              ? "Checking daemon..."
+              : `${statusLabel}: ${statusDetail}`}
+          </p>
+          {status ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Health:{" "}
+              {status.healthy
+                ? status.nodeRunning
+                  ? "ready"
+                  : "daemon ready, node starting"
+                : (status.healthError ?? "not responding")}
+            </p>
+          ) : null}
+          {lastCheckedAt ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Last checked: {formatMdkLastCheckedAt(lastCheckedAt)}
+            </p>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            disabled={isChecking || isRestarting}
+            onClick={onCheckStatus}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {isChecking ? (
+              <Spinner className="h-4 w-4" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Check status
+          </Button>
+          <Button
+            disabled={isRestarting}
+            onClick={onRestart}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {isRestarting ? (
+              <Spinner className="h-4 w-4" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Restart daemon
+          </Button>
+        </div>
+      </div>
+
+      {status ? (
+        <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+          <p className="break-all">
+            Home: <code>{status.homeDir}</code>
+          </p>
+          <p className="break-all">
+            Log: <code>{status.logPath}</code>
+          </p>
+        </div>
+      ) : null}
+
+      {actionError ? (
+        <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(actionError)}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function AgentPaymentSettings({
   checked,
   error,
@@ -448,6 +634,9 @@ export function LightningWalletSettingsCard() {
   const [sourceDraft, setSourceDraft] = useState<WalletSource>("default");
   const [clientCredential, setClientCredential] = useState("");
   const [isSeedVisible, setIsSeedVisible] = useState(false);
+  const [mdkStatusCheckedAt, setMdkStatusCheckedAt] = useState<number | null>(
+    null,
+  );
   const summaryQuery = useQuery({
     queryKey: walletSummaryQueryKey,
     queryFn: getLightningWalletSummary,
@@ -492,6 +681,9 @@ export function LightningWalletSettingsCard() {
       setClientCredential("");
       setIsSeedVisible(false);
       seedMutation.reset();
+      void queryClient.invalidateQueries({
+        queryKey: mdkAgentWalletStatusQueryKey,
+      });
       void queryClient.invalidateQueries({ queryKey: walletSummaryQueryKey });
       void queryClient.invalidateQueries({
         queryKey: walletTransactionsQueryKey,
@@ -511,6 +703,9 @@ export function LightningWalletSettingsCard() {
       setClientCredential("");
       setIsSeedVisible(false);
       seedMutation.reset();
+      void queryClient.invalidateQueries({
+        queryKey: mdkAgentWalletStatusQueryKey,
+      });
       void queryClient.invalidateQueries({ queryKey: walletSummaryQueryKey });
       void queryClient.invalidateQueries({
         queryKey: walletTransactionsQueryKey,
@@ -534,6 +729,44 @@ export function LightningWalletSettingsCard() {
   const summary = summaryQuery.data;
   const sourceConfig = sourceConfigQuery.data;
   const agentPaymentSettings = agentPaymentSettingsQuery.data;
+  const providerOptions = sourceConfig?.availableProviders?.length
+    ? sourceConfig.availableProviders
+    : defaultWalletProviderOptions;
+  const selectedProvider =
+    sourceConfig?.provider ?? summary?.provider ?? "lexe";
+  const selectedProviderOption = providerOptions.find(
+    (option) => option.provider === selectedProvider,
+  );
+  const canConfigureWalletSource =
+    selectedProviderOption?.capabilities.canConnectExistingWallet ?? true;
+  const pendingProvider = providerMutation.variables?.provider;
+  const pendingProviderLabel = walletProviderLabel(
+    pendingProvider ?? selectedProvider,
+  );
+  const isMdkSelected = selectedProvider === "mdk";
+  const mdkStatusQuery = useQuery({
+    queryKey: mdkAgentWalletStatusQueryKey,
+    queryFn: getMdkAgentWalletStatus,
+    enabled: isMdkSelected && !providerMutation.isPending,
+    staleTime: 10_000,
+  });
+  const mdkRestartMutation = useMutation({
+    mutationFn: restartMdkAgentWalletDaemon,
+    onSuccess: (status) => {
+      queryClient.setQueryData(mdkAgentWalletStatusQueryKey, status);
+      setMdkStatusCheckedAt(Date.now());
+      void queryClient.invalidateQueries({ queryKey: walletSummaryQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: walletTransactionsQueryKey,
+      });
+      toast.success("MDK daemon restarted");
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: mdkAgentWalletStatusQueryKey,
+      });
+    },
+  });
 
   useEffect(() => {
     if (sourceConfig) {
@@ -561,6 +794,16 @@ export function LightningWalletSettingsCard() {
     });
   }
 
+  async function handleMdkStatusCheck() {
+    const result = await mdkStatusQuery.refetch();
+    setMdkStatusCheckedAt(Date.now());
+    if (result.data) {
+      toast.success(formatMdkStatusToast(result.data));
+    } else if (result.error) {
+      toast.error(errorMessage(result.error));
+    }
+  }
+
   function handleHideSeed() {
     setIsSeedVisible(false);
     seedMutation.reset();
@@ -582,7 +825,7 @@ export function LightningWalletSettingsCard() {
           </p>
         </div>
         <Button
-          disabled={refreshMutation.isPending}
+          disabled={refreshMutation.isPending || providerMutation.isPending}
           onClick={() => refreshMutation.mutate()}
           size="sm"
           type="button"
@@ -604,9 +847,17 @@ export function LightningWalletSettingsCard() {
         isLoading={sourceConfigQuery.isPending}
         isPending={providerMutation.isPending}
         onProviderChange={handleProviderChange}
+        pendingProvider={pendingProvider}
       />
 
-      {summaryQuery.isPending ? (
+      {providerMutation.isPending ? (
+        <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-4 text-sm text-muted-foreground">
+          <Spinner className="h-4 w-4" />
+          {pendingProvider === "mdk"
+            ? "Provisioning new wallet..."
+            : `Switching to ${pendingProviderLabel}...`}
+        </div>
+      ) : summaryQuery.isPending ? (
         <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-4 text-sm text-muted-foreground">
           <Spinner className="h-4 w-4" />
           Loading wallet...
@@ -620,22 +871,38 @@ export function LightningWalletSettingsCard() {
         <SummaryContent summary={summary} />
       ) : null}
 
-      <WalletSourceSettings
-        actionError={sourceMutation.error}
-        clientCredential={clientCredential}
-        config={sourceConfig}
-        error={sourceConfigQuery.error}
-        isLoading={sourceConfigQuery.isPending}
-        isPending={sourceMutation.isPending}
-        isSeedPending={seedMutation.isPending}
-        onClientCredentialChange={setClientCredential}
-        onHideSeed={handleHideSeed}
-        onRevealSeed={() => seedMutation.mutate()}
-        onSaveExistingCredential={handleSaveExistingCredential}
-        onSourceChange={handleSourceChange}
-        seedPhrase={isSeedVisible ? seedMutation.data : undefined}
-        sourceDraft={sourceDraft}
-      />
+      {isMdkSelected && !providerMutation.isPending ? (
+        <MdkAgentWalletControls
+          error={mdkStatusQuery.error}
+          isChecking={mdkStatusQuery.isFetching}
+          isLoading={mdkStatusQuery.isPending}
+          isRestarting={mdkRestartMutation.isPending}
+          lastCheckedAt={mdkStatusCheckedAt}
+          onCheckStatus={() => void handleMdkStatusCheck()}
+          onRestart={() => mdkRestartMutation.mutate()}
+          restartError={mdkRestartMutation.error}
+          status={mdkStatusQuery.data}
+        />
+      ) : null}
+
+      {canConfigureWalletSource ? (
+        <WalletSourceSettings
+          actionError={sourceMutation.error}
+          clientCredential={clientCredential}
+          config={sourceConfig}
+          error={sourceConfigQuery.error}
+          isLoading={sourceConfigQuery.isPending}
+          isPending={sourceMutation.isPending}
+          isSeedPending={seedMutation.isPending}
+          onClientCredentialChange={setClientCredential}
+          onHideSeed={handleHideSeed}
+          onRevealSeed={() => seedMutation.mutate()}
+          onSaveExistingCredential={handleSaveExistingCredential}
+          onSourceChange={handleSourceChange}
+          seedPhrase={isSeedVisible ? seedMutation.data : undefined}
+          sourceDraft={sourceDraft}
+        />
+      ) : null}
 
       <AgentPaymentSettings
         checked={agentPaymentSettings?.defaultAgentsToLexe ?? true}

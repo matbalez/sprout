@@ -15,9 +15,9 @@ use super::{
         WalletAgentPaymentAnnotation, WalletAgentPaymentSettings, WalletBotMessage, WalletSource,
         WalletSourceConfig, AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME,
         EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME,
-        EXISTING_OFFER_FILE_NAME, LEXE_DATA_DIR_NAME, MESSAGES_FILE_NAME, OFFER_FILE_NAME,
-        SEED_FILE_NAME, WALLETBOT_WELCOME, WALLET_DIR_NAME, WALLET_PROVIDER_FILE_NAME,
-        WALLET_SOURCE_FILE_NAME,
+        EXISTING_OFFER_FILE_NAME, LEXE_DATA_DIR_NAME, MDK_HOME_DIR_NAME, MDK_PORT_FILE_NAME,
+        MESSAGES_FILE_NAME, OFFER_FILE_NAME, SEED_FILE_NAME, WALLETBOT_WELCOME, WALLET_DIR_NAME,
+        WALLET_PROVIDERS_DIR_NAME, WALLET_PROVIDER_FILE_NAME, WALLET_SOURCE_FILE_NAME,
     },
 };
 
@@ -31,6 +31,8 @@ pub(crate) struct WalletStorage {
     pub existing_offer_path: PathBuf,
     pub wallet_provider_path: PathBuf,
     pub wallet_source_path: PathBuf,
+    pub mdk_home_dir: PathBuf,
+    pub mdk_port_path: PathBuf,
     pub existing_client_credential_path: PathBuf,
     pub messages_path: PathBuf,
     pub agent_payment_annotations_path: PathBuf,
@@ -44,6 +46,9 @@ impl WalletStorage {
             .app_data_dir()
             .map_err(|error| format!("app data dir: {error}"))?;
         let root_dir = app_data_dir.join(WALLET_DIR_NAME);
+        let mdk_provider_dir = root_dir
+            .join(WALLET_PROVIDERS_DIR_NAME)
+            .join(WalletProvider::Mdk.as_storage_value());
         Ok(Self {
             lexe_data_dir: root_dir.join(LEXE_DATA_DIR_NAME),
             existing_lexe_data_dir: root_dir.join(EXISTING_LEXE_DATA_DIR_NAME),
@@ -52,6 +57,8 @@ impl WalletStorage {
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
             wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
+            mdk_home_dir: mdk_provider_dir.join(MDK_HOME_DIR_NAME),
+            mdk_port_path: mdk_provider_dir.join(MDK_PORT_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
             agent_payment_annotations_path: root_dir.join(AGENT_PAYMENT_ANNOTATIONS_FILE_NAME),
@@ -80,11 +87,16 @@ impl WalletStorage {
 
     pub(crate) fn wallet_source_config(&self) -> Result<WalletSourceConfig, String> {
         let has_existing_client_credential = load_existing_client_credential(self)?.is_some();
+        let provider = load_wallet_provider(self)?;
+        let mut source = load_wallet_source(self)?;
+        if !provider.capabilities().can_connect_existing_wallet {
+            source = WalletSource::Default;
+        }
 
         Ok(WalletSourceConfig {
-            provider: load_wallet_provider(self)?,
+            provider,
             available_providers: available_wallet_providers(),
-            source: load_wallet_source(self)?,
+            source,
             seed_path: self.seed_path.to_string_lossy().to_string(),
             existing_client_credential_path: self
                 .existing_client_credential_path
@@ -112,11 +124,11 @@ impl WalletStorage {
         match (provider.as_storage_value(), source) {
             ("lexe", WalletSource::Default) => self.offer_path.clone(),
             ("lexe", WalletSource::Existing) => self.existing_offer_path.clone(),
-            (provider, source) => self.root_dir.join("providers").join(provider).join(format!(
-                "{}_{}",
-                source.as_storage_value(),
-                OFFER_FILE_NAME
-            )),
+            (provider, source) => self
+                .root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(provider)
+                .join(format!("{}_{}", source.as_storage_value(), OFFER_FILE_NAME)),
         }
     }
 }
@@ -392,6 +404,14 @@ mod tests {
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
             wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
+            mdk_home_dir: root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(WalletProvider::Mdk.as_storage_value())
+                .join(MDK_HOME_DIR_NAME),
+            mdk_port_path: root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(WalletProvider::Mdk.as_storage_value())
+                .join(MDK_PORT_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
             agent_payment_annotations_path: root_dir.join(AGENT_PAYMENT_ANNOTATIONS_FILE_NAME),
@@ -408,8 +428,9 @@ mod tests {
         let config = storage.wallet_source_config().unwrap();
 
         assert_eq!(config.provider, WalletProvider::Lexe);
-        assert_eq!(config.available_providers.len(), 1);
+        assert_eq!(config.available_providers.len(), 2);
         assert_eq!(config.available_providers[0].provider, WalletProvider::Lexe);
+        assert_eq!(config.available_providers[1].provider, WalletProvider::Mdk);
     }
 
     #[test]

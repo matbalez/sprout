@@ -29,7 +29,6 @@ use crate::{
     wallet::{
         balance::{wallet_balances, WalletBalances},
         format::{amount_from_sats, format_amount, wallet_transaction_with_annotation},
-        runtime::ensure_lexe_wallet,
         storage::{current_pubkey, load_wallet_provider, write_atomic_text, WalletStorage},
     },
 };
@@ -570,39 +569,19 @@ pub async fn send_hive_channel_funds(
             local_offer.offer
         }
     };
-    let offer_id_for_failure_log = offer_id_for_log(&offer);
-    let wallet = ensure_lexe_wallet(&app, &state).await?;
-    let amount = amount_from_sats(amount_sats)?;
-    let response = wallet
-        .pay(PayRequest {
-            payable: offer,
-            amount: Some(amount),
-            message: Some(contribution_message(
-                &channel_id,
-                &payer_pubkey,
-                &contribution_id,
-            )),
-            personal_note: Some(format!("Sprout hive channel contribution {channel_id}")),
-        })
-        .await
-        .map_err(|error| format!("send hive channel funds: {error}"))?;
-    if response.status != PaymentStatus::Completed {
-        let offer_id = response
-            .offer_id
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or(offer_id_for_failure_log);
-        eprintln!(
-            "buzz-desktop: hive channel {channel_uuid} funding failed: amount_sats={amount_sats} payment_id={} offer_id={offer_id} status_msg={:?}",
-            response.index, response.status_msg,
-        );
-        let status_message = payment_status_message(response.status_msg.as_str());
-        return Err(format!(
-            "hive channel funding failed for {}: {status_message}",
-            format_amount(amount_sats)
-        ));
-    }
-    *state.wallet_state.summary.lock().await = None;
+    let payment = super::send_payment(
+        app,
+        &state,
+        amount_sats,
+        offer,
+        Some(contribution_message(
+            &channel_id,
+            &payer_pubkey,
+            &contribution_id,
+        )),
+        format!("Sprout hive channel contribution {channel_id}"),
+    )
+    .await?;
     publish_hive_contribution_marker_if_missing(
         &state,
         channel_uuid,
@@ -614,10 +593,7 @@ pub async fn send_hive_channel_funds(
     )
     .await;
 
-    Ok(WalletPaymentResult {
-        payment_id: response.index.to_string(),
-        amount_sats,
-    })
+    Ok(payment)
 }
 
 async fn ensure_hive_wallet(
@@ -634,6 +610,9 @@ async fn ensure_hive_wallet(
     let provider = ensure_hive_wallet_provider(app, &storage)?;
     let wallet = match provider {
         WalletProvider::Lexe => Arc::new(load_lexe_hive_wallet(&storage).await?),
+        WalletProvider::Mdk => {
+            return Err("MDK hive channel wallets are not supported yet".to_string())
+        }
     };
     state
         .wallet_state

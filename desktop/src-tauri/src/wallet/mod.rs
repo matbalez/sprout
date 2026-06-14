@@ -3,6 +3,7 @@ mod broker;
 mod discovery;
 mod format;
 mod hive;
+mod mdk;
 mod parser;
 mod provider;
 mod runtime;
@@ -23,7 +24,7 @@ use balance::wallet_balances;
 pub use broker::spawn_agent_payment_broker;
 use discovery::{resolve_bolt12_offer_for_pubkey, resolve_send_payable};
 use format::{
-    amount_from_sats, format_amount, format_bolt12_offer_message, format_payment,
+    amount_from_sats, format_amount, format_bolt12_offer_message, format_wallet_transaction,
     wallet_transaction_with_annotation,
 };
 pub(crate) use hive::create_hive_channel_wallet;
@@ -36,7 +37,7 @@ pub use hive::{
 use parser::parse_wallet_command;
 pub use provider::WalletProvider;
 use runtime::{
-    clear_wallet_cache, ensure_bolt12_offer, ensure_lexe_wallet,
+    clear_wallet_cache, ensure_bolt12_offer, ensure_wallet,
     reset_cached_wallet_if_credentials_missing, spawn_current_profile_bolt12_offer_sync,
     sync_current_profile_bolt12_offer,
 };
@@ -87,11 +88,7 @@ pub async fn refresh_lightning_wallet(
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
     reset_cached_wallet_if_credentials_missing(&app, &state).await?;
-    let wallet = ensure_lexe_wallet(&app, &state).await?;
-    wallet
-        .sync_payments()
-        .await
-        .map_err(|error| format!("sync Lexe payments: {error}"))?;
+    sync_selected_wallet(&app, &state).await?;
     build_wallet_summary(&app, &state).await
 }
 
@@ -109,6 +106,9 @@ pub async fn set_lightning_wallet_provider(
     let storage = WalletStorage::from_app(&app)?;
     let provider = WalletProvider::from_ui_value(&provider)?;
     save_wallet_provider(&storage, provider)?;
+    if !provider.capabilities().can_connect_existing_wallet {
+        save_wallet_source(&storage, WalletSource::Default)?;
+    }
     clear_wallet_cache(&state).await;
     match build_wallet_summary(&app, &state).await {
         Ok(summary) => {
@@ -152,6 +152,31 @@ pub(crate) fn default_agents_to_lexe_payments(app: &AppHandle) -> Result<bool, S
 }
 
 #[tauri::command]
+pub async fn get_mdk_agent_wallet_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<mdk::MdkAgentWalletStatus, String> {
+    ensure_selected_mdk_wallet(&app, &state)
+        .await?
+        .daemon_status()
+        .await
+}
+
+#[tauri::command]
+pub async fn restart_mdk_agent_wallet_daemon(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<mdk::MdkAgentWalletStatus, String> {
+    let storage = WalletStorage::from_app(&app)?;
+    let wallet = ensure_selected_mdk_wallet(&app, &state).await?;
+    let status = wallet.restart_daemon().await?;
+    remove_selected_mdk_offer_cache(&storage)?;
+    clear_wallet_cache(&state).await;
+    build_wallet_summary(&app, &state).await?;
+    Ok(status)
+}
+
+#[tauri::command]
 pub async fn set_lightning_wallet_source(
     source: String,
     client_credential: Option<String>,
@@ -160,6 +185,14 @@ pub async fn set_lightning_wallet_source(
 ) -> Result<WalletSourceConfig, String> {
     let storage = WalletStorage::from_app(&app)?;
     let source = WalletSource::from_ui_value(&source)?;
+    let provider = load_wallet_provider(&storage)?;
+
+    if source == WalletSource::Existing && !provider.capabilities().can_connect_existing_wallet {
+        return Err(format!(
+            "{} does not support connecting an existing Lexe wallet",
+            provider.label()
+        ));
+    }
 
     if let Some(client_credential) = client_credential.as_deref() {
         let client_credential = client_credential.trim();
@@ -188,6 +221,13 @@ pub async fn set_lightning_wallet_source(
 #[tauri::command]
 pub async fn reveal_lightning_wallet_seed(app: AppHandle) -> Result<String, String> {
     let storage = WalletStorage::from_app(&app)?;
+    let provider = load_wallet_provider(&storage)?;
+    if provider != WalletProvider::Lexe {
+        return Err(format!(
+            "{} recovery reveal is not available in Buzz yet",
+            provider.label()
+        ));
+    }
     let seed = load_root_seed(&storage)?
         .ok_or_else(|| "wallet seed is not initialized yet".to_string())?;
     Ok(seed.to_mnemonic().to_string())
@@ -204,27 +244,10 @@ pub async fn get_lightning_wallet_transactions(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<WalletTransaction>, String> {
-    let wallet = ensure_lexe_wallet(&app, &state).await?;
-    wallet
-        .sync_payments()
-        .await
-        .map_err(|error| format!("sync Lexe payments: {error}"))?;
     let limit = limit
         .unwrap_or(DEFAULT_TRANSACTION_LIMIT)
         .clamp(1, MAX_TRANSACTION_LIMIT);
-    let response = wallet
-        .list_payments(&PaymentFilter::All, Some(Order::Desc), Some(limit), None)
-        .map_err(|error| format!("list Lexe payments: {error}"))?;
-    let storage = WalletStorage::from_app(&app)?;
-    let annotations = load_agent_payment_annotations(&storage)?;
-    Ok(response
-        .payments
-        .iter()
-        .map(|payment| {
-            let annotation = annotations.get(&payment.index.to_string()).cloned();
-            wallet_transaction_with_annotation(payment, annotation)
-        })
-        .collect())
+    selected_wallet_transactions(&app, &state, limit).await
 }
 
 #[tauri::command]
@@ -338,34 +361,127 @@ async fn execute_wallet_command(
     }
 }
 
+async fn sync_selected_wallet(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let wallet = ensure_wallet(app, state).await?;
+    match wallet.provider() {
+        WalletProvider::Lexe => wallet
+            .lexe_wallet()?
+            .sync_payments()
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("sync Lexe payments: {error}")),
+        WalletProvider::Mdk => wallet.mdk_wallet()?.transactions(1).await.map(|_| ()),
+    }
+}
+
+async fn ensure_selected_mdk_wallet(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<std::sync::Arc<mdk::MdkWallet>, String> {
+    let wallet = ensure_wallet(app, state).await?;
+    if wallet.provider() != WalletProvider::Mdk {
+        return Err(
+            "MDK Agent Wallet controls are only available when MDK is selected".to_string(),
+        );
+    }
+    wallet.mdk_wallet()
+}
+
+fn remove_selected_mdk_offer_cache(storage: &WalletStorage) -> Result<(), String> {
+    let offer_path =
+        storage.offer_path_for_provider_source(WalletProvider::Mdk, WalletSource::Default);
+    match std::fs::remove_file(&offer_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove cached MDK BOLT12 offer: {error}")),
+    }
+}
+
+async fn selected_wallet_transactions(
+    app: &AppHandle,
+    state: &AppState,
+    limit: usize,
+) -> Result<Vec<WalletTransaction>, String> {
+    let wallet = ensure_wallet(app, state).await?;
+    match wallet.provider() {
+        WalletProvider::Lexe => {
+            let wallet = wallet.lexe_wallet()?;
+            wallet
+                .sync_payments()
+                .await
+                .map_err(|error| format!("sync Lexe payments: {error}"))?;
+            let response = wallet
+                .list_payments(&PaymentFilter::All, Some(Order::Desc), Some(limit), None)
+                .map_err(|error| format!("list Lexe payments: {error}"))?;
+            let storage = WalletStorage::from_app(app)?;
+            let annotations = load_agent_payment_annotations(&storage)?;
+            Ok(response
+                .payments
+                .iter()
+                .map(|payment| {
+                    let annotation = annotations.get(&payment.index.to_string()).cloned();
+                    wallet_transaction_with_annotation(payment, annotation)
+                })
+                .collect())
+        }
+        WalletProvider::Mdk => wallet.mdk_wallet()?.transactions(limit).await,
+    }
+}
+
 async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<WalletSummary, String> {
     let storage = WalletStorage::from_app(app)?;
     let source_config = storage.wallet_source_config()?;
-    let wallet = ensure_lexe_wallet(app, state).await?;
-    let info = wallet
-        .node_info()
-        .await
-        .map_err(|error| format!("load Lexe node info: {error}"))?;
+    let wallet = ensure_wallet(app, state).await?;
     let bolt12_offer = ensure_bolt12_offer(app, state).await?;
     spawn_current_profile_bolt12_offer_sync(app, bolt12_offer.clone(), "wallet summary");
-    let balances = wallet_balances(&wallet, &info).await;
 
-    let summary = WalletSummary {
-        provider: source_config.provider,
-        wallet_source: source_config.source,
-        has_existing_client_credential: source_config.has_existing_client_credential,
-        env: "mainnet".to_string(),
-        seed_path: source_config.seed_path,
-        existing_client_credential_path: source_config.existing_client_credential_path,
-        balance_sats: balances.balance_sats,
-        lightning_balance_sats: balances.lightning_balance_sats,
-        lightning_sendable_balance_sats: balances.lightning_sendable_balance_sats,
-        lightning_max_sendable_balance_sats: balances.lightning_max_sendable_balance_sats,
-        onchain_balance_sats: balances.onchain_balance_sats,
-        onchain_trusted_balance_sats: balances.onchain_trusted_balance_sats,
-        num_channels: info.num_channels,
-        num_usable_channels: info.num_usable_channels,
-        bolt12_offer,
+    let summary = match wallet.provider() {
+        WalletProvider::Lexe => {
+            let wallet = wallet.lexe_wallet()?;
+            let info = wallet
+                .node_info()
+                .await
+                .map_err(|error| format!("load Lexe node info: {error}"))?;
+            let balances = wallet_balances(&wallet, &info).await;
+
+            WalletSummary {
+                provider: source_config.provider,
+                wallet_source: source_config.source,
+                has_existing_client_credential: source_config.has_existing_client_credential,
+                env: "mainnet".to_string(),
+                seed_path: source_config.seed_path,
+                existing_client_credential_path: source_config.existing_client_credential_path,
+                balance_sats: balances.balance_sats,
+                lightning_balance_sats: balances.lightning_balance_sats,
+                lightning_sendable_balance_sats: balances.lightning_sendable_balance_sats,
+                lightning_max_sendable_balance_sats: balances.lightning_max_sendable_balance_sats,
+                onchain_balance_sats: balances.onchain_balance_sats,
+                onchain_trusted_balance_sats: balances.onchain_trusted_balance_sats,
+                num_channels: info.num_channels,
+                num_usable_channels: info.num_usable_channels,
+                bolt12_offer,
+            }
+        }
+        WalletProvider::Mdk => {
+            let balance_sats = wallet.mdk_wallet()?.balance_sats().await?;
+            WalletSummary {
+                provider: source_config.provider,
+                wallet_source: source_config.source,
+                has_existing_client_credential: source_config.has_existing_client_credential,
+                env: "mainnet".to_string(),
+                seed_path: source_config.seed_path,
+                existing_client_credential_path: source_config.existing_client_credential_path,
+                balance_sats,
+                lightning_balance_sats: balance_sats,
+                lightning_sendable_balance_sats: balance_sats,
+                lightning_max_sendable_balance_sats: balance_sats,
+                onchain_balance_sats: 0,
+                onchain_trusted_balance_sats: 0,
+                num_channels: 0,
+                num_usable_channels: 0,
+                bolt12_offer,
+            }
+        }
     };
 
     *state.wallet_state.summary.lock().await = Some(summary.clone());
@@ -373,40 +489,27 @@ async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<Walle
 }
 
 async fn get_balance_reply(app: &AppHandle, state: &AppState) -> Result<String, String> {
-    let wallet = ensure_lexe_wallet(app, state).await?;
-    let info = wallet
-        .node_info()
-        .await
-        .map_err(|error| format!("load Lexe node info: {error}"))?;
-    let balances = wallet_balances(&wallet, &info).await;
+    let summary = build_wallet_summary(app, state).await?;
 
     Ok(format!(
         "Balance: {} total; {} Lightning; {} Lightning spendable; {} on-chain trusted.",
-        format_amount(balances.balance_sats),
-        format_amount(balances.lightning_balance_sats),
-        format_amount(balances.lightning_sendable_balance_sats),
-        format_amount(balances.onchain_trusted_balance_sats),
+        format_amount(summary.balance_sats),
+        format_amount(summary.lightning_balance_sats),
+        format_amount(summary.lightning_sendable_balance_sats),
+        format_amount(summary.onchain_trusted_balance_sats),
     ))
 }
 
 async fn get_transactions_reply(app: &AppHandle, state: &AppState) -> Result<String, String> {
-    let wallet = ensure_lexe_wallet(app, state).await?;
-    wallet
-        .sync_payments()
-        .await
-        .map_err(|error| format!("sync Lexe payments: {error}"))?;
-    let response = wallet
-        .list_payments(&PaymentFilter::All, Some(Order::Desc), Some(5), None)
-        .map_err(|error| format!("list Lexe payments: {error}"))?;
+    let transactions = selected_wallet_transactions(app, state, 5).await?;
 
-    if response.payments.is_empty() {
+    if transactions.is_empty() {
         return Ok("No recent transactions.".to_string());
     }
 
-    Ok(response
-        .payments
+    Ok(transactions
         .iter()
-        .map(format_payment)
+        .map(format_wallet_transaction)
         .collect::<Vec<_>>()
         .join("\n"))
 }
@@ -416,25 +519,37 @@ async fn create_invoice_reply(
     state: &AppState,
     amount_sats: u64,
 ) -> Result<String, String> {
-    let wallet = ensure_lexe_wallet(app, state).await?;
-    let amount = amount_from_sats(amount_sats)?;
-    let response = wallet
-        .create_invoice(CreateInvoiceRequest {
-            expiration_secs: None,
-            amount: Some(amount),
-            description: Some("Sprout WalletBot invoice".to_string()),
-            personal_note: None,
-            partner_pk: None,
-            partner_prop_fee: None,
-            partner_base_fee: None,
-        })
-        .await
-        .map_err(|error| format!("create Lexe invoice: {error}"))?;
+    let wallet = ensure_wallet(app, state).await?;
+    let invoice = match wallet.provider() {
+        WalletProvider::Lexe => {
+            let amount = amount_from_sats(amount_sats)?;
+            let response = wallet
+                .lexe_wallet()?
+                .create_invoice(CreateInvoiceRequest {
+                    expiration_secs: None,
+                    amount: Some(amount),
+                    description: Some("Sprout WalletBot invoice".to_string()),
+                    personal_note: None,
+                    partner_pk: None,
+                    partner_prop_fee: None,
+                    partner_base_fee: None,
+                })
+                .await
+                .map_err(|error| format!("create Lexe invoice: {error}"))?;
+            response.invoice.to_string()
+        }
+        WalletProvider::Mdk => {
+            wallet
+                .mdk_wallet()?
+                .create_invoice(amount_sats, "Sprout WalletBot invoice")
+                .await?
+        }
+    };
 
     Ok(format!(
         "Invoice for {}:\n{}",
         format_amount(amount_sats),
-        response.invoice
+        invoice
     ))
 }
 
@@ -469,28 +584,35 @@ async fn send_payment(
     message: Option<String>,
     personal_note: String,
 ) -> Result<WalletPaymentResult, String> {
-    let wallet = ensure_lexe_wallet(&app, state).await?;
-    let amount = amount_from_sats(amount_sats)?;
-    let response = wallet
-        .pay(PayRequest {
-            payable,
-            amount: Some(amount),
-            message,
-            personal_note: Some(personal_note),
-        })
-        .await
-        .map_err(|error| format!("send Lexe payment: {error}"))?;
-    if response.status != PaymentStatus::Completed {
-        let status_message = payment_status_message(response.status_msg.as_str());
-        return Err(format!(
-            "Lexe payment failed for {}: {status_message}",
-            format_amount(amount_sats)
-        ));
-    }
+    let wallet = ensure_wallet(&app, state).await?;
+    let payment_id = match wallet.provider() {
+        WalletProvider::Lexe => {
+            let amount = amount_from_sats(amount_sats)?;
+            let response = wallet
+                .lexe_wallet()?
+                .pay(PayRequest {
+                    payable,
+                    amount: Some(amount),
+                    message,
+                    personal_note: Some(personal_note),
+                })
+                .await
+                .map_err(|error| format!("send Lexe payment: {error}"))?;
+            if response.status != PaymentStatus::Completed {
+                let status_message = payment_status_message(response.status_msg.as_str());
+                return Err(format!(
+                    "Lexe payment failed for {}: {status_message}",
+                    format_amount(amount_sats)
+                ));
+            }
+            response.index.to_string()
+        }
+        WalletProvider::Mdk => wallet.mdk_wallet()?.send(&payable, amount_sats).await?,
+    };
     *state.wallet_state.summary.lock().await = None;
 
     Ok(WalletPaymentResult {
-        payment_id: response.index.to_string(),
+        payment_id,
         amount_sats,
     })
 }

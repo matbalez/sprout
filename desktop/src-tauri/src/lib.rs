@@ -866,6 +866,8 @@ pub fn run() {
             get_lightning_wallet_source_config,
             get_lightning_wallet_agent_payment_settings,
             set_lightning_wallet_agent_payment_settings,
+            get_mdk_agent_wallet_status,
+            restart_mdk_agent_wallet_daemon,
             set_lightning_wallet_provider,
             set_lightning_wallet_source,
             refresh_lightning_wallet,

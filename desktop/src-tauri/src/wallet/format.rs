@@ -48,24 +48,23 @@ pub(crate) fn wallet_transaction_with_annotation(
     }
 }
 
-pub(crate) fn format_payment(payment: &Payment) -> String {
-    let amount = payment
-        .amount
-        .map(|amount| format_amount(amount.sats_u64()))
+pub(crate) fn format_wallet_transaction(transaction: &WalletTransaction) -> String {
+    let amount = transaction
+        .amount_sats
+        .map(format_amount)
         .unwrap_or_else(|| "amountless".to_string());
     let mut parts = vec![
-        format_timestamp_ms(payment.created_at.to_millis()),
-        payment.direction.to_string(),
-        payment.status.to_string(),
-        payment.kind.to_string(),
+        format_timestamp_ms(transaction.created_at_ms),
+        transaction.direction.clone(),
+        transaction.status.clone(),
+        transaction.kind.clone(),
         amount,
     ];
-    let fee = payment.fees.sats_u64();
-    if fee > 0 {
-        parts.push(format!("fee {}", format_amount(fee)));
+    if transaction.fees_sats > 0 {
+        parts.push(format!("fee {}", format_amount(transaction.fees_sats)));
     }
-    if !payment.status_msg.trim().is_empty() {
-        parts.push(payment.status_msg.trim().to_string());
+    if !transaction.status_message.trim().is_empty() {
+        parts.push(transaction.status_message.trim().to_string());
     }
     parts.join(" - ")
 }
