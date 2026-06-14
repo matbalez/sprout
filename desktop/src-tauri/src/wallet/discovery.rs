@@ -57,14 +57,11 @@ pub(crate) async fn resolve_bolt12_offer_for_pubkey(
         &[json!({
             "kinds": [0],
             "authors": [target.to_hex()],
-            "limit": 1
+            "limit": 20
         })],
     )
     .await?;
-    if let Some(offer) = direct_profiles
-        .iter()
-        .find_map(direct_bolt12_offer_from_profile)
-    {
+    if let Some(offer) = latest_direct_bolt12_offer(&direct_profiles) {
         return Ok(Some(offer));
     }
 
@@ -107,6 +104,22 @@ fn latest_lexebot_discovery(records: &[LexeBotDiscovery]) -> Option<&LexeBotDisc
             .cmp(&right.created_at)
             .then_with(|| left.event_id.cmp(&right.event_id))
     })
+}
+
+fn latest_direct_bolt12_offer(events: &[Event]) -> Option<String> {
+    events
+        .iter()
+        .filter_map(|event| {
+            direct_bolt12_offer_from_profile(event).map(|offer| {
+                (
+                    event.created_at.as_secs(),
+                    event.id.to_hex(),
+                    offer.to_string(),
+                )
+            })
+        })
+        .max_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        .map(|(_, _, offer)| offer)
 }
 
 fn find_user_profile_by_username(
@@ -298,6 +311,32 @@ mod tests {
             .custom_created_at(Timestamp::from(created_at))
             .sign_with_keys(agent)
             .expect("sign lexebot profile")
+    }
+
+    fn direct_wallet_event(keys: &Keys, offer: Option<&str>, created_at: u64) -> Event {
+        let content = offer
+            .map(|offer| json!({ "display_name": "Mat", "bolt12_offer": offer }))
+            .unwrap_or_else(|| json!({ "display_name": "Mat" }))
+            .to_string();
+
+        EventBuilder::new(Kind::Metadata, content)
+            .custom_created_at(Timestamp::from(created_at))
+            .sign_with_keys(keys)
+            .expect("sign direct wallet profile")
+    }
+
+    #[test]
+    fn latest_direct_bolt12_offer_ignores_profiles_without_wallet_metadata() {
+        let keys = Keys::generate();
+        let stale = direct_wallet_event(&keys, Some("lno1oldoffer"), 1000);
+        let missing_offer = direct_wallet_event(&keys, None, 2000);
+        let current = direct_wallet_event(&keys, Some("lno1currentoffer"), 3000);
+        let events = vec![missing_offer, stale, current];
+
+        assert_eq!(
+            latest_direct_bolt12_offer(&events).as_deref(),
+            Some("lno1currentoffer")
+        );
     }
 
     #[test]

@@ -493,7 +493,7 @@ fn ownership_shares(
     let response = wallet
         .list_payments(&PaymentFilter::All, Some(Order::Asc), Some(100), None)
         .map_err(|error| format!("list hive Lexe payments: {error}"))?;
-    let mut by_pubkey: BTreeMap<Option<String>, u64> = BTreeMap::new();
+    let mut by_pubkey: BTreeMap<String, u64> = BTreeMap::new();
 
     for payment in response.payments {
         if payment.direction != PaymentDirection::Inbound
@@ -504,16 +504,24 @@ fn ownership_shares(
         let Some(amount_sats) = payment.amount.map(|amount| amount.sats_u64()) else {
             continue;
         };
-        let contributor = contribution_pubkey(&payment, channel_id);
+        let Some(contributor) = contribution_pubkey(&payment, channel_id) else {
+            continue;
+        };
         *by_pubkey.entry(contributor).or_default() += amount_sats;
     }
 
+    Ok(ownership_shares_from_contributions(by_pubkey))
+}
+
+fn ownership_shares_from_contributions(
+    by_pubkey: BTreeMap<String, u64>,
+) -> Vec<HiveChannelContributionShare> {
     let total: u64 = by_pubkey.values().sum();
-    Ok(by_pubkey
+    by_pubkey
         .into_iter()
         .map(
             |(member_pubkey, amount_sats)| HiveChannelContributionShare {
-                member_pubkey,
+                member_pubkey: Some(member_pubkey),
                 amount_sats,
                 ownership_percent: if total == 0 {
                     0.0
@@ -522,7 +530,7 @@ fn ownership_shares(
                 },
             },
         )
-        .collect())
+        .collect()
 }
 
 fn contribution_message(channel_id: &str, payer_pubkey: &str) -> String {
@@ -654,7 +662,9 @@ fn parse_channel_uuid(channel_id: &str) -> Result<Uuid, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_contribution_message;
+    use std::collections::BTreeMap;
+
+    use super::{ownership_shares_from_contributions, parse_contribution_message};
 
     #[test]
     fn parses_hive_contribution_message() {
@@ -673,5 +683,23 @@ mod tests {
         let message = format!("sprout-hive-contribution:v1:channel-1:{pubkey}");
 
         assert_eq!(parse_contribution_message(&message, "channel-2"), None);
+    }
+
+    #[test]
+    fn ownership_shares_are_proportional_to_contributions() {
+        let alice = "a".repeat(64);
+        let bob = "b".repeat(64);
+        let shares = ownership_shares_from_contributions(BTreeMap::from([
+            (alice.clone(), 700),
+            (bob.clone(), 300),
+        ]));
+
+        assert_eq!(shares.len(), 2);
+        assert_eq!(shares[0].member_pubkey.as_deref(), Some(alice.as_str()));
+        assert_eq!(shares[0].amount_sats, 700);
+        assert_eq!(shares[0].ownership_percent, 70.0);
+        assert_eq!(shares[1].member_pubkey.as_deref(), Some(bob.as_str()));
+        assert_eq!(shares[1].amount_sats, 300);
+        assert_eq!(shares[1].ownership_percent, 30.0);
     }
 }

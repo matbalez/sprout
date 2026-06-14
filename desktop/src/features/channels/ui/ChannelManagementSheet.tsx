@@ -52,7 +52,8 @@ import {
   formatWalletTransactionTitle,
   walletTransactionNotes,
 } from "@/features/wallet/transactions";
-import type { Channel } from "@/shared/api/types";
+import { truncatePubkey } from "@/features/profile/lib/identity";
+import type { Channel, ChannelMember } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { useTheme } from "@/shared/theme/ThemeProvider";
 import {
@@ -103,6 +104,31 @@ function MetadataPill({
       <span>{label}</span>
     </div>
   );
+}
+
+function resolveHiveShareMemberLabel(
+  memberPubkey: string | null,
+  members: readonly ChannelMember[],
+  currentPubkey: string | undefined,
+) {
+  if (!memberPubkey) {
+    return "unknown";
+  }
+
+  const normalizedPubkey = memberPubkey.toLowerCase();
+  const member = members.find(
+    (candidate) => candidate.pubkey.toLowerCase() === normalizedPubkey,
+  );
+  const displayName = member?.displayName?.trim();
+  if (displayName) {
+    return displayName;
+  }
+
+  if (currentPubkey?.toLowerCase() === normalizedPubkey) {
+    return "You";
+  }
+
+  return truncatePubkey(memberPubkey);
 }
 
 function ChannelIdRow({ channelId }: { channelId: string }) {
@@ -608,8 +634,15 @@ export function ChannelManagementSheet({
                       className="flex items-center justify-between gap-2 text-xs text-muted-foreground"
                       key={share.memberPubkey ?? "unknown"}
                     >
-                      <span className="truncate font-mono">
-                        {share.memberPubkey ?? "unknown"}
+                      <span
+                        className="truncate font-medium text-foreground"
+                        title={share.memberPubkey ?? "unknown"}
+                      >
+                        {resolveHiveShareMemberLabel(
+                          share.memberPubkey,
+                          members,
+                          currentPubkey,
+                        )}
                       </span>
                       <span>
                         {share.ownershipPercent.toFixed(1)}% ·{" "}

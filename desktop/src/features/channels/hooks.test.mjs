@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { shouldHydrateChannelForJoinPayment, sortChannels } from "./hooks.ts";
+import {
+  shouldHydrateChannelForJoinPayment,
+  sortChannels,
+  sortChannelsWithLocalChannels,
+} from "./hooks.ts";
+import { WALLETBOT_CHANNEL_ID } from "@/features/wallet/api";
 
 const paidJoinPolicy = {
   joinPaymentRequired: true,
@@ -50,6 +55,17 @@ function channel(overrides) {
 }
 
 describe("sortChannels", () => {
+  it("includes local WalletBot when caching relay channel rows", () => {
+    const sorted = sortChannelsWithLocalChannels([
+      channel({ name: "general" }),
+    ]);
+
+    assert.equal(
+      sorted.some((item) => item.id === WALLETBOT_CHANNEL_ID),
+      true,
+    );
+  });
+
   it("keeps paid policy when deduping stale channel rows", () => {
     const sorted = sortChannels([
       channel({ paymentPolicy: paidJoinPolicy }),

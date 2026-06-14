@@ -19,6 +19,7 @@ import { ChannelContextMenuItems } from "@/features/sidebar/ui/CustomChannelSect
 import { getEphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
 import { EphemeralChannelBadge } from "@/features/channels/ui/EphemeralChannelBadge";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
+import { isWalletBotChannel } from "@/features/wallet/api";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import {
@@ -331,7 +332,9 @@ export function SidebarSection({
                         data-testid={`channel-unread-${channel.name}`}
                       />
                     ) : null}
-                    {channel.channelType === "dm" && onHideDm ? (
+                    {channel.channelType === "dm" &&
+                    !isWalletBotChannel(channel) &&
+                    onHideDm ? (
                       <button
                         aria-label="Close direct message"
                         className={cn(

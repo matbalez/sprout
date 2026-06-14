@@ -5,7 +5,10 @@ import {
   managedAgentsQueryKey,
   relayAgentsQueryKey,
 } from "@/features/agents/hooks";
-import { channelsQueryKey } from "@/features/channels/hooks";
+import {
+  channelsQueryKey,
+  sortChannelsWithLocalChannels,
+} from "@/features/channels/hooks";
 import {
   ensureWelcomeChannel,
   hasEnsuredWelcomeChannel,
@@ -109,7 +112,10 @@ async function refreshChannelsCache(
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
   try {
-    queryClient.setQueryData(channelsQueryKey, await getChannels());
+    queryClient.setQueryData(
+      channelsQueryKey,
+      sortChannelsWithLocalChannels(await getChannels()),
+    );
   } catch {
     // The next mounted channels query can still retry; this cache refresh is
     // only here to avoid a blank Home flash after first-run setup.

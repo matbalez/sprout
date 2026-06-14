@@ -208,6 +208,10 @@ export function sortChannels(channels: Channel[]) {
   });
 }
 
+export function sortChannelsWithLocalChannels(channels: Channel[]) {
+  return sortChannels(withWalletBotChannel(channels));
+}
+
 async function invalidateChannelState(
   queryClient: ReturnType<typeof useQueryClient>,
   channelId: string | null | undefined,
@@ -250,8 +254,7 @@ function setChannelArchivedState(
 export function useChannelsQuery() {
   return useQuery({
     queryKey: channelsQueryKey,
-    queryFn: async () =>
-      sortChannels(withWalletBotChannel(await getChannels())),
+    queryFn: async () => sortChannelsWithLocalChannels(await getChannels()),
     staleTime: 60_000,
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
