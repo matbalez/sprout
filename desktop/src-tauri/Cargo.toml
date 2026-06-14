@@ -90,3 +90,4 @@ tempfile = "3"
 strip-ansi-escapes = "0.2"
 
 [dev-dependencies]
+rustls = { version = "0.23", features = ["aws-lc-rs"] }

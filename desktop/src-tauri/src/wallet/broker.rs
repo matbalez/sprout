@@ -24,7 +24,7 @@ use crate::app_state::AppState;
 
 use super::{
     format::amount_from_sats,
-    runtime::ensure_wallet,
+    runtime::ensure_lexe_wallet,
     storage::{save_agent_payment_annotation, WalletStorage},
     types::{AgentPaymentBrokerConfig, WalletAgentPaymentAnnotation},
 };
@@ -374,7 +374,7 @@ async fn submit_agent_payment(
     context: AgentPaymentContext,
 ) -> Result<AgentPaymentResult, String> {
     let state = app_handle.state::<AppState>();
-    let wallet = ensure_wallet(app_handle, &state).await?;
+    let wallet = ensure_lexe_wallet(app_handle, &state).await?;
     let amount = amount_sats.map(amount_from_sats).transpose()?;
     let personal_note = context
         .description

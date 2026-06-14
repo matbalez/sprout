@@ -676,6 +676,27 @@ const DEFAULT_REAL_IDENTITY = {
   pubkey: "e5ebc6cdb579be112e336cc319b5989b4bb6af11786ea90dbe52b5f08d741b34",
   username: "tyler",
 } satisfies TestIdentity;
+const MOCK_LEXE_PROVIDER_CAPABILITIES = {
+  canCreateWallet: true,
+  canConnectExistingWallet: true,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: true,
+  canCreateBolt11Invoice: true,
+  canPayWithPreimage: true,
+};
+const MOCK_WALLET_PROVIDER_OPTIONS = [
+  {
+    provider: "lexe",
+    label: "Lexe",
+    paymentRail: "lexe-bolt12",
+    available: true,
+    capabilities: MOCK_LEXE_PROVIDER_CAPABILITIES,
+  },
+];
 
 const ALICE_PUBKEY =
   "953d3363262e86b770419834c53d2446409db6d918a57f8f339d495d54ab001f";
@@ -6322,6 +6343,7 @@ export function maybeInstallE2eTauriMocks() {
         return "nsec1mock000000000000000000000000000000000000000000000000000000";
       case "get_lightning_wallet_summary":
         return {
+          provider: "lexe",
           walletSource: "default",
           hasExistingClientCredential: false,
           env: "mock",
@@ -6337,6 +6359,22 @@ export function maybeInstallE2eTauriMocks() {
           numUsableChannels: 1,
           bolt12Offer: "lno1mockoffer",
         };
+      case "get_lightning_wallet_source_config":
+      case "set_lightning_wallet_provider":
+      case "set_lightning_wallet_source": {
+        const requestedSource = (payload as { source?: string } | null)?.source;
+        return {
+          provider: "lexe",
+          availableProviders: MOCK_WALLET_PROVIDER_OPTIONS,
+          source:
+            requestedSource === "existing" || requestedSource === "default"
+              ? requestedSource
+              : "default",
+          seedPath: "/mock/sprout-wallet-seed",
+          existingClientCredentialPath: "/mock/lexe-client-credential",
+          hasExistingClientCredential: false,
+        };
+      }
       case "get_user_wallet_bolt12_offer": {
         const pubkey = (payload as { pubkey?: string } | null)?.pubkey
           ?.trim()

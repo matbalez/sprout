@@ -758,13 +758,17 @@ pub async fn create_channel(
     if hive_channel && (join_amount > 0 || post_amount > 0) {
         return Err("hive channels cannot also be paid channels".to_string());
     }
-    let hive_wallet_bolt12_offer = if hive_channel {
-        wallet::create_hive_channel_wallet(&app, &state, channel_uuid)
-            .await?
-            .bolt12_offer
+    let hive_wallet_setup = if hive_channel {
+        Some(wallet::create_hive_channel_wallet(&app, &state, channel_uuid).await?)
     } else {
         None
     };
+    let hive_wallet_provider = hive_wallet_setup
+        .as_ref()
+        .map(|setup| setup.wallet_provider.as_storage_value());
+    let hive_wallet_bolt12_offer = hive_wallet_setup
+        .as_ref()
+        .and_then(|setup| setup.bolt12_offer.as_deref());
 
     let builder = events::build_create_channel(
         channel_uuid,
@@ -777,7 +781,8 @@ pub async fn create_channel(
         paid_post_amount,
         payment_bolt12_offer.as_deref(),
         hive_channel,
-        hive_wallet_bolt12_offer.as_deref(),
+        hive_wallet_provider,
+        hive_wallet_bolt12_offer,
     )?;
     submit_event(builder, &state).await?;
 
@@ -801,7 +806,9 @@ pub async fn create_channel(
     channel.current_user_role = Some("owner".to_string());
     if hive_channel {
         channel.hive_channel = true;
-        channel.hive_wallet_bolt12_offer = hive_wallet_bolt12_offer.clone();
+        channel.hive_wallet_bolt12_offer = hive_wallet_setup
+            .as_ref()
+            .and_then(|setup| setup.bolt12_offer.clone());
     }
 
     if join_amount > 0 || post_amount > 0 {

@@ -9,12 +9,16 @@ use tauri::{AppHandle, Manager};
 
 use crate::app_state::AppState;
 
-use super::types::{
-    WalletAgentPaymentAnnotation, WalletAgentPaymentSettings, WalletBotMessage, WalletSource,
-    WalletSourceConfig, AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME,
-    EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME, EXISTING_OFFER_FILE_NAME,
-    LEXE_DATA_DIR_NAME, MESSAGES_FILE_NAME, OFFER_FILE_NAME, SEED_FILE_NAME, WALLETBOT_WELCOME,
-    WALLET_DIR_NAME, WALLET_SOURCE_FILE_NAME,
+use super::{
+    provider::{available_wallet_providers, WalletProvider},
+    types::{
+        WalletAgentPaymentAnnotation, WalletAgentPaymentSettings, WalletBotMessage, WalletSource,
+        WalletSourceConfig, AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME,
+        EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME,
+        EXISTING_OFFER_FILE_NAME, LEXE_DATA_DIR_NAME, MESSAGES_FILE_NAME, OFFER_FILE_NAME,
+        SEED_FILE_NAME, WALLETBOT_WELCOME, WALLET_DIR_NAME, WALLET_PROVIDER_FILE_NAME,
+        WALLET_SOURCE_FILE_NAME,
+    },
 };
 
 #[derive(Clone)]
@@ -25,6 +29,7 @@ pub(crate) struct WalletStorage {
     pub seed_path: PathBuf,
     pub offer_path: PathBuf,
     pub existing_offer_path: PathBuf,
+    pub wallet_provider_path: PathBuf,
     pub wallet_source_path: PathBuf,
     pub existing_client_credential_path: PathBuf,
     pub messages_path: PathBuf,
@@ -45,6 +50,7 @@ impl WalletStorage {
             seed_path: root_dir.join(SEED_FILE_NAME),
             offer_path: root_dir.join(OFFER_FILE_NAME),
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
+            wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
@@ -76,6 +82,8 @@ impl WalletStorage {
         let has_existing_client_credential = load_existing_client_credential(self)?.is_some();
 
         Ok(WalletSourceConfig {
+            provider: load_wallet_provider(self)?,
+            available_providers: available_wallet_providers(),
             source: load_wallet_source(self)?,
             seed_path: self.seed_path.to_string_lossy().to_string(),
             existing_client_credential_path: self
@@ -96,12 +104,38 @@ impl WalletStorage {
         self.ensure_dirs()
     }
 
-    pub(crate) fn offer_path_for_source(&self, source: WalletSource) -> &Path {
-        match source {
-            WalletSource::Default => &self.offer_path,
-            WalletSource::Existing => &self.existing_offer_path,
+    pub(crate) fn offer_path_for_provider_source(
+        &self,
+        provider: WalletProvider,
+        source: WalletSource,
+    ) -> PathBuf {
+        match (provider.as_storage_value(), source) {
+            ("lexe", WalletSource::Default) => self.offer_path.clone(),
+            ("lexe", WalletSource::Existing) => self.existing_offer_path.clone(),
+            (provider, source) => self.root_dir.join("providers").join(provider).join(format!(
+                "{}_{}",
+                source.as_storage_value(),
+                OFFER_FILE_NAME
+            )),
         }
     }
+}
+
+pub(crate) fn load_wallet_provider(storage: &WalletStorage) -> Result<WalletProvider, String> {
+    storage.ensure_dirs()?;
+    match std::fs::read_to_string(&storage.wallet_provider_path) {
+        Ok(value) => Ok(WalletProvider::from_storage_value(&value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WalletProvider::Lexe),
+        Err(error) => Err(format!("read wallet provider: {error}")),
+    }
+}
+
+pub(crate) fn save_wallet_provider(
+    storage: &WalletStorage,
+    provider: WalletProvider,
+) -> Result<(), String> {
+    storage.ensure_dirs()?;
+    write_atomic_text(&storage.wallet_provider_path, provider.as_storage_value())
 }
 
 pub(crate) fn load_wallet_source(storage: &WalletStorage) -> Result<WalletSource, String> {
@@ -356,6 +390,7 @@ mod tests {
             seed_path: root_dir.join(SEED_FILE_NAME),
             offer_path: root_dir.join(OFFER_FILE_NAME),
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
+            wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
             messages_path: root_dir.join(MESSAGES_FILE_NAME),
@@ -363,6 +398,46 @@ mod tests {
             agent_payment_settings_path: root_dir.join(AGENT_PAYMENT_SETTINGS_FILE_NAME),
             root_dir,
         }
+    }
+
+    #[test]
+    fn wallet_source_config_defaults_to_lexe_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        let config = storage.wallet_source_config().unwrap();
+
+        assert_eq!(config.provider, WalletProvider::Lexe);
+        assert_eq!(config.available_providers.len(), 1);
+        assert_eq!(config.available_providers[0].provider, WalletProvider::Lexe);
+    }
+
+    #[test]
+    fn wallet_provider_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        save_wallet_provider(&storage, WalletProvider::Lexe).unwrap();
+
+        assert_eq!(
+            load_wallet_provider(&storage).unwrap(),
+            WalletProvider::Lexe
+        );
+    }
+
+    #[test]
+    fn lexe_offer_cache_uses_existing_legacy_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        assert_eq!(
+            storage.offer_path_for_provider_source(WalletProvider::Lexe, WalletSource::Default),
+            storage.offer_path
+        );
+        assert_eq!(
+            storage.offer_path_for_provider_source(WalletProvider::Lexe, WalletSource::Existing),
+            storage.existing_offer_path
+        );
     }
 
     #[test]

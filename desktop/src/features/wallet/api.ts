@@ -8,6 +8,7 @@ export const WALLETBOT_PUBKEY =
 export const WALLETBOT_MESSAGES_UPDATED = "walletbot-messages-updated";
 
 export type WalletSummary = {
+  provider: WalletProvider;
   walletSource: WalletSource;
   hasExistingClientCredential: boolean;
   env: string;
@@ -24,9 +25,34 @@ export type WalletSummary = {
   bolt12Offer: string;
 };
 
+export type WalletProvider = "lexe";
+
+export type WalletProviderCapabilities = {
+  canCreateWallet: boolean;
+  canConnectExistingWallet: boolean;
+  canReceiveReusableBolt12: boolean;
+  canSendBolt12: boolean;
+  canGetBalance: boolean;
+  canListPayments: boolean;
+  canSubscribePayments: boolean;
+  canSendBolt11: boolean;
+  canCreateBolt11Invoice: boolean;
+  canPayWithPreimage: boolean;
+};
+
+export type WalletProviderOption = {
+  provider: WalletProvider;
+  label: string;
+  paymentRail: string;
+  available: boolean;
+  capabilities: WalletProviderCapabilities;
+};
+
 export type WalletSource = "default" | "existing";
 
 export type WalletSourceConfig = {
+  provider: WalletProvider;
+  availableProviders: WalletProviderOption[];
   source: WalletSource;
   seedPath: string;
   existingClientCredentialPath: string;
@@ -138,6 +164,7 @@ export type HiveChannelContributionShare = {
 
 export type HiveChannelWalletSummary = {
   channelId: string;
+  walletProvider: WalletProvider;
   hasLocalSeed: boolean;
   seedPath: string;
   balanceSats: number;
@@ -177,6 +204,13 @@ export function isWalletBotChannelId(channelId: string | null | undefined) {
 
 export function isWalletBotChannel(channel: Channel | null | undefined) {
   return isWalletBotChannelId(channel?.id);
+}
+
+export function walletProviderLabel(provider: WalletProvider) {
+  switch (provider) {
+    case "lexe":
+      return "Lexe";
+  }
 }
 
 export function walletBotChannel(): Channel {
@@ -266,6 +300,15 @@ export function setLightningWalletAgentPaymentSettings(input: {
 }) {
   return invokeTauri<WalletAgentPaymentSettings>(
     "set_lightning_wallet_agent_payment_settings",
+    input,
+  );
+}
+
+export function setLightningWalletProvider(input: {
+  provider: WalletProvider;
+}) {
+  return invokeTauri<WalletSourceConfig>(
+    "set_lightning_wallet_provider",
     input,
   );
 }

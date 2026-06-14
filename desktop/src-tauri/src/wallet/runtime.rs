@@ -18,9 +18,10 @@ use crate::{
 };
 
 use super::{
+    provider::{WalletProvider, WalletProviderHandle},
     storage::{
-        current_pubkey, load_existing_client_credential, load_root_seed, load_wallet_source,
-        write_atomic_text, WalletStorage,
+        current_pubkey, load_existing_client_credential, load_root_seed, load_wallet_provider,
+        load_wallet_source, write_atomic_text, WalletStorage,
     },
     types::{WalletSource, WALLET_BOLT12_OFFER_DESCRIPTION},
 };
@@ -28,14 +29,17 @@ use super::{
 pub(super) async fn ensure_wallet(
     app: &AppHandle,
     state: &AppState,
-) -> Result<Arc<LexeWallet>, String> {
+) -> Result<WalletProviderHandle, String> {
     let storage = WalletStorage::from_app(app)?;
     storage.ensure_dirs()?;
+    let provider = load_wallet_provider(&storage)?;
+    ensure_supported_provider(provider)?;
     let source = load_wallet_source(&storage)?;
 
     let mut guard = state.wallet_state.wallet.lock().await;
+    let mut provider_guard = state.wallet_state.wallet_provider.lock().await;
     let mut source_guard = state.wallet_state.wallet_source.lock().await;
-    if source_guard.as_ref() != Some(&source) {
+    if provider_guard.as_ref() != Some(&provider) || source_guard.as_ref() != Some(&source) {
         *guard = None;
         *state.wallet_state.summary.lock().await = None;
     }
@@ -46,6 +50,7 @@ pub(super) async fn ensure_wallet(
     };
     if credentials_available {
         if let Some(wallet) = guard.as_ref() {
+            *provider_guard = Some(wallet.provider());
             *source_guard = Some(source);
             return Ok(wallet.clone());
         }
@@ -55,14 +60,29 @@ pub(super) async fn ensure_wallet(
     }
 
     let wallet = match source {
-        WalletSource::Default => load_default_wallet(&storage).await?,
-        WalletSource::Existing => load_existing_wallet(&storage)?,
+        WalletSource::Default => {
+            WalletProviderHandle::new_lexe(load_default_wallet(&storage).await?)
+        }
+        WalletSource::Existing => WalletProviderHandle::new_lexe(load_existing_wallet(&storage)?),
     };
 
-    let wallet = Arc::new(wallet);
     *guard = Some(wallet.clone());
+    *provider_guard = Some(wallet.provider());
     *source_guard = Some(source);
     Ok(wallet)
+}
+
+pub(super) async fn ensure_lexe_wallet(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Arc<LexeWallet>, String> {
+    Ok(ensure_wallet(app, state).await?.lexe_wallet())
+}
+
+fn ensure_supported_provider(provider: WalletProvider) -> Result<(), String> {
+    match provider {
+        WalletProvider::Lexe => Ok(()),
+    }
 }
 
 async fn load_default_wallet(storage: &WalletStorage) -> Result<LexeWallet, String> {
@@ -115,6 +135,8 @@ pub(super) async fn reset_cached_wallet_if_credentials_missing(
     state: &AppState,
 ) -> Result<(), String> {
     let storage = WalletStorage::from_app(app)?;
+    let provider = load_wallet_provider(&storage)?;
+    ensure_supported_provider(provider)?;
     let source = load_wallet_source(&storage)?;
     let credentials_exist = match source {
         WalletSource::Default => storage.seed_path.exists(),
@@ -130,6 +152,7 @@ pub(super) async fn reset_cached_wallet_if_credentials_missing(
 
 pub(super) async fn clear_wallet_cache(state: &AppState) {
     *state.wallet_state.wallet.lock().await = None;
+    *state.wallet_state.wallet_provider.lock().await = None;
     *state.wallet_state.wallet_source.lock().await = None;
     *state.wallet_state.summary.lock().await = None;
 }
@@ -140,17 +163,19 @@ pub(super) async fn ensure_bolt12_offer(
 ) -> Result<String, String> {
     let storage = WalletStorage::from_app(app)?;
     storage.ensure_dirs()?;
+    let provider = load_wallet_provider(&storage)?;
+    ensure_supported_provider(provider)?;
     let source = load_wallet_source(&storage)?;
-    let offer_path = storage.offer_path_for_source(source);
+    let offer_path = storage.offer_path_for_provider_source(provider, source);
 
-    if let Ok(value) = std::fs::read_to_string(offer_path) {
+    if let Ok(value) = std::fs::read_to_string(&offer_path) {
         let offer = value.trim();
         if !offer.is_empty() {
             return Ok(offer.to_string());
         }
     }
 
-    let wallet = ensure_wallet(app, state).await?;
+    let wallet = ensure_lexe_wallet(app, state).await?;
     let response = wallet
         .create_offer(CreateOfferRequest {
             description: Some(WALLET_BOLT12_OFFER_DESCRIPTION.to_string()),
@@ -160,7 +185,7 @@ pub(super) async fn ensure_bolt12_offer(
         .await
         .map_err(|error| format!("create Lexe BOLT12 offer: {error}"))?;
     let offer = response.offer.to_string();
-    write_atomic_text(offer_path, &offer)?;
+    write_atomic_text(&offer_path, &offer)?;
     Ok(offer)
 }
 
@@ -180,7 +205,10 @@ pub(super) fn spawn_current_profile_bolt12_offer_sync(
     });
 }
 
-async fn sync_current_profile_bolt12_offer(state: &AppState, offer: &str) -> Result<(), String> {
+pub(super) async fn sync_current_profile_bolt12_offer(
+    state: &AppState,
+    offer: &str,
+) -> Result<(), String> {
     let offer = offer.trim();
     if offer.is_empty() {
         return Ok(());

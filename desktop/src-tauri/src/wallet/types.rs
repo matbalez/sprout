@@ -3,6 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use lexe::wallet::LexeWallet;
 use serde::{Deserialize, Serialize};
 
+use super::provider::{WalletProvider, WalletProviderHandle, WalletProviderOption};
+
 pub const WALLETBOT_MESSAGES_UPDATED: &str = "walletbot-messages-updated";
 pub(crate) const WALLET_DIR_NAME: &str = "lexe-wallet";
 pub(crate) const LEXE_DATA_DIR_NAME: &str = "data";
@@ -10,20 +12,22 @@ pub(crate) const EXISTING_LEXE_DATA_DIR_NAME: &str = "existing-data";
 pub(crate) const SEED_FILE_NAME: &str = "seedphrase.txt";
 pub(crate) const OFFER_FILE_NAME: &str = "bolt12_offer.txt";
 pub(crate) const EXISTING_OFFER_FILE_NAME: &str = "existing_bolt12_offer.txt";
+pub(crate) const WALLET_PROVIDER_FILE_NAME: &str = "wallet_provider.txt";
 pub(crate) const WALLET_SOURCE_FILE_NAME: &str = "wallet_source.txt";
 pub(crate) const EXISTING_CLIENT_CREDENTIAL_FILE_NAME: &str = "lexe_client_credential.txt";
 pub(crate) const MESSAGES_FILE_NAME: &str = "walletbot_messages.json";
 pub(crate) const AGENT_PAYMENT_ANNOTATIONS_FILE_NAME: &str = "agent_payment_annotations.json";
 pub(crate) const AGENT_PAYMENT_SETTINGS_FILE_NAME: &str = "agent_payment_settings.json";
 pub(crate) const HIVE_CHANNELS_DIR_NAME: &str = "hive-channels";
-pub(crate) const WALLET_BOLT12_OFFER_DESCRIPTION: &str = "Sprout WalletBot BOLT12 offer";
-pub(crate) const WALLETBOT_WELCOME: &str = "WalletBot is local to this Sprout app.\n\nAvailable commands:\n- help\n- get balance\n- get BOLT12\n- fund wallet\n- get transactions\n- create invoice for ₿1,000\n- send ₿500 to <payment target>";
+pub(crate) const WALLET_BOLT12_OFFER_DESCRIPTION: &str = "Buzz WalletBot BOLT12 offer";
+pub(crate) const WALLETBOT_WELCOME: &str = "WalletBot is local to this Buzz app.\n\nAvailable commands:\n- help\n- get balance\n- get BOLT12\n- fund wallet\n- get transactions\n- create invoice for ₿1,000\n- send ₿500 to <payment target>";
 pub(crate) const DEFAULT_TRANSACTION_LIMIT: usize = 20;
 pub(crate) const MAX_TRANSACTION_LIMIT: usize = 100;
 
 #[derive(Default)]
 pub struct WalletRuntimeState {
-    pub(crate) wallet: tokio::sync::Mutex<Option<Arc<LexeWallet>>>,
+    pub(crate) wallet: tokio::sync::Mutex<Option<WalletProviderHandle>>,
+    pub(crate) wallet_provider: tokio::sync::Mutex<Option<WalletProvider>>,
     pub(crate) wallet_source: tokio::sync::Mutex<Option<WalletSource>>,
     pub(crate) summary: tokio::sync::Mutex<Option<WalletSummary>>,
     pub(crate) hive_wallets: tokio::sync::Mutex<HashMap<String, Arc<LexeWallet>>>,
@@ -71,6 +75,8 @@ impl Serialize for WalletSource {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletSourceConfig {
+    pub provider: WalletProvider,
+    pub available_providers: Vec<WalletProviderOption>,
     pub source: WalletSource,
     pub seed_path: String,
     pub existing_client_credential_path: String,
@@ -80,6 +86,7 @@ pub struct WalletSourceConfig {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletSummary {
+    pub provider: WalletProvider,
     pub wallet_source: WalletSource,
     pub has_existing_client_credential: bool,
     pub env: String,
@@ -173,6 +180,7 @@ pub struct HiveChannelContributionShare {
 #[serde(rename_all = "camelCase")]
 pub struct HiveChannelWalletSummary {
     pub channel_id: String,
+    pub wallet_provider: WalletProvider,
     pub has_local_seed: bool,
     pub seed_path: String,
     pub balance_sats: u64,

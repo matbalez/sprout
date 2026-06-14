@@ -35,7 +35,7 @@ pub struct AppState {
     /// Port of the localhost media streaming proxy (set during setup).
     pub media_proxy_port: AtomicU16,
     /// Loopback broker config used by managed agents to request payments from
-    /// the active Sprout Lexe wallet without seeing wallet credentials.
+    /// the active desktop wallet integration without seeing wallet credentials.
     pub agent_payment_broker: Mutex<Option<crate::wallet::AgentPaymentBrokerConfig>>,
     /// IOKit power assertion state — prevents idle sleep while agents run.
     pub prevent_sleep: Arc<Mutex<crate::prevent_sleep::PreventSleepState>>,

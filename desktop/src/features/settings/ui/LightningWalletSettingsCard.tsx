@@ -24,7 +24,11 @@ import {
   refreshLightningWallet,
   revealLightningWalletSeed,
   setLightningWalletAgentPaymentSettings,
+  setLightningWalletProvider,
   setLightningWalletSource,
+  walletProviderLabel,
+  type WalletProvider,
+  type WalletProviderOption,
   type WalletSource,
   type WalletSourceConfig,
   type WalletSummary,
@@ -49,6 +53,29 @@ const walletAgentPaymentSettingsQueryKey = [
   "lightning-wallet",
   "agent-payment-settings",
 ] as const;
+
+const lexeProviderCapabilities = {
+  canCreateWallet: true,
+  canConnectExistingWallet: true,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: true,
+  canCreateBolt11Invoice: true,
+  canPayWithPreimage: true,
+};
+
+const defaultWalletProviderOptions: WalletProviderOption[] = [
+  {
+    provider: "lexe",
+    label: walletProviderLabel("lexe"),
+    paymentRail: "lexe-bolt12",
+    available: true,
+    capabilities: lexeProviderCapabilities,
+  },
+];
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Wallet request failed";
@@ -110,6 +137,78 @@ function SummaryContent({ summary }: { summary: WalletSummary }) {
           {summary.bolt12Offer}
         </code>
       </div>
+    </div>
+  );
+}
+
+function WalletProviderSettings({
+  actionError,
+  config,
+  error,
+  isLoading,
+  isPending,
+  onProviderChange,
+}: {
+  actionError: unknown;
+  config: WalletSourceConfig | undefined;
+  error: unknown;
+  isLoading: boolean;
+  isPending: boolean;
+  onProviderChange: (provider: WalletProvider) => void;
+}) {
+  const options = config?.availableProviders?.length
+    ? config.availableProviders
+    : defaultWalletProviderOptions;
+  const selectedProvider = config?.provider ?? "lexe";
+  const selectableProviders = options.filter((option) => option.available);
+  const canChooseProvider = selectableProviders.length > 1;
+
+  return (
+    <div className="mb-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+      <label
+        className="mb-2 block text-sm font-medium"
+        htmlFor="wallet-provider-select"
+      >
+        Wallet provider
+      </label>
+      {isLoading ? (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="h-4 w-4" />
+          Loading provider...
+        </div>
+      ) : error ? (
+        <div className="flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(error)}</span>
+        </div>
+      ) : (
+        <select
+          aria-label="Wallet provider"
+          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-hidden focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-70"
+          disabled={isPending || !canChooseProvider}
+          id="wallet-provider-select"
+          onChange={(event) =>
+            onProviderChange(event.currentTarget.value as WalletProvider)
+          }
+          value={selectedProvider}
+        >
+          {options.map((option) => (
+            <option
+              disabled={!option.available}
+              key={option.provider}
+              value={option.provider}
+            >
+              {option.label}
+            </option>
+          ))}
+        </select>
+      )}
+      {actionError ? (
+        <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(actionError)}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -404,6 +503,23 @@ export function LightningWalletSettingsCard() {
       );
     },
   });
+  const providerMutation = useMutation({
+    mutationFn: setLightningWalletProvider,
+    onSuccess: (config) => {
+      queryClient.setQueryData(walletSourceQueryKey, config);
+      setSourceDraft(config.source);
+      setClientCredential("");
+      setIsSeedVisible(false);
+      seedMutation.reset();
+      void queryClient.invalidateQueries({ queryKey: walletSummaryQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: walletTransactionsQueryKey,
+      });
+      toast.success(
+        `Wallet provider set to ${walletProviderLabel(config.provider)}`,
+      );
+    },
+  });
   const agentPaymentSettingsMutation = useMutation({
     mutationFn: setLightningWalletAgentPaymentSettings,
     onSuccess: (settings) => {
@@ -432,6 +548,12 @@ export function LightningWalletSettingsCard() {
     }
   }
 
+  function handleProviderChange(provider: WalletProvider) {
+    if (provider !== sourceConfig?.provider) {
+      providerMutation.mutate({ provider });
+    }
+  }
+
   function handleSaveExistingCredential() {
     sourceMutation.mutate({
       source: "existing",
@@ -453,7 +575,10 @@ export function LightningWalletSettingsCard() {
             Lightning Wallet
           </h2>
           <p className="text-sm text-muted-foreground">
-            Lightning wallet powered by Lexe
+            Wallet provider:{" "}
+            {walletProviderLabel(
+              sourceConfig?.provider ?? summary?.provider ?? "lexe",
+            )}
           </p>
         </div>
         <Button
@@ -471,6 +596,15 @@ export function LightningWalletSettingsCard() {
           Refresh
         </Button>
       </div>
+
+      <WalletProviderSettings
+        actionError={providerMutation.error}
+        config={sourceConfig}
+        error={sourceConfigQuery.error}
+        isLoading={sourceConfigQuery.isPending}
+        isPending={providerMutation.isPending}
+        onProviderChange={handleProviderChange}
+      />
 
       {summaryQuery.isPending ? (
         <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-4 text-sm text-muted-foreground">

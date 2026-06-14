@@ -195,6 +195,7 @@ pub async fn start_huddle(
             None,
             false,
             None,
+            None,
         )?;
         submit_event(create_builder, &state).await?;
         channel_was_created = true;

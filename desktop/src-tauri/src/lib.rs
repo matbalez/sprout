@@ -572,7 +572,7 @@ pub fn run() {
             let wallet_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = prewarm_lightning_wallet(wallet_handle).await {
-                    eprintln!("sprout-desktop: failed to prewarm Lexe wallet: {error}");
+                    eprintln!("buzz-desktop: failed to prewarm wallet provider: {error}");
                 }
             });
 
@@ -866,6 +866,7 @@ pub fn run() {
             get_lightning_wallet_source_config,
             get_lightning_wallet_agent_payment_settings,
             set_lightning_wallet_agent_payment_settings,
+            set_lightning_wallet_provider,
             set_lightning_wallet_source,
             refresh_lightning_wallet,
             reveal_lightning_wallet_seed,

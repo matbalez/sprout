@@ -4,6 +4,7 @@ mod discovery;
 mod format;
 mod hive;
 mod parser;
+mod provider;
 mod runtime;
 mod storage;
 mod tips;
@@ -33,15 +34,18 @@ pub use hive::{
     send_hive_channel_wallet_payment,
 };
 use parser::parse_wallet_command;
+pub use provider::WalletProvider;
 use runtime::{
-    clear_wallet_cache, ensure_bolt12_offer, ensure_wallet,
+    clear_wallet_cache, ensure_bolt12_offer, ensure_lexe_wallet,
     reset_cached_wallet_if_credentials_missing, spawn_current_profile_bolt12_offer_sync,
+    sync_current_profile_bolt12_offer,
 };
 use storage::{
     current_pubkey, load_agent_payment_annotations, load_agent_payment_settings,
-    load_existing_client_credential, load_root_seed, load_wallet_source, load_walletbot_messages,
-    new_walletbot_message, save_agent_payment_settings, save_existing_client_credential,
-    save_wallet_source, save_walletbot_messages, walletbot_pubkey, WalletStorage,
+    load_existing_client_credential, load_root_seed, load_wallet_provider, load_wallet_source,
+    load_walletbot_messages, new_walletbot_message, save_agent_payment_settings,
+    save_existing_client_credential, save_wallet_provider, save_wallet_source,
+    save_walletbot_messages, walletbot_pubkey, WalletStorage,
 };
 pub use tips::{
     send_channel_payment, send_message_kudos, send_message_tip,
@@ -62,9 +66,14 @@ pub async fn get_lightning_wallet_summary(
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
     reset_cached_wallet_if_credentials_missing(&app, &state).await?;
-    let active_source = load_wallet_source(&WalletStorage::from_app(&app)?)?;
+    let storage = WalletStorage::from_app(&app)?;
+    let active_provider = load_wallet_provider(&storage)?;
+    let active_source = load_wallet_source(&storage)?;
     if let Some(summary) = state.wallet_state.summary.lock().await.clone() {
-        if summary.wallet_source == active_source && summary.balance_sats > 0 {
+        if summary.provider == active_provider
+            && summary.wallet_source == active_source
+            && summary.balance_sats > 0
+        {
             return Ok(summary);
         }
     }
@@ -78,7 +87,7 @@ pub async fn refresh_lightning_wallet(
     state: State<'_, AppState>,
 ) -> Result<WalletSummary, String> {
     reset_cached_wallet_if_credentials_missing(&app, &state).await?;
-    let wallet = ensure_wallet(&app, &state).await?;
+    let wallet = ensure_lexe_wallet(&app, &state).await?;
     wallet
         .sync_payments()
         .await
@@ -89,6 +98,33 @@ pub async fn refresh_lightning_wallet(
 #[tauri::command]
 pub fn get_lightning_wallet_source_config(app: AppHandle) -> Result<WalletSourceConfig, String> {
     WalletStorage::from_app(&app)?.wallet_source_config()
+}
+
+#[tauri::command]
+pub async fn set_lightning_wallet_provider(
+    provider: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WalletSourceConfig, String> {
+    let storage = WalletStorage::from_app(&app)?;
+    let provider = WalletProvider::from_ui_value(&provider)?;
+    save_wallet_provider(&storage, provider)?;
+    clear_wallet_cache(&state).await;
+    match build_wallet_summary(&app, &state).await {
+        Ok(summary) => {
+            if let Err(error) =
+                sync_current_profile_bolt12_offer(&state, &summary.bolt12_offer).await
+            {
+                eprintln!(
+                    "buzz-desktop: failed to sync selected wallet provider BOLT12 profile: {error}"
+                );
+            }
+        }
+        Err(error) => {
+            eprintln!("buzz-desktop: failed to prewarm selected wallet provider: {error}");
+        }
+    }
+    storage.wallet_source_config()
 }
 
 #[tauri::command]
@@ -144,7 +180,7 @@ pub async fn set_lightning_wallet_source(
     save_wallet_source(&storage, source)?;
     clear_wallet_cache(&state).await;
     if let Err(error) = build_wallet_summary(&app, &state).await {
-        eprintln!("sprout-desktop: failed to prewarm selected Lexe wallet: {error}");
+        eprintln!("buzz-desktop: failed to prewarm selected wallet source: {error}");
     }
     storage.wallet_source_config()
 }
@@ -168,7 +204,7 @@ pub async fn get_lightning_wallet_transactions(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<WalletTransaction>, String> {
-    let wallet = ensure_wallet(&app, &state).await?;
+    let wallet = ensure_lexe_wallet(&app, &state).await?;
     wallet
         .sync_payments()
         .await
@@ -289,7 +325,7 @@ async fn execute_wallet_command(
         WalletCommand::FundWallet => {
             let offer = ensure_bolt12_offer(app, state).await?;
             Ok(format_bolt12_offer_message(
-                "Fund your Lexe wallet with this reusable BOLT12 offer.",
+                "Fund your wallet with this reusable BOLT12 offer.",
                 &offer,
             ))
         }
@@ -305,7 +341,7 @@ async fn execute_wallet_command(
 async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<WalletSummary, String> {
     let storage = WalletStorage::from_app(app)?;
     let source_config = storage.wallet_source_config()?;
-    let wallet = ensure_wallet(app, state).await?;
+    let wallet = ensure_lexe_wallet(app, state).await?;
     let info = wallet
         .node_info()
         .await
@@ -315,6 +351,7 @@ async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<Walle
     let balances = wallet_balances(&wallet, &info).await;
 
     let summary = WalletSummary {
+        provider: source_config.provider,
         wallet_source: source_config.source,
         has_existing_client_credential: source_config.has_existing_client_credential,
         env: "mainnet".to_string(),
@@ -336,7 +373,7 @@ async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<Walle
 }
 
 async fn get_balance_reply(app: &AppHandle, state: &AppState) -> Result<String, String> {
-    let wallet = ensure_wallet(app, state).await?;
+    let wallet = ensure_lexe_wallet(app, state).await?;
     let info = wallet
         .node_info()
         .await
@@ -353,7 +390,7 @@ async fn get_balance_reply(app: &AppHandle, state: &AppState) -> Result<String, 
 }
 
 async fn get_transactions_reply(app: &AppHandle, state: &AppState) -> Result<String, String> {
-    let wallet = ensure_wallet(app, state).await?;
+    let wallet = ensure_lexe_wallet(app, state).await?;
     wallet
         .sync_payments()
         .await
@@ -379,7 +416,7 @@ async fn create_invoice_reply(
     state: &AppState,
     amount_sats: u64,
 ) -> Result<String, String> {
-    let wallet = ensure_wallet(app, state).await?;
+    let wallet = ensure_lexe_wallet(app, state).await?;
     let amount = amount_from_sats(amount_sats)?;
     let response = wallet
         .create_invoice(CreateInvoiceRequest {
@@ -432,7 +469,7 @@ async fn send_payment(
     message: Option<String>,
     personal_note: String,
 ) -> Result<WalletPaymentResult, String> {
-    let wallet = ensure_wallet(&app, state).await?;
+    let wallet = ensure_lexe_wallet(&app, state).await?;
     let amount = amount_from_sats(amount_sats)?;
     let response = wallet
         .pay(PayRequest {

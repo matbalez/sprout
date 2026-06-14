@@ -29,20 +29,21 @@ use crate::{
     wallet::{
         balance::{wallet_balances, WalletBalances},
         format::{amount_from_sats, format_amount, wallet_transaction_with_annotation},
-        runtime::ensure_wallet,
-        storage::{current_pubkey, write_atomic_text},
+        runtime::ensure_lexe_wallet,
+        storage::{current_pubkey, load_wallet_provider, write_atomic_text, WalletStorage},
     },
 };
 
 use super::{
     discovery::{resolve_bolt12_offer_for_pubkey, resolve_send_payable},
+    provider::WalletProvider,
     types::{
         HiveChannelContributionShare, HiveChannelPayoutExecution, HiveChannelPayoutFailure,
         HiveChannelPayoutPayment, HiveChannelPayoutPreview, HiveChannelPayoutRecipient,
         HiveChannelPayoutShare, HiveChannelWalletSummary, WalletPaymentResult, WalletTransaction,
         DEFAULT_TRANSACTION_LIMIT, HIVE_CHANNELS_DIR_NAME, LEXE_DATA_DIR_NAME,
         MAX_TRANSACTION_LIMIT, OFFER_FILE_NAME, SEED_FILE_NAME, WALLET_BOLT12_OFFER_DESCRIPTION,
-        WALLET_DIR_NAME,
+        WALLET_DIR_NAME, WALLET_PROVIDER_FILE_NAME,
     },
 };
 
@@ -57,11 +58,18 @@ struct HiveChannelWalletStorage {
     root_dir: PathBuf,
     data_dir: PathBuf,
     seed_path: PathBuf,
+    provider_path: PathBuf,
     offer_path: PathBuf,
 }
 
 pub(crate) struct HiveChannelWalletSetup {
+    pub(crate) wallet_provider: WalletProvider,
     pub(crate) bolt12_offer: Option<String>,
+}
+
+struct HiveLocalOffer {
+    wallet_provider: WalletProvider,
+    offer: String,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +113,7 @@ impl HiveChannelWalletStorage {
         Ok(Self {
             data_dir: root_dir.join(LEXE_DATA_DIR_NAME),
             seed_path: root_dir.join(SEED_FILE_NAME),
+            provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             offer_path: root_dir.join(OFFER_FILE_NAME),
             root_dir,
         })
@@ -127,15 +136,54 @@ impl HiveChannelWalletStorage {
     }
 }
 
+fn load_hive_wallet_provider(storage: &HiveChannelWalletStorage) -> Result<WalletProvider, String> {
+    storage.ensure_dirs()?;
+    match std::fs::read_to_string(&storage.provider_path) {
+        Ok(value) => Ok(WalletProvider::from_storage_value(&value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(WalletProvider::Lexe),
+        Err(error) => Err(format!("read hive wallet provider: {error}")),
+    }
+}
+
+fn write_hive_wallet_provider(
+    storage: &HiveChannelWalletStorage,
+    provider: WalletProvider,
+) -> Result<(), String> {
+    write_atomic_text(&storage.provider_path, provider.as_storage_value())
+        .map_err(|error| format!("write hive wallet provider: {error}"))
+}
+
+fn ensure_hive_wallet_provider(
+    app: &AppHandle,
+    storage: &HiveChannelWalletStorage,
+) -> Result<WalletProvider, String> {
+    storage.ensure_dirs()?;
+    if storage.provider_path.exists() {
+        return load_hive_wallet_provider(storage);
+    }
+
+    let provider = if storage.seed_path.exists() {
+        WalletProvider::Lexe
+    } else {
+        load_wallet_provider(&WalletStorage::from_app(app)?)?
+    };
+    write_hive_wallet_provider(storage, provider)?;
+    Ok(provider)
+}
+
 pub(crate) async fn create_hive_channel_wallet(
     app: &AppHandle,
     state: &AppState,
     channel_id: Uuid,
 ) -> Result<HiveChannelWalletSetup, String> {
     let storage = HiveChannelWalletStorage::from_app(app, channel_id)?;
+    let wallet_provider = ensure_hive_wallet_provider(app, &storage)?;
     let _wallet = ensure_hive_wallet(app, state, channel_id).await?;
     let bolt12_offer = read_cached_hive_bolt12_offer(&storage);
-    Ok(HiveChannelWalletSetup { bolt12_offer })
+    Ok(HiveChannelWalletSetup {
+        wallet_provider,
+        bolt12_offer,
+    })
 }
 
 #[tauri::command]
@@ -156,6 +204,7 @@ pub async fn get_hive_channel_wallet_summary(
         .await;
     }
 
+    let wallet_provider = ensure_hive_wallet_provider(&app, &storage)?;
     let wallet = ensure_hive_wallet(&app, &state, channel_uuid).await?;
     wallet
         .sync_payments()
@@ -170,7 +219,13 @@ pub async fn get_hive_channel_wallet_summary(
         wallet_backed_ownership_shares(&state, &wallet, &channel_id, channel_uuid).await?;
     let bolt12_offer = match ensure_hive_bolt12_offer(&wallet, &storage, channel_uuid).await {
         Ok(offer) => {
-            publish_hive_channel_wallet_offer_if_missing(&state, channel_uuid, &offer).await;
+            publish_hive_channel_wallet_offer_if_missing(
+                &state,
+                channel_uuid,
+                wallet_provider,
+                &offer,
+            )
+            .await;
             offer
         }
         Err(error) => {
@@ -189,6 +244,7 @@ pub async fn get_hive_channel_wallet_summary(
         balances,
         ownership_shares,
         channel_uuid,
+        wallet_provider,
     )
 }
 
@@ -217,9 +273,10 @@ pub async fn generate_hive_channel_wallet_bolt12_offer(
         return Err("hive wallet seed is not stored on this machine".to_string());
     }
 
+    let wallet_provider = ensure_hive_wallet_provider(&app, &storage)?;
     let wallet = ensure_hive_wallet(&app, &state, channel_uuid).await?;
     let offer = create_hive_bolt12_offer(&wallet, channel_uuid).await?;
-    publish_hive_channel_wallet_offer(&state, channel_uuid, &offer).await?;
+    publish_hive_channel_wallet_offer(&state, channel_uuid, wallet_provider, &offer).await?;
     write_hive_bolt12_offer(&storage, channel_uuid, &offer)?;
 
     wallet
@@ -242,6 +299,7 @@ pub async fn generate_hive_channel_wallet_bolt12_offer(
         balances,
         ownership_shares,
         channel_uuid,
+        wallet_provider,
     )
 }
 
@@ -500,14 +558,20 @@ pub async fn send_hive_channel_funds(
     let offer = match resolve_hive_channel_offer(&state, &channel_id).await {
         Ok(offer) => offer,
         Err(resolve_error) => {
-            let offer =
+            let local_offer =
                 local_hive_bolt12_offer_or_error(&app, &state, channel_uuid, resolve_error).await?;
-            publish_hive_channel_wallet_offer_if_missing(&state, channel_uuid, &offer).await;
-            offer
+            publish_hive_channel_wallet_offer_if_missing(
+                &state,
+                channel_uuid,
+                local_offer.wallet_provider,
+                &local_offer.offer,
+            )
+            .await;
+            local_offer.offer
         }
     };
     let offer_id_for_failure_log = offer_id_for_log(&offer);
-    let wallet = ensure_wallet(&app, &state).await?;
+    let wallet = ensure_lexe_wallet(&app, &state).await?;
     let amount = amount_from_sats(amount_sats)?;
     let response = wallet
         .pay(PayRequest {
@@ -567,7 +631,10 @@ async fn ensure_hive_wallet(
     }
 
     let storage = HiveChannelWalletStorage::from_app(app, channel_id)?;
-    let wallet = Arc::new(load_hive_wallet(&storage).await?);
+    let provider = ensure_hive_wallet_provider(app, &storage)?;
+    let wallet = match provider {
+        WalletProvider::Lexe => Arc::new(load_lexe_hive_wallet(&storage).await?),
+    };
     state
         .wallet_state
         .hive_wallets
@@ -577,7 +644,7 @@ async fn ensure_hive_wallet(
     Ok(wallet)
 }
 
-async fn load_hive_wallet(storage: &HiveChannelWalletStorage) -> Result<LexeWallet, String> {
+async fn load_lexe_hive_wallet(storage: &HiveChannelWalletStorage) -> Result<LexeWallet, String> {
     storage.ensure_dirs()?;
     let root_seed = match RootSeed::read_from_path(&storage.seed_path)
         .map_err(|error| format!("read hive wallet seed: {error}"))?
@@ -675,12 +742,14 @@ fn build_hive_channel_wallet_summary(
     balances: WalletBalances,
     ownership_shares: Vec<HiveChannelContributionShare>,
     channel_uuid: Uuid,
+    wallet_provider: WalletProvider,
 ) -> Result<HiveChannelWalletSummary, String> {
     log_hive_wallet_state(channel_uuid, info, &bolt12_offer);
     let total_contributed_sats = ownership_shares.iter().map(|share| share.amount_sats).sum();
 
     Ok(HiveChannelWalletSummary {
         channel_id,
+        wallet_provider,
         has_local_seed: true,
         seed_path: storage.seed_path.to_string_lossy().to_string(),
         balance_sats: balances.balance_sats,
@@ -704,9 +773,13 @@ async fn build_seedless_hive_channel_wallet_summary(
     let bolt12_offer = resolve_hive_channel_offer(state, &channel_uuid.to_string())
         .await
         .unwrap_or_default();
+    let wallet_provider = resolve_hive_channel_wallet_provider(state, &channel_uuid.to_string())
+        .await
+        .unwrap_or(WalletProvider::Lexe);
 
     Ok(HiveChannelWalletSummary {
         channel_id,
+        wallet_provider,
         has_local_seed: false,
         seed_path: storage.seed_path.to_string_lossy().to_string(),
         balance_sats: 0,
@@ -755,20 +828,25 @@ async fn local_hive_bolt12_offer_or_error(
     state: &AppState,
     channel_id: Uuid,
     resolve_error: String,
-) -> Result<String, String> {
+) -> Result<HiveLocalOffer, String> {
     let storage = HiveChannelWalletStorage::from_app(app, channel_id)?;
     if !storage.seed_path.exists() {
         return Err(resolve_error);
     }
 
+    let wallet_provider = ensure_hive_wallet_provider(app, &storage)?;
     let wallet = ensure_hive_wallet(app, state, channel_id).await?;
-    ensure_hive_bolt12_offer(&wallet, &storage, channel_id)
+    let offer = ensure_hive_bolt12_offer(&wallet, &storage, channel_id)
         .await
         .map_err(|offer_error| {
             format!(
                 "channel does not have a published hive wallet offer; local hive wallet offer is not ready either: {offer_error}"
             )
-        })
+        })?;
+    Ok(HiveLocalOffer {
+        wallet_provider,
+        offer,
+    })
 }
 
 fn format_anyhow_error(context: &str, error: &anyhow::Error) -> String {
@@ -1445,6 +1523,41 @@ async fn resolve_hive_channel_offer(state: &AppState, channel_id: &str) -> Resul
         .ok_or_else(|| "channel does not have a hive wallet offer".to_string())
 }
 
+async fn resolve_hive_channel_wallet_provider(
+    state: &AppState,
+    channel_id: &str,
+) -> Result<WalletProvider, String> {
+    let relay_events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [7, 9007],
+            "#h": [channel_id],
+            "limit": 20,
+        })],
+    )
+    .await?;
+
+    relay_events
+        .iter()
+        .filter(|event| {
+            event.kind.as_u16() == 9007
+                || (event.kind.as_u16() == 7
+                    && events::is_hive_channel_wallet_content(&event.content))
+        })
+        .filter_map(|event| {
+            let provider = first_tag_value(event, "hive_wallet_provider")?.trim();
+            (!provider.is_empty()).then(|| {
+                (
+                    event.created_at.as_secs(),
+                    WalletProvider::from_storage_value(provider),
+                )
+            })
+        })
+        .max_by_key(|(created_at, _)| *created_at)
+        .map(|(_, provider)| provider)
+        .ok_or_else(|| "channel does not have a hive wallet provider".to_string())
+}
+
 fn read_cached_hive_bolt12_offer(storage: &HiveChannelWalletStorage) -> Option<String> {
     let value = std::fs::read_to_string(&storage.offer_path).ok()?;
     let offer = value.trim();
@@ -1454,6 +1567,7 @@ fn read_cached_hive_bolt12_offer(storage: &HiveChannelWalletStorage) -> Option<S
 async fn publish_hive_channel_wallet_offer_if_missing(
     state: &AppState,
     channel_id: Uuid,
+    wallet_provider: WalletProvider,
     offer: &str,
 ) {
     let channel_id_string = channel_id.to_string();
@@ -1466,7 +1580,9 @@ async fn publish_hive_channel_wallet_offer_if_missing(
         return;
     }
 
-    if let Err(error) = publish_hive_channel_wallet_offer(state, channel_id, offer).await {
+    if let Err(error) =
+        publish_hive_channel_wallet_offer(state, channel_id, wallet_provider, offer).await
+    {
         eprintln!(
             "buzz-desktop: failed to publish hive channel {channel_id} wallet metadata: {error}"
         );
@@ -1476,11 +1592,17 @@ async fn publish_hive_channel_wallet_offer_if_missing(
 async fn publish_hive_channel_wallet_offer(
     state: &AppState,
     channel_id: Uuid,
+    wallet_provider: WalletProvider,
     offer: &str,
 ) -> Result<(), String> {
     let metadata_event_id = resolve_channel_metadata_event_id(state, channel_id).await?;
-    let builder = events::build_hive_channel_wallet_metadata(channel_id, metadata_event_id, offer)
-        .map_err(|error| format!("build hive channel wallet metadata: {error}"))?;
+    let builder = events::build_hive_channel_wallet_metadata(
+        channel_id,
+        metadata_event_id,
+        wallet_provider.as_storage_value(),
+        offer,
+    )
+    .map_err(|error| format!("build hive channel wallet metadata: {error}"))?;
     submit_event(builder, state)
         .await
         .map(|_| ())
