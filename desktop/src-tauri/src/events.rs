@@ -32,6 +32,7 @@ const MAX_MENTIONS: usize = 50;
 const MAX_EMOJI_CHARS: usize = 64;
 
 pub(crate) const HIVE_CHANNEL_WALLET_CONTENT: &str = "sprout-hive-wallet:v1";
+pub(crate) const HIVE_CHANNEL_CONTRIBUTION_CONTENT: &str = "sprout-hive-contrib:v1";
 
 pub(crate) fn is_hive_channel_wallet_content(content: &str) -> bool {
     content == HIVE_CHANNEL_WALLET_CONTENT
@@ -40,8 +41,19 @@ pub(crate) fn is_hive_channel_wallet_content(content: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with(':') && suffix.len() > 1)
 }
 
+pub(crate) fn is_hive_channel_contribution_content(content: &str) -> bool {
+    content == HIVE_CHANNEL_CONTRIBUTION_CONTENT
+        || content
+            .strip_prefix(HIVE_CHANNEL_CONTRIBUTION_CONTENT)
+            .is_some_and(|suffix| suffix.starts_with(':') && suffix.len() > 1)
+}
+
 fn hive_channel_wallet_marker_content() -> String {
     format!("{HIVE_CHANNEL_WALLET_CONTENT}:{}", Uuid::new_v4())
+}
+
+fn hive_channel_contribution_marker_content() -> String {
+    format!("{HIVE_CHANNEL_CONTRIBUTION_CONTENT}:{}", Uuid::new_v4())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -249,6 +261,39 @@ pub fn build_hive_channel_wallet_metadata(
         tag(vec!["status", "active"])?,
     ];
     Ok(EventBuilder::new(Kind::Custom(7), hive_channel_wallet_marker_content()).tags(tags))
+}
+
+/// Kind 7 — hive contribution metadata encoded as relay-compatible reactions.
+pub fn build_hive_channel_contribution_metadata(
+    channel_id: Uuid,
+    metadata_event_id: EventId,
+    contribution_id: &str,
+    contributor_pubkey: &str,
+    amount_sats: u64,
+) -> Result<EventBuilder, String> {
+    let contribution_id = contribution_id.trim();
+    if contribution_id.is_empty() {
+        return Err("hive contribution metadata requires a contribution id".into());
+    }
+    if amount_sats == 0 {
+        return Err("hive contribution metadata requires a positive amount".into());
+    }
+    check_pubkey(contributor_pubkey)?;
+
+    let channel_id = channel_id.to_string();
+    let metadata_event_id = metadata_event_id.to_hex();
+    let amount_sats = amount_sats.to_string();
+    let contributor_pubkey = contributor_pubkey.to_ascii_lowercase();
+    let tags = vec![
+        tag(vec!["h", &channel_id])?,
+        tag(vec!["e", &metadata_event_id, "", "root"])?,
+        tag(vec!["hive_channel", "1"])?,
+        tag(vec!["hive_contribution", "1"])?,
+        tag(vec!["hive_contribution_id", contribution_id])?,
+        tag(vec!["hive_contributor_pubkey", &contributor_pubkey])?,
+        tag(vec!["hive_contribution_amount_sats", &amount_sats])?,
+    ];
+    Ok(EventBuilder::new(Kind::Custom(7), hive_channel_contribution_marker_content()).tags(tags))
 }
 
 /// Kind 9021 — join channel.
@@ -1057,6 +1102,38 @@ mod tests {
             "hive_wallet_bolt12_offer".into(),
             "lno1wallet".into()
         ]));
+    }
+
+    #[test]
+    fn hive_contribution_metadata_marker_carries_ledger_tags() {
+        let channel_id = Uuid::new_v4();
+        let metadata_event_id =
+            EventId::from_hex("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let contributor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let event = build_hive_channel_contribution_metadata(
+            channel_id,
+            metadata_event_id,
+            "contribution-1",
+            contributor,
+            42,
+        )
+        .unwrap()
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+        let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+
+        assert_eq!(event.kind, Kind::Custom(7));
+        assert!(is_hive_channel_contribution_content(&event.content));
+        assert_ne!(event.content, HIVE_CHANNEL_CONTRIBUTION_CONTENT);
+        assert!(event.content.chars().count() <= MAX_EMOJI_CHARS);
+        assert!(tags.contains(&vec!["hive_contribution".into(), "1".into()]));
+        assert!(tags.contains(&vec![
+            "hive_contribution_id".into(),
+            "contribution-1".into()
+        ]));
+        assert!(tags.contains(&vec!["hive_contributor_pubkey".into(), contributor.into()]));
+        assert!(tags.contains(&vec!["hive_contribution_amount_sats".into(), "42".into()]));
     }
 
     #[test]

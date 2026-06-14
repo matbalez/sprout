@@ -10,6 +10,7 @@ import {
   Lock,
   MessageSquare,
   RefreshCw,
+  Send,
   Users,
   Wallet,
   Zap,
@@ -42,12 +43,19 @@ import { ChannelBitcoinGiftsCard } from "@/features/klaim-gifts/ui/ChannelBitcoi
 import { CreateWorkflowDialog } from "@/features/workflows/ui/CreateWorkflowDialog";
 import {
   formatBitcoinAmount,
+  executeHiveChannelWalletPayouts,
   generateHiveChannelWalletBolt12Offer,
   getHiveChannelWalletTransactions,
   getHiveChannelWalletSummary,
+  previewHiveChannelWalletPayouts,
   revealHiveChannelWalletSeed,
+  sendHiveChannelWalletPayment,
 } from "@/features/wallet/api";
-import type { WalletTransaction } from "@/features/wallet/api";
+import type {
+  HiveChannelPayoutExecution,
+  HiveChannelPayoutPreview,
+  WalletTransaction,
+} from "@/features/wallet/api";
 import {
   formatWalletTransactionTitle,
   walletTransactionNotes,
@@ -161,11 +169,13 @@ function ChannelIdRow({ channelId }: { channelId: string }) {
 }
 
 function HiveWalletOffer({
+  canGenerate,
   isGenerating,
   isLoading,
   onGenerate,
   offer,
 }: {
+  canGenerate: boolean;
   isGenerating: boolean;
   isLoading: boolean;
   onGenerate: () => void;
@@ -184,19 +194,21 @@ function HiveWalletOffer({
           BOLT12 offer
         </p>
         <div className="flex items-center gap-2">
-          <Button
-            data-testid="channel-management-generate-hive-offer"
-            disabled={isGenerating}
-            onClick={onGenerate}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <RefreshCw
-              className={cn("h-4 w-4", isGenerating && "animate-spin")}
-            />
-            {isGenerating ? "Generating..." : "New offer"}
-          </Button>
+          {canGenerate ? (
+            <Button
+              data-testid="channel-management-generate-hive-offer"
+              disabled={isGenerating}
+              onClick={onGenerate}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <RefreshCw
+                className={cn("h-4 w-4", isGenerating && "animate-spin")}
+              />
+              {isGenerating ? "Generating..." : "New offer"}
+            </Button>
+          ) : null}
           <Button
             data-testid="channel-management-copy-hive-offer"
             disabled={!offer}
@@ -344,6 +356,154 @@ function HiveWalletTransactions({
   );
 }
 
+function parseWholeBitcoinAmount(value: string) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    return null;
+  }
+  const amount = Number(trimmed);
+  if (!Number.isSafeInteger(amount) || amount <= 0) {
+    return null;
+  }
+  return amount;
+}
+
+function hivePayoutEmptyMessage(preview: HiveChannelPayoutPreview) {
+  if (preview.totalUnattributedRevenueSats === 0) {
+    return "No unattributed revenue to pay out.";
+  }
+  if (preview.skippedNoOwnerRevenueCount > 0) {
+    return "No payable revenue shares. Some revenue landed before any ownership stake existed.";
+  }
+  return "No unpaid revenue shares to pay out.";
+}
+
+function HivePayoutConfirmationDialog({
+  currentPubkey,
+  execution,
+  isExecuting,
+  members,
+  onConfirm,
+  onOpenChange,
+  open,
+  preview,
+}: {
+  currentPubkey?: string;
+  execution: HiveChannelPayoutExecution | undefined;
+  isExecuting: boolean;
+  members: readonly ChannelMember[];
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  preview: HiveChannelPayoutPreview | null;
+}) {
+  const recipients = preview?.recipients ?? [];
+  const missingOffer = recipients.find((recipient) => !recipient.bolt12Offer);
+  const paid = execution?.paid ?? [];
+
+  return (
+    <AlertDialog onOpenChange={onOpenChange} open={open}>
+      <AlertDialogContent data-testid="hive-payout-confirmation-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Pay out hive revenue?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {preview
+              ? `${formatBitcoinAmount(preview.totalPayoutSats)} will be paid sequentially across ${recipients.length} owner${recipients.length === 1 ? "" : "s"}.`
+              : "Calculated payouts will appear here."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+
+        {preview ? (
+          <div className="space-y-3">
+            <ul className="max-h-64 overflow-y-auto rounded-lg border border-border/70 px-3 py-2">
+              {recipients.map((recipient) => (
+                <li
+                  className="flex items-start justify-between gap-3 border-t border-border/60 py-2 first:border-t-0 first:pt-0 last:pb-0"
+                  key={recipient.memberPubkey}
+                >
+                  <div className="min-w-0">
+                    <div
+                      className="truncate text-sm font-medium"
+                      title={recipient.memberPubkey}
+                    >
+                      {resolveHiveShareMemberLabel(
+                        recipient.memberPubkey,
+                        members,
+                        currentPubkey,
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {recipient.shares.length} revenue share
+                      {recipient.shares.length === 1 ? "" : "s"}
+                      {!recipient.bolt12Offer ? " · missing BOLT12" : ""}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right text-sm font-medium">
+                    {formatBitcoinAmount(recipient.amountSats)}
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            {preview.skippedNoOwnerRevenueCount > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {preview.skippedNoOwnerRevenueCount} revenue payment
+                {preview.skippedNoOwnerRevenueCount === 1 ? "" : "s"} had no
+                ownership stake at the time and will remain unpaid.
+              </p>
+            ) : null}
+
+            {paid.length ? (
+              <p className="text-xs text-muted-foreground">
+                Paid {formatBitcoinAmount(execution?.totalPaidSats ?? 0)} so far
+                in this run.
+              </p>
+            ) : null}
+
+            {execution?.failed ? (
+              <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {execution.failed.error}
+              </p>
+            ) : null}
+
+            {missingOffer ? (
+              <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {resolveHiveShareMemberLabel(
+                  missingOffer.memberPubkey,
+                  members,
+                  currentPubkey,
+                )}{" "}
+                does not have a published BOLT12 offer.
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        <AlertDialogFooter>
+          <AlertDialogCancel asChild>
+            <Button disabled={isExecuting} type="button" variant="outline">
+              Close
+            </Button>
+          </AlertDialogCancel>
+          <AlertDialogAction asChild>
+            <Button
+              data-testid="hive-payout-confirm"
+              disabled={!preview || Boolean(missingOffer) || isExecuting}
+              onClick={(event) => {
+                event.preventDefault();
+                onConfirm();
+              }}
+              type="button"
+            >
+              {isExecuting ? "Paying..." : "Pay out"}
+            </Button>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 export function ChannelManagementSheet({
   channel,
   currentPubkey,
@@ -413,7 +573,17 @@ export function ChannelManagementSheet({
   const [hiveSeed, setHiveSeed] = React.useState<string | null>(null);
   const [hiveSeedError, setHiveSeedError] = React.useState<string | null>(null);
   const [isRevealingHiveSeed, setIsRevealingHiveSeed] = React.useState(false);
+  const [hivePayoutPreview, setHivePayoutPreview] =
+    React.useState<HiveChannelPayoutPreview | null>(null);
+  const [isHivePayoutDialogOpen, setIsHivePayoutDialogOpen] =
+    React.useState(false);
+  const [hiveSendAmountDraft, setHiveSendAmountDraft] = React.useState("");
+  const [hiveSendTargetDraft, setHiveSendTargetDraft] = React.useState("");
   const hiveSummaryQueryKey = ["hive-channel-wallet-summary", detail?.id];
+  const hiveTransactionsQueryKey = [
+    "hive-channel-wallet-transactions",
+    detail?.id,
+  ];
   const hiveSummaryQuery = useQuery({
     enabled: Boolean(open && detail?.hiveChannel),
     queryKey: hiveSummaryQueryKey,
@@ -421,12 +591,76 @@ export function ChannelManagementSheet({
     retry: false,
     staleTime: 30_000,
   });
+  const hasLocalHiveSeed = Boolean(hiveSummaryQuery.data?.hasLocalSeed);
   const hiveTransactionsQuery = useQuery({
-    enabled: Boolean(open && detail?.hiveChannel),
-    queryKey: ["hive-channel-wallet-transactions", detail?.id],
+    enabled: Boolean(open && detail?.hiveChannel && hasLocalHiveSeed),
+    queryKey: hiveTransactionsQueryKey,
     queryFn: () => getHiveChannelWalletTransactions(detail?.id ?? "", 20),
     retry: false,
     staleTime: 30_000,
+  });
+  const hivePayoutPreviewMutation = useMutation({
+    mutationFn: () => {
+      const selectedChannel = detail ?? channel;
+      if (!selectedChannel?.hiveChannel) {
+        throw new Error("No hive channel selected.");
+      }
+      return previewHiveChannelWalletPayouts(selectedChannel.id);
+    },
+    onSuccess: (preview) => {
+      setHivePayoutPreview(preview);
+      if (preview.totalPayoutSats <= 0) {
+        toast.info(hivePayoutEmptyMessage(preview));
+        return;
+      }
+      setIsHivePayoutDialogOpen(true);
+    },
+  });
+  const executeHivePayoutMutation = useMutation({
+    mutationFn: () => {
+      const selectedChannel = detail ?? channel;
+      if (!selectedChannel?.hiveChannel) {
+        throw new Error("No hive channel selected.");
+      }
+      return executeHiveChannelWalletPayouts(selectedChannel.id);
+    },
+    onSuccess: async (result) => {
+      setHivePayoutPreview(result.remainingPreview);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: hiveSummaryQueryKey }),
+        queryClient.invalidateQueries({ queryKey: hiveTransactionsQueryKey }),
+      ]);
+      if (result.status === "completed") {
+        toast.success(`Paid out ${formatBitcoinAmount(result.totalPaidSats)}`);
+        setIsHivePayoutDialogOpen(false);
+      } else if (result.status === "nothing_to_pay") {
+        toast.info(hivePayoutEmptyMessage(result.remainingPreview));
+      } else {
+        toast.error(result.failed?.error ?? "Hive payout stopped.");
+      }
+    },
+  });
+  const sendHiveWalletPaymentMutation = useMutation({
+    mutationFn: (input: { amountSats: number; payable: string }) => {
+      const selectedChannel = detail ?? channel;
+      if (!selectedChannel?.hiveChannel) {
+        throw new Error("No hive channel selected.");
+      }
+      return sendHiveChannelWalletPayment({
+        channelId: selectedChannel.id,
+        amountSats: input.amountSats,
+        payable: input.payable,
+      });
+    },
+    onSuccess: async (result) => {
+      toast.success(`Sent ${formatBitcoinAmount(result.amountSats)}`);
+      setHiveSendAmountDraft("");
+      setHiveSendTargetDraft("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: hiveSummaryQueryKey }),
+        queryClient.invalidateQueries({ queryKey: hiveTransactionsQueryKey }),
+      ]);
+    },
   });
   const generateHiveOfferMutation = useMutation({
     mutationFn: () => {
@@ -462,6 +696,10 @@ export function ChannelManagementSheet({
       setIsCreateWorkflowOpen(false);
       setHiveSeed(null);
       setHiveSeedError(null);
+      setHivePayoutPreview(null);
+      setIsHivePayoutDialogOpen(false);
+      setHiveSendAmountDraft("");
+      setHiveSendTargetDraft("");
       return;
     }
     if (!detail) {
@@ -557,6 +795,26 @@ export function ChannelManagementSheet({
     }
   }
 
+  function handlePreviewHivePayouts() {
+    hivePayoutPreviewMutation.reset();
+    executeHivePayoutMutation.reset();
+    void hivePayoutPreviewMutation.mutateAsync();
+  }
+
+  function handleSendHiveWalletPayment() {
+    const amountSats = parseWholeBitcoinAmount(hiveSendAmountDraft);
+    const payable = hiveSendTargetDraft.trim();
+    if (!amountSats) {
+      toast.error("Enter a whole ₿ amount.");
+      return;
+    }
+    if (!payable) {
+      toast.error("Enter a payment target.");
+      return;
+    }
+    void sendHiveWalletPaymentMutation.mutateAsync({ amountSats, payable });
+  }
+
   const resolvedChannel = detail ?? channel;
   const hiveWalletBolt12Offer =
     hiveSummaryQuery.data?.bolt12Offer.trim() ||
@@ -622,9 +880,11 @@ export function ChannelManagementSheet({
                   Hive wallet
                 </div>
                 <div className="rounded-md border border-border/60 bg-background px-2 py-1 text-xs font-medium text-muted-foreground">
-                  {hiveSummaryQuery.data
+                  {hiveSummaryQuery.data?.hasLocalSeed
                     ? formatBitcoinAmount(hiveSummaryQuery.data.balanceSats)
-                    : "Local seed required"}
+                    : hiveSummaryQuery.data
+                      ? "Member view"
+                      : "Hive"}
                 </div>
               </div>
               {hiveSummaryQuery.data?.ownershipShares.length ? (
@@ -653,6 +913,7 @@ export function ChannelManagementSheet({
                 </div>
               ) : null}
               <HiveWalletOffer
+                canGenerate={canManageChannel && hasLocalHiveSeed}
                 isGenerating={generateHiveOfferMutation.isPending}
                 isLoading={hiveSummaryQuery.isPending}
                 onGenerate={() => {
@@ -660,11 +921,98 @@ export function ChannelManagementSheet({
                 }}
                 offer={hiveWalletBolt12Offer}
               />
-              <HiveWalletTransactions
-                isLoading={hiveTransactionsQuery.isPending}
-                transactions={hiveTransactionsQuery.data}
-              />
-              {hiveTransactionsQuery.error instanceof Error ? (
+              {hasLocalHiveSeed ? (
+                <HiveWalletTransactions
+                  isLoading={hiveTransactionsQuery.isPending}
+                  transactions={hiveTransactionsQuery.data}
+                />
+              ) : null}
+              {canManageChannel && hasLocalHiveSeed ? (
+                <div className="space-y-3 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">Revenue payout</div>
+                      <div className="text-xs text-muted-foreground">
+                        Split unattributed revenue by historical ownership.
+                      </div>
+                    </div>
+                    <Button
+                      data-testid="channel-management-hive-payout-preview"
+                      disabled={hivePayoutPreviewMutation.isPending}
+                      onClick={handlePreviewHivePayouts}
+                      size="sm"
+                      type="button"
+                    >
+                      <Wallet className="h-4 w-4" />
+                      {hivePayoutPreviewMutation.isPending
+                        ? "Calculating..."
+                        : "Pay out"}
+                    </Button>
+                  </div>
+                  {hivePayoutPreviewMutation.error instanceof Error ? (
+                    <p className="text-sm text-destructive">
+                      {hivePayoutPreviewMutation.error.message}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              {canManageChannel && hasLocalHiveSeed ? (
+                <form
+                  className="space-y-3 rounded-lg border border-border/70 bg-background/70 px-3 py-3"
+                  data-testid="channel-management-hive-send"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    handleSendHiveWalletPayment();
+                  }}
+                >
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Send className="h-4 w-4 text-muted-foreground" />
+                    Send from hive wallet
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[8rem_1fr]">
+                    <Input
+                      data-testid="channel-management-hive-send-amount"
+                      disabled={sendHiveWalletPaymentMutation.isPending}
+                      inputMode="numeric"
+                      min={1}
+                      onChange={(event) =>
+                        setHiveSendAmountDraft(event.target.value)
+                      }
+                      placeholder="1000"
+                      type="number"
+                      value={hiveSendAmountDraft}
+                    />
+                    <Input
+                      data-testid="channel-management-hive-send-target"
+                      disabled={sendHiveWalletPaymentMutation.isPending}
+                      onChange={(event) =>
+                        setHiveSendTargetDraft(event.target.value)
+                      }
+                      placeholder="BOLT12, invoice, address, or @name"
+                      value={hiveSendTargetDraft}
+                    />
+                  </div>
+                  <Button
+                    data-testid="channel-management-hive-send-submit"
+                    disabled={sendHiveWalletPaymentMutation.isPending}
+                    size="sm"
+                    type="submit"
+                    variant="outline"
+                  >
+                    <Send className="h-4 w-4" />
+                    {sendHiveWalletPaymentMutation.isPending
+                      ? "Sending..."
+                      : "Send"}
+                  </Button>
+                  {sendHiveWalletPaymentMutation.error instanceof Error ? (
+                    <p className="text-sm text-destructive">
+                      {sendHiveWalletPaymentMutation.error.message}
+                    </p>
+                  ) : null}
+                </form>
+              ) : null}
+              {hasLocalHiveSeed &&
+              hiveTransactionsQuery.error instanceof Error ? (
                 <p className="text-sm text-destructive">
                   {hiveTransactionsQuery.error.message}
                 </p>
@@ -674,28 +1022,34 @@ export function ChannelManagementSheet({
                   {generateHiveOfferMutation.error.message}
                 </p>
               ) : null}
-              <Button
-                data-testid="channel-management-reveal-hive-seed"
-                disabled={isRevealingHiveSeed}
-                onClick={() => {
-                  void handleRevealHiveSeed();
-                }}
-                size="sm"
-                type="button"
-                variant="outline"
-              >
-                {isRevealingHiveSeed ? "Revealing..." : "Reveal seed phrase"}
-              </Button>
-              {hiveSeed ? (
-                <Textarea
-                  className="min-h-20 font-mono text-xs"
-                  data-testid="channel-management-hive-seed"
-                  readOnly
-                  value={hiveSeed}
-                />
-              ) : null}
-              {hiveSeedError ? (
-                <p className="text-sm text-destructive">{hiveSeedError}</p>
+              {canManageChannel && hasLocalHiveSeed ? (
+                <>
+                  <Button
+                    data-testid="channel-management-reveal-hive-seed"
+                    disabled={isRevealingHiveSeed}
+                    onClick={() => {
+                      void handleRevealHiveSeed();
+                    }}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    {isRevealingHiveSeed
+                      ? "Revealing..."
+                      : "Reveal seed phrase"}
+                  </Button>
+                  {hiveSeed ? (
+                    <Textarea
+                      className="min-h-20 font-mono text-xs"
+                      data-testid="channel-management-hive-seed"
+                      readOnly
+                      value={hiveSeed}
+                    />
+                  ) : null}
+                  {hiveSeedError ? (
+                    <p className="text-sm text-destructive">{hiveSeedError}</p>
+                  ) : null}
+                </>
               ) : null}
             </div>
           ) : null}
@@ -1135,6 +1489,20 @@ export function ChannelManagementSheet({
           </SheetFooter>
         ) : null}
       </SheetContent>
+
+      <HivePayoutConfirmationDialog
+        currentPubkey={currentPubkey}
+        execution={executeHivePayoutMutation.data}
+        isExecuting={executeHivePayoutMutation.isPending}
+        members={members}
+        onConfirm={() => {
+          executeHivePayoutMutation.reset();
+          void executeHivePayoutMutation.mutateAsync();
+        }}
+        onOpenChange={setIsHivePayoutDialogOpen}
+        open={isHivePayoutDialogOpen}
+        preview={hivePayoutPreview}
+      />
 
       <CreateWorkflowDialog
         channels={[channel]}

@@ -105,6 +105,64 @@ pub struct WalletPaymentResult {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutShare {
+    pub revenue_payment_id: String,
+    pub revenue_amount_sats: u64,
+    pub revenue_created_at_ms: u64,
+    pub amount_sats: u64,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutRecipient {
+    pub member_pubkey: String,
+    pub amount_sats: u64,
+    pub bolt12_offer: Option<String>,
+    pub shares: Vec<HiveChannelPayoutShare>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutPreview {
+    pub channel_id: String,
+    pub total_unattributed_revenue_sats: u64,
+    pub total_payout_sats: u64,
+    pub unpaid_revenue_count: usize,
+    pub skipped_no_owner_revenue_count: usize,
+    pub already_paid_share_count: usize,
+    pub recipients: Vec<HiveChannelPayoutRecipient>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutPayment {
+    pub member_pubkey: String,
+    pub amount_sats: u64,
+    pub payment_id: String,
+    pub message_event_id: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutFailure {
+    pub member_pubkey: Option<String>,
+    pub amount_sats: Option<u64>,
+    pub error: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HiveChannelPayoutExecution {
+    pub channel_id: String,
+    pub status: String,
+    pub total_paid_sats: u64,
+    pub paid: Vec<HiveChannelPayoutPayment>,
+    pub failed: Option<HiveChannelPayoutFailure>,
+    pub remaining_preview: HiveChannelPayoutPreview,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HiveChannelContributionShare {
     pub member_pubkey: Option<String>,
     pub amount_sats: u64,
@@ -115,6 +173,7 @@ pub struct HiveChannelContributionShare {
 #[serde(rename_all = "camelCase")]
 pub struct HiveChannelWalletSummary {
     pub channel_id: String,
+    pub has_local_seed: bool,
     pub seed_path: String,
     pub balance_sats: u64,
     pub lightning_balance_sats: u64,

@@ -138,7 +138,7 @@ export function ChannelScreenHeader({
             data-testid="hive-channel-balance"
             title="Hive channel wallet balance"
           >
-            {hiveSummaryQuery.data
+            {hiveSummaryQuery.data?.hasLocalSeed
               ? formatBitcoinAmount(hiveSummaryQuery.data.balanceSats)
               : "Hive"}
           </div>

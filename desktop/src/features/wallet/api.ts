@@ -84,6 +84,52 @@ export type WalletPaymentResult = {
   amountSats: number;
 };
 
+export type HiveChannelPayoutShare = {
+  revenuePaymentId: string;
+  revenueAmountSats: number;
+  revenueCreatedAtMs: number;
+  amountSats: number;
+};
+
+export type HiveChannelPayoutRecipient = {
+  memberPubkey: string;
+  amountSats: number;
+  bolt12Offer: string | null;
+  shares: HiveChannelPayoutShare[];
+};
+
+export type HiveChannelPayoutPreview = {
+  channelId: string;
+  totalUnattributedRevenueSats: number;
+  totalPayoutSats: number;
+  unpaidRevenueCount: number;
+  skippedNoOwnerRevenueCount: number;
+  alreadyPaidShareCount: number;
+  recipients: HiveChannelPayoutRecipient[];
+};
+
+export type HiveChannelPayoutPayment = {
+  memberPubkey: string;
+  amountSats: number;
+  paymentId: string;
+  messageEventId: string | null;
+};
+
+export type HiveChannelPayoutFailure = {
+  memberPubkey: string | null;
+  amountSats: number | null;
+  error: string;
+};
+
+export type HiveChannelPayoutExecution = {
+  channelId: string;
+  status: "completed" | "partial" | "blocked" | "nothing_to_pay";
+  totalPaidSats: number;
+  paid: HiveChannelPayoutPayment[];
+  failed: HiveChannelPayoutFailure | null;
+  remainingPreview: HiveChannelPayoutPreview;
+};
+
 export type HiveChannelContributionShare = {
   memberPubkey: string | null;
   amountSats: number;
@@ -92,6 +138,7 @@ export type HiveChannelContributionShare = {
 
 export type HiveChannelWalletSummary = {
   channelId: string;
+  hasLocalSeed: boolean;
   seedPath: string;
   balanceSats: number;
   lightningBalanceSats: number;
@@ -280,6 +327,20 @@ export function generateHiveChannelWalletBolt12Offer(channelId: string) {
   );
 }
 
+export function previewHiveChannelWalletPayouts(channelId: string) {
+  return invokeTauri<HiveChannelPayoutPreview>(
+    "preview_hive_channel_wallet_payouts",
+    { channelId },
+  );
+}
+
+export function executeHiveChannelWalletPayouts(channelId: string) {
+  return invokeTauri<HiveChannelPayoutExecution>(
+    "execute_hive_channel_wallet_payouts",
+    { channelId },
+  );
+}
+
 export function revealHiveChannelWalletSeed(channelId: string) {
   return invokeTauri<string>("reveal_hive_channel_wallet_seed", { channelId });
 }
@@ -289,6 +350,17 @@ export function sendHiveChannelFunds(input: {
   amountSats: number;
 }) {
   return invokeTauri<WalletPaymentResult>("send_hive_channel_funds", input);
+}
+
+export function sendHiveChannelWalletPayment(input: {
+  channelId: string;
+  amountSats: number;
+  payable: string;
+}) {
+  return invokeTauri<WalletPaymentResult>(
+    "send_hive_channel_wallet_payment",
+    input,
+  );
 }
 
 export function sendMessageKudos(input: {

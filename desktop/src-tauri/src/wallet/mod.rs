@@ -27,8 +27,10 @@ use format::{
 };
 pub(crate) use hive::create_hive_channel_wallet;
 pub use hive::{
-    generate_hive_channel_wallet_bolt12_offer, get_hive_channel_wallet_summary,
-    get_hive_channel_wallet_transactions, reveal_hive_channel_wallet_seed, send_hive_channel_funds,
+    execute_hive_channel_wallet_payouts, generate_hive_channel_wallet_bolt12_offer,
+    get_hive_channel_wallet_summary, get_hive_channel_wallet_transactions,
+    preview_hive_channel_wallet_payouts, reveal_hive_channel_wallet_seed, send_hive_channel_funds,
+    send_hive_channel_wallet_payment,
 };
 use parser::parse_wallet_command;
 use runtime::{
