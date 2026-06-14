@@ -585,14 +585,18 @@ export function MessageComposer({
           setBountyAmountSats(null);
           setSendError(null);
         },
-        onRestoreExtras: () => {
+        onRestoreExtras: (error) => {
           setContent(savedContent);
           contentRef.current = savedContent;
           richText.setContent(savedContent);
           media.setPendingImeta(savedImeta);
           setIsKudosActive(savedKudos);
           setBountyAmountSats(savedBountyAmountSats);
-          setSendError("Failed to send message.");
+          setSendError(
+            error instanceof Error && error.message
+              ? error.message
+              : "Failed to send message.",
+          );
         },
         pendingImeta: currentPendingImeta,
         sendOptions: {
@@ -609,6 +613,7 @@ export function MessageComposer({
     }
   }, [
     channelLinks.clearChannels,
+    customEmoji,
     emojiAutocomplete.clearEmojis,
     media.pendingImetaRef,
     media.setPendingImeta,
@@ -917,6 +922,16 @@ export function MessageComposer({
               </div>
             )}
 
+            {isKudosActive ? (
+              <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
+            ) : null}
+            {bountyAmountSats !== null ? (
+              <ComposerBountyChip
+                amountSats={bountyAmountSats}
+                onRemove={() => setBountyAmountSats(null)}
+              />
+            ) : null}
+
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
             <div
               className="rich-text-composer max-h-32 overflow-y-auto"
@@ -938,16 +953,6 @@ export function MessageComposer({
                   Dismiss
                 </button>
               </div>
-            ) : null}
-
-            {isKudosActive ? (
-              <ComposerKudosChip onRemove={() => setIsKudosActive(false)} />
-            ) : null}
-            {bountyAmountSats !== null ? (
-              <ComposerBountyChip
-                amountSats={bountyAmountSats}
-                onRemove={() => setBountyAmountSats(null)}
-              />
             ) : null}
 
             {paymentAnnotation && !editTarget ? (

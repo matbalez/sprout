@@ -46,6 +46,7 @@ import {
   echoKudosPayment,
   payForKudosMessage,
 } from "@/features/messages/lib/sendMessageKudos";
+import { shouldUseValidatedMessageSendPath } from "@/features/messages/lib/messageSendPath";
 import {
   echoSharedAgentInvocationPayments,
   payForSharedAgentInvocations,
@@ -464,10 +465,14 @@ export function useSendMessageMutation(
       // the relay's tag validation runs. The WebSocket path emits no extra
       // tags, so emoji-only messages would otherwise lose their emoji tag.
       if (
-        parentEventId ||
-        imetaTags.length > 0 ||
-        emojiTags.length > 0 ||
-        paidPostReceiptEventId
+        shouldUseValidatedMessageSendPath({
+          annotationTags,
+          emojiTags,
+          mentionTags,
+          mediaTags: imetaTags,
+          paidPostReceiptEventId,
+          parentEventId,
+        })
       ) {
         const cachedMessages =
           queryClient.getQueryData<RelayEvent[]>(

@@ -24,6 +24,10 @@ import {
   type BotActivityAgent,
 } from "@/features/channels/ui/BotActivityBar";
 import {
+  sendChannelPaneMessage,
+  type ChannelPaneMessageSendOptions,
+} from "@/features/channels/lib/channelPaneSend";
+import {
   containsWelcomePersonaMention,
   WelcomeComposerBanner,
   WELCOME_COMPOSER_BANNER_DISMISS_DURATION_SECONDS,
@@ -97,7 +101,7 @@ type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    options?: ChannelPaneMessageSendOptions,
   ) => Promise<void>;
   onSendVideoReviewComment?: (
     message: TimelineMessage,
@@ -110,7 +114,7 @@ type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
-    options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    options?: ChannelPaneMessageSendOptions,
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
   onToggleReaction?: (
@@ -439,17 +443,22 @@ export const ChannelPane = React.memo(function ChannelPane({
       content: string,
       mentionPubkeys: string[],
       mediaTags?: string[][],
+      options?: ChannelPaneMessageSendOptions,
     ) => {
       const shouldCompleteWelcomeBanner =
         isActiveWelcomeChannel &&
         (containsWelcomePersonaMention(content) ||
           mentionsKnownAgent(mentionPubkeys, knownAgentPubkeys));
 
-      await onSendMessage(content, mentionPubkeys, mediaTags);
-
-      if (shouldCompleteWelcomeBanner) {
-        completeWelcomeComposerBanner();
-      }
+      await sendChannelPaneMessage({
+        completeWelcomeComposerBanner,
+        content,
+        mediaTags,
+        mentionPubkeys,
+        onSendMessage,
+        options,
+        shouldCompleteWelcomeBanner,
+      });
     },
     [
       completeWelcomeComposerBanner,

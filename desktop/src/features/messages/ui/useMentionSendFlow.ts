@@ -31,7 +31,7 @@ type PendingNonMemberMentionSend = {
   mentionPubkeys: string[];
   nonMemberPubkeys: string[];
   onClearExtras?: () => void;
-  onRestoreExtras?: () => void;
+  onRestoreExtras?: (error: unknown) => void;
   outgoingTags?: string[][];
   readyAgentPubkeys?: string[];
   savedContent: string;
@@ -47,7 +47,7 @@ type SendMessageOptions = {
 
 type SendMessageWithMentionFlowInput = {
   onClearExtras?: () => void;
-  onRestoreExtras?: () => void;
+  onRestoreExtras?: (error: unknown) => void;
   pendingImeta: ImetaMedia[];
   sendOptions?: SendMessageOptions;
   sentDraftKey: string | null | undefined;
@@ -376,12 +376,12 @@ export function useMentionSendFlow({
           if (draft.sentDraftKey) {
             drafts.clearDraft(draft.sentDraftKey);
           }
-        } catch {
+        } catch (error) {
           setContent(draft.savedContent);
           contentRef.current = draft.savedContent;
           richText.setContent(draft.savedContent);
           setPendingImeta(draft.savedImeta);
-          draft.onRestoreExtras?.();
+          draft.onRestoreExtras?.(error);
         }
       } finally {
         isCompleteSendPendingRef.current = false;
