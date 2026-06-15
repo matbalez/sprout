@@ -12,9 +12,11 @@ use crate::app_state::AppState;
 use super::{
     provider::{available_wallet_providers, WalletProvider},
     types::{
-        WalletAgentPaymentAnnotation, WalletAgentPaymentSettings, WalletBotMessage, WalletSource,
-        WalletSourceConfig, AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME,
-        EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME,
+        available_cashu_mints, validate_cashu_mint_url, WalletAgentPaymentAnnotation,
+        WalletAgentPaymentSettings, WalletBotMessage, WalletSource, WalletSourceConfig,
+        AGENT_PAYMENT_ANNOTATIONS_FILE_NAME, AGENT_PAYMENT_SETTINGS_FILE_NAME, CASHU_DB_FILE_NAME,
+        CASHU_DIR_NAME, CASHU_MINTS_DIR_NAME, CASHU_MINT_FILE_NAME, CASHU_SEED_FILE_NAME,
+        DEFAULT_CASHU_MINT_URL, EXISTING_CLIENT_CREDENTIAL_FILE_NAME, EXISTING_LEXE_DATA_DIR_NAME,
         EXISTING_OFFER_FILE_NAME, LEXE_DATA_DIR_NAME, MDK_HOME_DIR_NAME, MDK_PORT_FILE_NAME,
         MESSAGES_FILE_NAME, OFFER_FILE_NAME, SEED_FILE_NAME, WALLETBOT_WELCOME, WALLET_DIR_NAME,
         WALLET_PROVIDERS_DIR_NAME, WALLET_PROVIDER_FILE_NAME, WALLET_SOURCE_FILE_NAME,
@@ -31,12 +33,22 @@ pub(crate) struct WalletStorage {
     pub existing_offer_path: PathBuf,
     pub wallet_provider_path: PathBuf,
     pub wallet_source_path: PathBuf,
+    pub cashu_dir: PathBuf,
+    pub cashu_mint_path: PathBuf,
     pub mdk_home_dir: PathBuf,
     pub mdk_port_path: PathBuf,
     pub existing_client_credential_path: PathBuf,
     pub messages_path: PathBuf,
     pub agent_payment_annotations_path: PathBuf,
     pub agent_payment_settings_path: PathBuf,
+}
+
+#[derive(Clone)]
+pub(crate) struct CashuMintStorage {
+    pub dir: PathBuf,
+    pub seed_path: PathBuf,
+    pub db_path: PathBuf,
+    pub offer_path: PathBuf,
 }
 
 impl WalletStorage {
@@ -49,6 +61,10 @@ impl WalletStorage {
         let mdk_provider_dir = root_dir
             .join(WALLET_PROVIDERS_DIR_NAME)
             .join(WalletProvider::Mdk.as_storage_value());
+        let cashu_provider_dir = root_dir
+            .join(WALLET_PROVIDERS_DIR_NAME)
+            .join(WalletProvider::Cashu.as_storage_value());
+        let cashu_dir = cashu_provider_dir.join(CASHU_DIR_NAME);
         Ok(Self {
             lexe_data_dir: root_dir.join(LEXE_DATA_DIR_NAME),
             existing_lexe_data_dir: root_dir.join(EXISTING_LEXE_DATA_DIR_NAME),
@@ -57,6 +73,8 @@ impl WalletStorage {
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
             wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
+            cashu_mint_path: cashu_provider_dir.join(CASHU_MINT_FILE_NAME),
+            cashu_dir,
             mdk_home_dir: mdk_provider_dir.join(MDK_HOME_DIR_NAME),
             mdk_port_path: mdk_provider_dir.join(MDK_PORT_FILE_NAME),
             existing_client_credential_path: root_dir.join(EXISTING_CLIENT_CREDENTIAL_FILE_NAME),
@@ -92,11 +110,14 @@ impl WalletStorage {
         if !provider.capabilities().can_connect_existing_wallet {
             source = WalletSource::Default;
         }
+        let cashu_mint_url = load_cashu_mint_url(self)?;
 
         Ok(WalletSourceConfig {
             provider,
             available_providers: available_wallet_providers(),
             source,
+            cashu_mint_url,
+            cashu_mint_options: available_cashu_mints(),
             seed_path: self.seed_path.to_string_lossy().to_string(),
             existing_client_credential_path: self
                 .existing_client_credential_path
@@ -130,6 +151,35 @@ impl WalletStorage {
                 .join(provider)
                 .join(format!("{}_{}", source.as_storage_value(), OFFER_FILE_NAME)),
         }
+    }
+
+    pub(crate) fn selected_cashu_storage(&self) -> Result<CashuMintStorage, String> {
+        let mint_url = load_cashu_mint_url(self)?;
+        self.cashu_storage_for_mint(&mint_url)
+    }
+
+    pub(crate) fn cashu_storage_for_mint(
+        &self,
+        mint_url: &str,
+    ) -> Result<CashuMintStorage, String> {
+        let mint_url = validate_cashu_mint_url(mint_url)?;
+        let cashu_provider_dir = self
+            .root_dir
+            .join(WALLET_PROVIDERS_DIR_NAME)
+            .join(WalletProvider::Cashu.as_storage_value());
+        let dir = if mint_url == DEFAULT_CASHU_MINT_URL {
+            self.cashu_dir.clone()
+        } else {
+            cashu_provider_dir
+                .join(CASHU_MINTS_DIR_NAME)
+                .join(cashu_mint_slug(&mint_url))
+        };
+        Ok(CashuMintStorage {
+            seed_path: dir.join(CASHU_SEED_FILE_NAME),
+            db_path: dir.join(CASHU_DB_FILE_NAME),
+            offer_path: dir.join(OFFER_FILE_NAME),
+            dir,
+        })
     }
 }
 
@@ -165,6 +215,23 @@ pub(crate) fn save_wallet_source(
 ) -> Result<(), String> {
     storage.ensure_dirs()?;
     write_atomic_text(&storage.wallet_source_path, source.as_storage_value())
+}
+
+pub(crate) fn load_cashu_mint_url(storage: &WalletStorage) -> Result<String, String> {
+    storage.ensure_dirs()?;
+    match std::fs::read_to_string(&storage.cashu_mint_path) {
+        Ok(value) => validate_cashu_mint_url(&value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(DEFAULT_CASHU_MINT_URL.to_string())
+        }
+        Err(error) => Err(format!("read Cashu mint selection: {error}")),
+    }
+}
+
+pub(crate) fn save_cashu_mint_url(storage: &WalletStorage, mint_url: &str) -> Result<(), String> {
+    storage.ensure_dirs()?;
+    let mint_url = validate_cashu_mint_url(mint_url)?;
+    write_atomic_text(&storage.cashu_mint_path, &mint_url)
 }
 
 pub(crate) fn load_existing_client_credential(
@@ -206,7 +273,7 @@ pub(crate) fn save_existing_client_credential(
     Ok(())
 }
 
-fn write_atomic_secret_text(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn write_atomic_secret_text(path: &Path, content: &str) -> Result<(), String> {
     use atomic_write_file::AtomicWriteFile;
 
     if let Some(parent) = path.parent() {
@@ -391,6 +458,30 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+fn cashu_mint_slug(mint_url: &str) -> String {
+    let digest = hex::encode(Sha256::digest(mint_url.as_bytes()));
+    let mut slug = mint_url
+        .trim()
+        .trim_end_matches('/')
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    slug = slug.trim_matches('-').to_string();
+    if slug.is_empty() {
+        format!("mint-{}", &digest[..8])
+    } else {
+        format!("{slug}-{}", &digest[..8])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +495,14 @@ mod tests {
             existing_offer_path: root_dir.join(EXISTING_OFFER_FILE_NAME),
             wallet_provider_path: root_dir.join(WALLET_PROVIDER_FILE_NAME),
             wallet_source_path: root_dir.join(WALLET_SOURCE_FILE_NAME),
+            cashu_dir: root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(WalletProvider::Cashu.as_storage_value())
+                .join(CASHU_DIR_NAME),
+            cashu_mint_path: root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(WalletProvider::Cashu.as_storage_value())
+                .join(CASHU_MINT_FILE_NAME),
             mdk_home_dir: root_dir
                 .join(WALLET_PROVIDERS_DIR_NAME)
                 .join(WalletProvider::Mdk.as_storage_value())
@@ -428,9 +527,15 @@ mod tests {
         let config = storage.wallet_source_config().unwrap();
 
         assert_eq!(config.provider, WalletProvider::Lexe);
-        assert_eq!(config.available_providers.len(), 2);
+        assert_eq!(config.available_providers.len(), 3);
         assert_eq!(config.available_providers[0].provider, WalletProvider::Lexe);
         assert_eq!(config.available_providers[1].provider, WalletProvider::Mdk);
+        assert_eq!(
+            config.available_providers[2].provider,
+            WalletProvider::Cashu
+        );
+        assert_eq!(config.cashu_mint_url, DEFAULT_CASHU_MINT_URL);
+        assert_eq!(config.cashu_mint_options.len(), 2);
     }
 
     #[test]
@@ -459,6 +564,56 @@ mod tests {
             storage.offer_path_for_provider_source(WalletProvider::Lexe, WalletSource::Existing),
             storage.existing_offer_path
         );
+    }
+
+    #[test]
+    fn cashu_mint_selection_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        assert_eq!(
+            load_cashu_mint_url(&storage).unwrap(),
+            DEFAULT_CASHU_MINT_URL
+        );
+
+        save_cashu_mint_url(&storage, "https://ldk.thesimplekid.dev").unwrap();
+
+        assert_eq!(
+            load_cashu_mint_url(&storage).unwrap(),
+            "https://ldk.thesimplekid.dev/"
+        );
+        assert!(save_cashu_mint_url(&storage, "https://example.test").is_err());
+    }
+
+    #[test]
+    fn cashu_mint_storage_preserves_default_path_and_isolates_other_mints() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = test_storage(temp.path().join("wallet"));
+
+        let default_storage = storage
+            .cashu_storage_for_mint(DEFAULT_CASHU_MINT_URL)
+            .unwrap();
+        let simplekid_storage = storage
+            .cashu_storage_for_mint("https://ldk.thesimplekid.dev/")
+            .unwrap();
+
+        assert_eq!(default_storage.dir, storage.cashu_dir);
+        assert_eq!(
+            default_storage.seed_path,
+            storage.cashu_dir.join(CASHU_SEED_FILE_NAME)
+        );
+        assert_eq!(
+            default_storage.db_path,
+            storage.cashu_dir.join(CASHU_DB_FILE_NAME)
+        );
+        assert_ne!(simplekid_storage.dir, storage.cashu_dir);
+        assert!(simplekid_storage.dir.starts_with(
+            storage
+                .root_dir
+                .join(WALLET_PROVIDERS_DIR_NAME)
+                .join(WalletProvider::Cashu.as_storage_value())
+                .join(CASHU_MINTS_DIR_NAME)
+        ));
     }
 
     #[test]

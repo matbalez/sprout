@@ -17,6 +17,8 @@ import { toast } from "sonner";
 
 import {
   formatBitcoinAmount,
+  generateCashuWalletBolt12Offer,
+  getCashuWalletDiagnostics,
   getMdkAgentWalletStatus,
   getLightningWalletAgentPaymentSettings,
   getLightningWalletSummary,
@@ -25,6 +27,7 @@ import {
   refreshLightningWallet,
   revealLightningWalletSeed,
   restartMdkAgentWalletDaemon,
+  setCashuWalletMint,
   setLightningWalletAgentPaymentSettings,
   setLightningWalletProvider,
   setLightningWalletSource,
@@ -37,6 +40,7 @@ import {
   type WalletSummary,
 } from "@/features/wallet/api";
 import {
+  formatWalletTransactionMeta,
   formatWalletTransactionTitle,
   walletTransactionNotes,
 } from "@/features/wallet/transactions";
@@ -87,6 +91,19 @@ const mdkProviderCapabilities = {
   canPayWithPreimage: true,
 };
 
+const cashuProviderCapabilities = {
+  canCreateWallet: true,
+  canConnectExistingWallet: false,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: false,
+  canCreateBolt11Invoice: false,
+  canPayWithPreimage: false,
+};
+
 const defaultWalletProviderOptions: WalletProviderOption[] = [
   {
     provider: "lexe",
@@ -101,6 +118,24 @@ const defaultWalletProviderOptions: WalletProviderOption[] = [
     paymentRail: "mdk-bolt12",
     available: true,
     capabilities: mdkProviderCapabilities,
+  },
+  {
+    provider: "cashu",
+    label: walletProviderLabel("cashu"),
+    paymentRail: "cashu-mint-bolt12",
+    available: true,
+    capabilities: cashuProviderCapabilities,
+  },
+];
+
+const defaultCashuMintOptions = [
+  {
+    label: "Mountainlake M7",
+    url: "https://m7.mountainlake.io/",
+  },
+  {
+    label: "Simplekid",
+    url: "https://ldk.thesimplekid.dev/",
   },
 ];
 
@@ -139,7 +174,17 @@ async function copyToClipboard(value: string, label: string) {
   toast.success(`${label} copied`);
 }
 
-function SummaryContent({ summary }: { summary: WalletSummary }) {
+function SummaryContent({
+  canRegenerateOffer = false,
+  isRegeneratingOffer = false,
+  onRegenerateOffer,
+  summary,
+}: {
+  canRegenerateOffer?: boolean;
+  isRegeneratingOffer?: boolean;
+  onRegenerateOffer?: () => void;
+  summary: WalletSummary;
+}) {
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border/70 bg-background/70 px-4 py-3">
@@ -164,15 +209,34 @@ function SummaryContent({ summary }: { summary: WalletSummary }) {
           <p className="text-xs font-medium text-muted-foreground">
             Add funds to your wallet (via BOLT12)
           </p>
-          <Button
-            onClick={() => copyToClipboard(summary.bolt12Offer, "BOLT12")}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            <Copy className="h-4 w-4" />
-            Copy
-          </Button>
+          <div className="flex items-center gap-2">
+            {canRegenerateOffer ? (
+              <Button
+                data-testid="settings-cashu-generate-offer"
+                disabled={isRegeneratingOffer}
+                onClick={onRegenerateOffer}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {isRegeneratingOffer ? (
+                  <Spinner className="h-4 w-4" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {isRegeneratingOffer ? "Generating..." : "New offer"}
+              </Button>
+            ) : null}
+            <Button
+              onClick={() => copyToClipboard(summary.bolt12Offer, "BOLT12")}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Copy className="h-4 w-4" />
+              Copy
+            </Button>
+          </div>
         </div>
         <div className="flex justify-center rounded-lg border border-border/70 bg-background/70 px-3 py-4">
           <div className="rounded-lg bg-white p-3 shadow-sm">
@@ -264,7 +328,72 @@ function WalletProviderSettings({
           <span>
             {pendingProvider === "mdk"
               ? "Provisioning new wallet..."
-              : `Switching to ${walletProviderLabel(pendingProvider ?? selectedProvider)}...`}
+              : pendingProvider === "cashu"
+                ? "Provisioning local Cashu wallet..."
+                : `Switching to ${walletProviderLabel(pendingProvider ?? selectedProvider)}...`}
+          </span>
+        </div>
+      ) : null}
+      {actionError ? (
+        <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(actionError)}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CashuMintSettings({
+  actionError,
+  config,
+  isPending,
+  onMintChange,
+  pendingMintUrl,
+}: {
+  actionError: unknown;
+  config: WalletSourceConfig | undefined;
+  isPending: boolean;
+  onMintChange: (mintUrl: string) => void;
+  pendingMintUrl: string | undefined;
+}) {
+  const options = config?.cashuMintOptions?.length
+    ? config.cashuMintOptions
+    : defaultCashuMintOptions;
+  const selectedMintUrl = config?.cashuMintUrl ?? options[0]?.url ?? "";
+  const pendingMint = options.find((option) => option.url === pendingMintUrl);
+
+  return (
+    <div className="mb-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+      <label
+        className="mb-2 block text-sm font-medium"
+        htmlFor="cashu-mint-select"
+      >
+        Cashu mint
+      </label>
+      <select
+        aria-label="Cashu mint"
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-hidden focus:border-ring focus:ring-2 focus:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-70"
+        disabled={isPending || options.length < 2}
+        id="cashu-mint-select"
+        onChange={(event) => onMintChange(event.currentTarget.value)}
+        value={selectedMintUrl}
+      >
+        {options.map((option) => (
+          <option key={option.url} value={option.url}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <p className="mt-2 break-all text-xs text-muted-foreground">
+        {selectedMintUrl}
+      </p>
+      {isPending ? (
+        <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+          <Spinner className="h-4 w-4" />
+          <span>
+            Switching to {pendingMint?.label ?? pendingMintUrl ?? "Cashu mint"}
+            ...
           </span>
         </div>
       ) : null}
@@ -629,6 +758,61 @@ function AgentPaymentSettings({
   );
 }
 
+function CashuDiagnosticsControls({
+  error,
+  isPending,
+  report,
+  onCopyDiagnostics,
+}: {
+  error: unknown;
+  isPending: boolean;
+  report: string | null;
+  onCopyDiagnostics: () => void;
+}) {
+  return (
+    <div className="mt-4 rounded-lg border border-border/70 bg-background/70 px-3 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="flex items-center gap-2 text-sm font-medium">
+            <TriangleAlert className="h-4 w-4" />
+            Cashu diagnostics
+          </p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Mint state, quote status, and send timeline.
+          </p>
+        </div>
+        <Button
+          disabled={isPending}
+          onClick={onCopyDiagnostics}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          {isPending ? (
+            <Spinner className="h-4 w-4" />
+          ) : (
+            <Copy className="h-4 w-4" />
+          )}
+          Copy report
+        </Button>
+      </div>
+      {error ? (
+        <div className="mt-3 flex items-start gap-2 text-sm text-destructive">
+          <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{errorMessage(error)}</span>
+        </div>
+      ) : null}
+      {report ? (
+        <Textarea
+          className="mt-3 min-h-[12rem] resize-y font-mono text-xs"
+          readOnly
+          value={report}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export function LightningWalletSettingsCard() {
   const queryClient = useQueryClient();
   const [sourceDraft, setSourceDraft] = useState<WalletSource>("default");
@@ -637,9 +821,13 @@ export function LightningWalletSettingsCard() {
   const [mdkStatusCheckedAt, setMdkStatusCheckedAt] = useState<number | null>(
     null,
   );
+  const [cashuDiagnosticsReport, setCashuDiagnosticsReport] = useState<
+    string | null
+  >(null);
   const summaryQuery = useQuery({
     queryKey: walletSummaryQueryKey,
     queryFn: getLightningWalletSummary,
+    refetchOnMount: "always",
     staleTime: 30_000,
   });
   const sourceConfigQuery = useQuery({
@@ -655,7 +843,8 @@ export function LightningWalletSettingsCard() {
   const transactionsQuery = useQuery({
     queryKey: walletTransactionsQueryKey,
     queryFn: () => getLightningWalletTransactions(20),
-    enabled: summaryQuery.isSuccess,
+    enabled: summaryQuery.isSuccess && !summaryQuery.isFetching,
+    refetchOnMount: "always",
     staleTime: 30_000,
   });
   const refreshMutation = useMutation({
@@ -665,6 +854,41 @@ export function LightningWalletSettingsCard() {
       void queryClient.invalidateQueries({
         queryKey: walletTransactionsQueryKey,
       });
+    },
+  });
+  const cashuGenerateOfferMutation = useMutation({
+    mutationFn: generateCashuWalletBolt12Offer,
+    onSuccess: async (summary) => {
+      const previousOffer = summaryQuery.data?.bolt12Offer.trim();
+      queryClient.setQueryData(walletSummaryQueryKey, summary);
+      toast.success(
+        previousOffer && previousOffer === summary.bolt12Offer.trim()
+          ? "Generated a fresh receive quote; offer text stayed the same"
+          : "Generated new BOLT12 offer",
+      );
+      await queryClient.invalidateQueries({
+        queryKey: walletTransactionsQueryKey,
+      });
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error));
+    },
+  });
+  const cashuMintMutation = useMutation({
+    mutationFn: setCashuWalletMint,
+    onSuccess: (config) => {
+      queryClient.setQueryData(walletSourceQueryKey, config);
+      void queryClient.invalidateQueries({ queryKey: walletSummaryQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: walletTransactionsQueryKey,
+      });
+      const mint = config.cashuMintOptions.find(
+        (option) => option.url === config.cashuMintUrl,
+      );
+      toast.success(`Cashu mint set to ${mint?.label ?? config.cashuMintUrl}`);
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error));
     },
   });
   const seedMutation = useMutation({
@@ -726,6 +950,23 @@ export function LightningWalletSettingsCard() {
       );
     },
   });
+  const cashuDiagnosticsMutation = useMutation({
+    mutationFn: getCashuWalletDiagnostics,
+    onMutate: () => {
+      setCashuDiagnosticsReport(null);
+    },
+    onSuccess: async (report) => {
+      setCashuDiagnosticsReport(report);
+      try {
+        await copyToClipboard(report, "Cashu diagnostics");
+      } catch {
+        toast.info("Cashu diagnostics shown below");
+      }
+    },
+    onError: (error) => {
+      toast.error(errorMessage(error));
+    },
+  });
   const summary = summaryQuery.data;
   const sourceConfig = sourceConfigQuery.data;
   const agentPaymentSettings = agentPaymentSettingsQuery.data;
@@ -740,10 +981,8 @@ export function LightningWalletSettingsCard() {
   const canConfigureWalletSource =
     selectedProviderOption?.capabilities.canConnectExistingWallet ?? true;
   const pendingProvider = providerMutation.variables?.provider;
-  const pendingProviderLabel = walletProviderLabel(
-    pendingProvider ?? selectedProvider,
-  );
   const isMdkSelected = selectedProvider === "mdk";
+  const isCashuSelected = selectedProvider === "cashu";
   const mdkStatusQuery = useQuery({
     queryKey: mdkAgentWalletStatusQueryKey,
     queryFn: getMdkAgentWalletStatus,
@@ -787,6 +1026,12 @@ export function LightningWalletSettingsCard() {
     }
   }
 
+  function handleCashuMintChange(mintUrl: string) {
+    if (mintUrl !== sourceConfig?.cashuMintUrl) {
+      cashuMintMutation.mutate({ mintUrl });
+    }
+  }
+
   function handleSaveExistingCredential() {
     sourceMutation.mutate({
       source: "existing",
@@ -825,7 +1070,11 @@ export function LightningWalletSettingsCard() {
           </p>
         </div>
         <Button
-          disabled={refreshMutation.isPending || providerMutation.isPending}
+          disabled={
+            refreshMutation.isPending ||
+            providerMutation.isPending ||
+            cashuMintMutation.isPending
+          }
           onClick={() => refreshMutation.mutate()}
           size="sm"
           type="button"
@@ -850,14 +1099,17 @@ export function LightningWalletSettingsCard() {
         pendingProvider={pendingProvider}
       />
 
-      {providerMutation.isPending ? (
-        <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-4 text-sm text-muted-foreground">
-          <Spinner className="h-4 w-4" />
-          {pendingProvider === "mdk"
-            ? "Provisioning new wallet..."
-            : `Switching to ${pendingProviderLabel}...`}
-        </div>
-      ) : summaryQuery.isPending ? (
+      {isCashuSelected && !providerMutation.isPending ? (
+        <CashuMintSettings
+          actionError={cashuMintMutation.error}
+          config={sourceConfig}
+          isPending={cashuMintMutation.isPending}
+          onMintChange={handleCashuMintChange}
+          pendingMintUrl={cashuMintMutation.variables?.mintUrl}
+        />
+      ) : null}
+
+      {providerMutation.isPending ? null : summaryQuery.isPending ? (
         <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/70 px-3 py-4 text-sm text-muted-foreground">
           <Spinner className="h-4 w-4" />
           Loading wallet...
@@ -868,7 +1120,14 @@ export function LightningWalletSettingsCard() {
           <span>{errorMessage(summaryQuery.error)}</span>
         </div>
       ) : summary ? (
-        <SummaryContent summary={summary} />
+        <SummaryContent
+          canRegenerateOffer={isCashuSelected}
+          isRegeneratingOffer={
+            cashuGenerateOfferMutation.isPending || cashuMintMutation.isPending
+          }
+          onRegenerateOffer={() => cashuGenerateOfferMutation.mutate()}
+          summary={summary}
+        />
       ) : null}
 
       {isMdkSelected && !providerMutation.isPending ? (
@@ -882,6 +1141,15 @@ export function LightningWalletSettingsCard() {
           onRestart={() => mdkRestartMutation.mutate()}
           restartError={mdkRestartMutation.error}
           status={mdkStatusQuery.data}
+        />
+      ) : null}
+
+      {isCashuSelected && !providerMutation.isPending ? (
+        <CashuDiagnosticsControls
+          error={cashuDiagnosticsMutation.error}
+          isPending={cashuDiagnosticsMutation.isPending}
+          report={cashuDiagnosticsReport}
+          onCopyDiagnostics={() => cashuDiagnosticsMutation.mutate()}
         />
       ) : null}
 
@@ -904,17 +1172,20 @@ export function LightningWalletSettingsCard() {
         />
       ) : null}
 
-      <AgentPaymentSettings
-        checked={agentPaymentSettings?.defaultAgentsToLexe ?? true}
-        error={
-          agentPaymentSettingsQuery.error ?? agentPaymentSettingsMutation.error
-        }
-        isLoading={agentPaymentSettingsQuery.isPending}
-        isPending={agentPaymentSettingsMutation.isPending}
-        onCheckedChange={(defaultAgentsToLexe) =>
-          agentPaymentSettingsMutation.mutate({ defaultAgentsToLexe })
-        }
-      />
+      {selectedProvider === "lexe" ? (
+        <AgentPaymentSettings
+          checked={agentPaymentSettings?.defaultAgentsToLexe ?? true}
+          error={
+            agentPaymentSettingsQuery.error ??
+            agentPaymentSettingsMutation.error
+          }
+          isLoading={agentPaymentSettingsQuery.isPending}
+          isPending={agentPaymentSettingsMutation.isPending}
+          onCheckedChange={(defaultAgentsToLexe) =>
+            agentPaymentSettingsMutation.mutate({ defaultAgentsToLexe })
+          }
+        />
+      ) : null}
 
       <div className="mt-4">
         <div className="mb-2 flex items-center gap-2">
@@ -935,6 +1206,7 @@ export function LightningWalletSettingsCard() {
           ) : transactionsQuery.data?.length ? (
             transactionsQuery.data.map((tx) => {
               const notes = walletTransactionNotes(tx);
+              const metadata = formatWalletTransactionMeta(tx);
 
               return (
                 <div
@@ -950,10 +1222,7 @@ export function LightningWalletSettingsCard() {
                     </p>
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {tx.status}
-                    {tx.feesSats > 0
-                      ? ` · fee ${formatBitcoinAmount(tx.feesSats)}`
-                      : ""}
+                    {metadata}
                   </p>
                   {notes.length ? (
                     <p className="mt-1 break-words text-xs text-muted-foreground">

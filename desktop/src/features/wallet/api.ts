@@ -23,9 +23,10 @@ export type WalletSummary = {
   numChannels: number;
   numUsableChannels: number;
   bolt12Offer: string;
+  cashuMintUrl: string | null;
 };
 
-export type WalletProvider = "lexe" | "mdk";
+export type WalletProvider = "lexe" | "mdk" | "cashu";
 
 export type WalletProviderCapabilities = {
   canCreateWallet: boolean;
@@ -48,6 +49,11 @@ export type WalletProviderOption = {
   capabilities: WalletProviderCapabilities;
 };
 
+export type CashuMintOption = {
+  label: string;
+  url: string;
+};
+
 export type MdkAgentWalletStatus = {
   running: boolean;
   pid: number | null;
@@ -66,6 +72,8 @@ export type WalletSourceConfig = {
   provider: WalletProvider;
   availableProviders: WalletProviderOption[];
   source: WalletSource;
+  cashuMintUrl: string;
+  cashuMintOptions: CashuMintOption[];
   seedPath: string;
   existingClientCredentialPath: string;
   hasExistingClientCredential: boolean;
@@ -224,6 +232,8 @@ export function walletProviderLabel(provider: WalletProvider) {
       return "Lexe";
     case "mdk":
       return "MDK Agent Wallet";
+    case "cashu":
+      return "Cashu";
   }
 }
 
@@ -299,8 +309,16 @@ export function refreshLightningWallet() {
   return invokeTauri<WalletSummary>("refresh_lightning_wallet");
 }
 
+export function generateCashuWalletBolt12Offer() {
+  return invokeTauri<WalletSummary>("generate_cashu_wallet_bolt12_offer");
+}
+
 export function getLightningWalletSourceConfig() {
   return invokeTauri<WalletSourceConfig>("get_lightning_wallet_source_config");
+}
+
+export function setCashuWalletMint(input: { mintUrl: string }) {
+  return invokeTauri<WalletSourceConfig>("set_cashu_wallet_mint", input);
 }
 
 export function getLightningWalletAgentPaymentSettings() {
@@ -350,6 +368,10 @@ export function getLightningWalletTransactions(limit = 20) {
   return invokeTauri<WalletTransaction[]>("get_lightning_wallet_transactions", {
     limit,
   });
+}
+
+export function getCashuWalletDiagnostics() {
+  return invokeTauri<string>("get_cashu_wallet_diagnostics");
 }
 
 export function getUserWalletBolt12Offer(pubkey: string) {

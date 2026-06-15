@@ -1,5 +1,6 @@
 mod balance;
 mod broker;
+mod cashu;
 mod discovery;
 mod format;
 mod hive;
@@ -43,22 +44,24 @@ use runtime::{
 };
 use storage::{
     current_pubkey, load_agent_payment_annotations, load_agent_payment_settings,
-    load_existing_client_credential, load_root_seed, load_wallet_provider, load_wallet_source,
-    load_walletbot_messages, new_walletbot_message, save_agent_payment_settings,
-    save_existing_client_credential, save_wallet_provider, save_wallet_source,
-    save_walletbot_messages, walletbot_pubkey, WalletStorage,
+    load_cashu_mint_url, load_existing_client_credential, load_root_seed, load_wallet_provider,
+    load_wallet_source, load_walletbot_messages, new_walletbot_message,
+    save_agent_payment_settings, save_cashu_mint_url, save_existing_client_credential,
+    save_wallet_provider, save_wallet_source, save_walletbot_messages, walletbot_pubkey,
+    write_atomic_text, WalletStorage,
 };
 pub use tips::{
     send_channel_payment, send_message_kudos, send_message_tip,
     send_shared_agent_invocation_payment,
 };
+use types::{
+    validate_cashu_mint_url, WalletBotMessagesPayload, WalletCommand, WalletSource,
+    DEFAULT_TRANSACTION_LIMIT, MAX_TRANSACTION_LIMIT, WALLETBOT_MESSAGES_UPDATED,
+    WALLETBOT_WELCOME,
+};
 pub use types::{
     AgentPaymentBrokerConfig, WalletAgentPaymentSettings, WalletBotMessage, WalletPaymentResult,
     WalletRuntimeState, WalletSourceConfig, WalletSummary, WalletTransaction,
-};
-use types::{
-    WalletBotMessagesPayload, WalletCommand, WalletSource, DEFAULT_TRANSACTION_LIMIT,
-    MAX_TRANSACTION_LIMIT, WALLETBOT_MESSAGES_UPDATED, WALLETBOT_WELCOME,
 };
 
 #[tauri::command]
@@ -69,10 +72,21 @@ pub async fn get_lightning_wallet_summary(
     reset_cached_wallet_if_credentials_missing(&app, &state).await?;
     let storage = WalletStorage::from_app(&app)?;
     let active_provider = load_wallet_provider(&storage)?;
-    let active_source = load_wallet_source(&storage)?;
+    let active_source = if active_provider.capabilities().can_connect_existing_wallet {
+        load_wallet_source(&storage)?
+    } else {
+        WalletSource::Default
+    };
+    let active_cashu_mint_url = if active_provider == WalletProvider::Cashu {
+        Some(load_cashu_mint_url(&storage)?)
+    } else {
+        None
+    };
     if let Some(summary) = state.wallet_state.summary.lock().await.clone() {
         if summary.provider == active_provider
             && summary.wallet_source == active_source
+            && summary.cashu_mint_url == active_cashu_mint_url
+            && active_provider != WalletProvider::Cashu
             && summary.balance_sats > 0
         {
             return Ok(summary);
@@ -93,8 +107,59 @@ pub async fn refresh_lightning_wallet(
 }
 
 #[tauri::command]
+pub async fn generate_cashu_wallet_bolt12_offer(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WalletSummary, String> {
+    reset_cached_wallet_if_credentials_missing(&app, &state).await?;
+    let storage = WalletStorage::from_app(&app)?;
+    let provider = load_wallet_provider(&storage)?;
+    if provider != WalletProvider::Cashu {
+        return Err(
+            "Cashu offer regeneration is only available when Cashu is selected".to_string(),
+        );
+    }
+
+    let wallet = ensure_wallet(&app, &state).await?;
+    let offer = wallet.cashu_wallet()?.generate_bolt12_offer().await?;
+    let offer_path = storage.selected_cashu_storage()?.offer_path;
+    write_atomic_text(&offer_path, &offer)?;
+    *state.wallet_state.summary.lock().await = None;
+    build_wallet_summary(&app, &state).await
+}
+
+#[tauri::command]
 pub fn get_lightning_wallet_source_config(app: AppHandle) -> Result<WalletSourceConfig, String> {
     WalletStorage::from_app(&app)?.wallet_source_config()
+}
+
+#[tauri::command]
+pub async fn set_cashu_wallet_mint(
+    mint_url: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WalletSourceConfig, String> {
+    let storage = WalletStorage::from_app(&app)?;
+    let mint_url = validate_cashu_mint_url(&mint_url)?;
+    let previous_mint_url = load_cashu_mint_url(&storage)?;
+    let provider = load_wallet_provider(&storage)?;
+
+    if provider == WalletProvider::Cashu {
+        let wallet = cashu::CashuWallet::load_or_create(&storage, &mint_url).await?;
+        drop(wallet);
+    }
+
+    save_cashu_mint_url(&storage, &mint_url)?;
+    clear_wallet_cache(&state).await;
+    if provider == WalletProvider::Cashu {
+        if let Err(error) = build_wallet_summary(&app, &state).await {
+            let _ = save_cashu_mint_url(&storage, &previous_mint_url);
+            clear_wallet_cache(&state).await;
+            let _ = build_wallet_summary(&app, &state).await;
+            return Err(format!("switch Cashu mint to {mint_url}: {error}"));
+        }
+    }
+    storage.wallet_source_config()
 }
 
 #[tauri::command]
@@ -247,7 +312,21 @@ pub async fn get_lightning_wallet_transactions(
     let limit = limit
         .unwrap_or(DEFAULT_TRANSACTION_LIMIT)
         .clamp(1, MAX_TRANSACTION_LIMIT);
-    selected_wallet_transactions(&app, &state, limit).await
+    selected_wallet_transactions(&app, &state, limit, false).await
+}
+
+#[tauri::command]
+pub async fn get_cashu_wallet_diagnostics(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let wallet = ensure_wallet(&app, &state).await?;
+    if wallet.provider() != WalletProvider::Cashu {
+        return Err("Cashu diagnostics are only available when Cashu is selected".to_string());
+    }
+    let report = wallet.cashu_wallet()?.diagnostics_report().await?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("serialize Cashu diagnostics: {error}"))
 }
 
 #[tauri::command]
@@ -371,6 +450,7 @@ async fn sync_selected_wallet(app: &AppHandle, state: &AppState) -> Result<(), S
             .map(|_| ())
             .map_err(|error| format!("sync Lexe payments: {error}")),
         WalletProvider::Mdk => wallet.mdk_wallet()?.transactions(1).await.map(|_| ()),
+        WalletProvider::Cashu => wallet.cashu_wallet()?.sync().await,
     }
 }
 
@@ -401,6 +481,7 @@ async fn selected_wallet_transactions(
     app: &AppHandle,
     state: &AppState,
     limit: usize,
+    sync_cashu_first: bool,
 ) -> Result<Vec<WalletTransaction>, String> {
     let wallet = ensure_wallet(app, state).await?;
     match wallet.provider() {
@@ -425,12 +506,19 @@ async fn selected_wallet_transactions(
                 .collect())
         }
         WalletProvider::Mdk => wallet.mdk_wallet()?.transactions(limit).await,
+        WalletProvider::Cashu => {
+            wallet
+                .cashu_wallet()?
+                .transactions(limit, sync_cashu_first)
+                .await
+        }
     }
 }
 
 async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<WalletSummary, String> {
     let storage = WalletStorage::from_app(app)?;
     let source_config = storage.wallet_source_config()?;
+    let cashu_mint_url = source_config.cashu_mint_url.clone();
     let wallet = ensure_wallet(app, state).await?;
     let bolt12_offer = ensure_bolt12_offer(app, state).await?;
     spawn_current_profile_bolt12_offer_sync(app, bolt12_offer.clone(), "wallet summary");
@@ -460,6 +548,7 @@ async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<Walle
                 num_channels: info.num_channels,
                 num_usable_channels: info.num_usable_channels,
                 bolt12_offer,
+                cashu_mint_url: None,
             }
         }
         WalletProvider::Mdk => {
@@ -480,6 +569,31 @@ async fn build_wallet_summary(app: &AppHandle, state: &AppState) -> Result<Walle
                 num_channels: 0,
                 num_usable_channels: 0,
                 bolt12_offer,
+                cashu_mint_url: None,
+            }
+        }
+        WalletProvider::Cashu => {
+            let wallet = wallet.cashu_wallet()?;
+            wallet.sync().await?;
+            let balance_sats = wallet.balance_sats().await?;
+            let cashu_storage = storage.selected_cashu_storage()?;
+            WalletSummary {
+                provider: source_config.provider,
+                wallet_source: source_config.source,
+                has_existing_client_credential: source_config.has_existing_client_credential,
+                env: "mainnet-cashu-test-mint".to_string(),
+                seed_path: cashu_storage.seed_path.to_string_lossy().to_string(),
+                existing_client_credential_path: source_config.existing_client_credential_path,
+                balance_sats,
+                lightning_balance_sats: balance_sats,
+                lightning_sendable_balance_sats: balance_sats,
+                lightning_max_sendable_balance_sats: balance_sats,
+                onchain_balance_sats: 0,
+                onchain_trusted_balance_sats: 0,
+                num_channels: 0,
+                num_usable_channels: 0,
+                bolt12_offer,
+                cashu_mint_url: Some(cashu_mint_url),
             }
         }
     };
@@ -501,7 +615,7 @@ async fn get_balance_reply(app: &AppHandle, state: &AppState) -> Result<String, 
 }
 
 async fn get_transactions_reply(app: &AppHandle, state: &AppState) -> Result<String, String> {
-    let transactions = selected_wallet_transactions(app, state, 5).await?;
+    let transactions = selected_wallet_transactions(app, state, 5, true).await?;
 
     if transactions.is_empty() {
         return Ok("No recent transactions.".to_string());
@@ -543,6 +657,9 @@ async fn create_invoice_reply(
                 .mdk_wallet()?
                 .create_invoice(amount_sats, "Sprout WalletBot invoice")
                 .await?
+        }
+        WalletProvider::Cashu => {
+            return Err("Cashu wallet does not support BOLT11 invoice creation yet".to_string())
         }
     };
 
@@ -608,6 +725,7 @@ async fn send_payment(
             response.index.to_string()
         }
         WalletProvider::Mdk => wallet.mdk_wallet()?.send(&payable, amount_sats).await?,
+        WalletProvider::Cashu => wallet.cashu_wallet()?.send(&payable, amount_sats).await?,
     };
     *state.wallet_state.summary.lock().await = None;
 

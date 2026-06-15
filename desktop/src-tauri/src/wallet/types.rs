@@ -10,6 +10,11 @@ pub(crate) const WALLET_DIR_NAME: &str = "lexe-wallet";
 pub(crate) const LEXE_DATA_DIR_NAME: &str = "data";
 pub(crate) const EXISTING_LEXE_DATA_DIR_NAME: &str = "existing-data";
 pub(crate) const WALLET_PROVIDERS_DIR_NAME: &str = "providers";
+pub(crate) const CASHU_DIR_NAME: &str = "cashu";
+pub(crate) const CASHU_DB_FILE_NAME: &str = "wallet.redb";
+pub(crate) const CASHU_MINT_FILE_NAME: &str = "mint_url.txt";
+pub(crate) const CASHU_MINTS_DIR_NAME: &str = "mints";
+pub(crate) const CASHU_SEED_FILE_NAME: &str = "seed.hex";
 pub(crate) const MDK_HOME_DIR_NAME: &str = "home";
 pub(crate) const MDK_PORT_FILE_NAME: &str = "port.txt";
 pub(crate) const SEED_FILE_NAME: &str = "seedphrase.txt";
@@ -26,12 +31,15 @@ pub(crate) const WALLET_BOLT12_OFFER_DESCRIPTION: &str = "Buzz WalletBot BOLT12 
 pub(crate) const WALLETBOT_WELCOME: &str = "WalletBot is local to this Buzz app.\n\nAvailable commands:\n- help\n- get balance\n- get BOLT12\n- fund wallet\n- get transactions\n- create invoice for ₿1,000\n- send ₿500 to <payment target>";
 pub(crate) const DEFAULT_TRANSACTION_LIMIT: usize = 20;
 pub(crate) const MAX_TRANSACTION_LIMIT: usize = 100;
+pub(crate) const DEFAULT_CASHU_MINT_URL: &str = "https://m7.mountainlake.io/";
+pub(crate) const SIMPLEKID_CASHU_MINT_URL: &str = "https://ldk.thesimplekid.dev/";
 
 #[derive(Default)]
 pub struct WalletRuntimeState {
     pub(crate) wallet: tokio::sync::Mutex<Option<WalletProviderHandle>>,
     pub(crate) wallet_provider: tokio::sync::Mutex<Option<WalletProvider>>,
     pub(crate) wallet_source: tokio::sync::Mutex<Option<WalletSource>>,
+    pub(crate) cashu_mint_url: tokio::sync::Mutex<Option<String>>,
     pub(crate) summary: tokio::sync::Mutex<Option<WalletSummary>>,
     pub(crate) hive_wallets: tokio::sync::Mutex<HashMap<String, Arc<LexeWallet>>>,
 }
@@ -75,12 +83,54 @@ impl Serialize for WalletSource {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CashuMintOption {
+    pub label: &'static str,
+    pub url: &'static str,
+}
+
+pub(crate) fn available_cashu_mints() -> Vec<CashuMintOption> {
+    vec![
+        CashuMintOption {
+            label: "Mountainlake M7",
+            url: DEFAULT_CASHU_MINT_URL,
+        },
+        CashuMintOption {
+            label: "Simplekid",
+            url: SIMPLEKID_CASHU_MINT_URL,
+        },
+    ]
+}
+
+pub(crate) fn normalize_cashu_mint_url(value: &str) -> String {
+    let value = value.trim().trim_end_matches('/');
+    if value.is_empty() {
+        String::new()
+    } else {
+        format!("{value}/")
+    }
+}
+
+pub(crate) fn validate_cashu_mint_url(value: &str) -> Result<String, String> {
+    let normalized = normalize_cashu_mint_url(value);
+    if available_cashu_mints()
+        .iter()
+        .any(|option| option.url == normalized)
+    {
+        return Ok(normalized);
+    }
+    Err(format!("unsupported Cashu mint: {value}"))
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletSourceConfig {
     pub provider: WalletProvider,
     pub available_providers: Vec<WalletProviderOption>,
     pub source: WalletSource,
+    pub cashu_mint_url: String,
+    pub cashu_mint_options: Vec<CashuMintOption>,
     pub seed_path: String,
     pub existing_client_credential_path: String,
     pub has_existing_client_credential: bool,
@@ -104,6 +154,7 @@ pub struct WalletSummary {
     pub num_channels: usize,
     pub num_usable_channels: usize,
     pub bolt12_offer: String,
+    pub cashu_mint_url: Option<String>,
 }
 
 #[derive(Serialize)]

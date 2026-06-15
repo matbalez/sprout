@@ -18,11 +18,12 @@ use crate::{
 };
 
 use super::{
+    cashu::CashuWallet,
     mdk::MdkWallet,
     provider::{WalletProvider, WalletProviderHandle},
     storage::{
-        current_pubkey, load_existing_client_credential, load_root_seed, load_wallet_provider,
-        load_wallet_source, write_atomic_text, WalletStorage,
+        current_pubkey, load_cashu_mint_url, load_existing_client_credential, load_root_seed,
+        load_wallet_provider, load_wallet_source, write_atomic_text, WalletStorage,
     },
     types::{WalletSource, WALLET_BOLT12_OFFER_DESCRIPTION},
 };
@@ -35,11 +36,20 @@ pub(super) async fn ensure_wallet(
     storage.ensure_dirs()?;
     let provider = load_wallet_provider(&storage)?;
     let source = effective_wallet_source(provider, load_wallet_source(&storage)?);
+    let cashu_mint_url = if provider == WalletProvider::Cashu {
+        Some(load_cashu_mint_url(&storage)?)
+    } else {
+        None
+    };
 
     let mut guard = state.wallet_state.wallet.lock().await;
     let mut provider_guard = state.wallet_state.wallet_provider.lock().await;
     let mut source_guard = state.wallet_state.wallet_source.lock().await;
-    if provider_guard.as_ref() != Some(&provider) || source_guard.as_ref() != Some(&source) {
+    let mut cashu_mint_guard = state.wallet_state.cashu_mint_url.lock().await;
+    if provider_guard.as_ref() != Some(&provider)
+        || source_guard.as_ref() != Some(&source)
+        || *cashu_mint_guard != cashu_mint_url
+    {
         *guard = None;
         *state.wallet_state.summary.lock().await = None;
     }
@@ -51,11 +61,14 @@ pub(super) async fn ensure_wallet(
         }
         (WalletProvider::Mdk, WalletSource::Default) => true,
         (WalletProvider::Mdk, WalletSource::Existing) => false,
+        (WalletProvider::Cashu, WalletSource::Default) => true,
+        (WalletProvider::Cashu, WalletSource::Existing) => false,
     };
     if credentials_available {
         if let Some(wallet) = guard.as_ref() {
             *provider_guard = Some(wallet.provider());
             *source_guard = Some(source);
+            *cashu_mint_guard = cashu_mint_url;
             return Ok(wallet.clone());
         }
     } else {
@@ -76,11 +89,24 @@ pub(super) async fn ensure_wallet(
         (WalletProvider::Mdk, WalletSource::Existing) => {
             return Err("MDK Agent Wallet does not support existing Lexe credentials".to_string())
         }
+        (WalletProvider::Cashu, WalletSource::Default) => WalletProviderHandle::new_cashu(
+            CashuWallet::load_or_create(
+                &storage,
+                cashu_mint_url
+                    .as_deref()
+                    .ok_or_else(|| "Cashu mint selection is missing".to_string())?,
+            )
+            .await?,
+        ),
+        (WalletProvider::Cashu, WalletSource::Existing) => {
+            return Err("Cashu does not support existing Lexe credentials".to_string())
+        }
     };
 
     *guard = Some(wallet.clone());
     *provider_guard = Some(wallet.provider());
     *source_guard = Some(source);
+    *cashu_mint_guard = cashu_mint_url;
     Ok(wallet)
 }
 
@@ -180,6 +206,8 @@ pub(super) async fn reset_cached_wallet_if_credentials_missing(
         }
         (WalletProvider::Mdk, WalletSource::Default) => true,
         (WalletProvider::Mdk, WalletSource::Existing) => false,
+        (WalletProvider::Cashu, WalletSource::Default) => true,
+        (WalletProvider::Cashu, WalletSource::Existing) => false,
     };
     if credentials_exist {
         return Ok(());
@@ -193,6 +221,7 @@ pub(super) async fn clear_wallet_cache(state: &AppState) {
     *state.wallet_state.wallet.lock().await = None;
     *state.wallet_state.wallet_provider.lock().await = None;
     *state.wallet_state.wallet_source.lock().await = None;
+    *state.wallet_state.cashu_mint_url.lock().await = None;
     *state.wallet_state.summary.lock().await = None;
 }
 
@@ -204,12 +233,19 @@ pub(super) async fn ensure_bolt12_offer(
     storage.ensure_dirs()?;
     let provider = load_wallet_provider(&storage)?;
     let source = effective_wallet_source(provider, load_wallet_source(&storage)?);
-    let offer_path = storage.offer_path_for_provider_source(provider, source);
+    let offer_path = if provider == WalletProvider::Cashu {
+        storage.selected_cashu_storage()?.offer_path
+    } else {
+        storage.offer_path_for_provider_source(provider, source)
+    };
+    let cached_offer = std::fs::read_to_string(&offer_path)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|offer| !offer.is_empty());
 
-    if let Ok(value) = std::fs::read_to_string(&offer_path) {
-        let offer = value.trim();
-        if !offer.is_empty() {
-            return Ok(offer.to_string());
+    if provider != WalletProvider::Cashu {
+        if let Some(offer) = cached_offer {
+            return Ok(offer);
         }
     }
 
@@ -228,6 +264,12 @@ pub(super) async fn ensure_bolt12_offer(
             response.offer.to_string()
         }
         WalletProvider::Mdk => wallet.mdk_wallet()?.create_bolt12_offer().await?,
+        WalletProvider::Cashu => {
+            wallet
+                .cashu_wallet()?
+                .ensure_bolt12_offer(cached_offer.as_deref())
+                .await?
+        }
     };
     write_atomic_text(&offer_path, &offer)?;
     Ok(offer)

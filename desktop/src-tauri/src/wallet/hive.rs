@@ -613,6 +613,9 @@ async fn ensure_hive_wallet(
         WalletProvider::Mdk => {
             return Err("MDK hive channel wallets are not supported yet".to_string())
         }
+        WalletProvider::Cashu => {
+            return Err("Cashu hive channel wallets are not supported yet".to_string())
+        }
     };
     state
         .wallet_state

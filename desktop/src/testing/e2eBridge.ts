@@ -700,6 +700,18 @@ const MOCK_MDK_PROVIDER_CAPABILITIES = {
   canCreateBolt11Invoice: true,
   canPayWithPreimage: true,
 };
+const MOCK_CASHU_PROVIDER_CAPABILITIES = {
+  canCreateWallet: true,
+  canConnectExistingWallet: false,
+  canReceiveReusableBolt12: true,
+  canSendBolt12: true,
+  canGetBalance: true,
+  canListPayments: true,
+  canSubscribePayments: false,
+  canSendBolt11: false,
+  canCreateBolt11Invoice: false,
+  canPayWithPreimage: false,
+};
 const MOCK_WALLET_PROVIDER_OPTIONS = [
   {
     provider: "lexe",
@@ -714,6 +726,23 @@ const MOCK_WALLET_PROVIDER_OPTIONS = [
     paymentRail: "mdk-bolt12",
     available: true,
     capabilities: MOCK_MDK_PROVIDER_CAPABILITIES,
+  },
+  {
+    provider: "cashu",
+    label: "Cashu",
+    paymentRail: "cashu-mint-bolt12",
+    available: true,
+    capabilities: MOCK_CASHU_PROVIDER_CAPABILITIES,
+  },
+];
+const MOCK_CASHU_MINT_OPTIONS = [
+  {
+    label: "Mountainlake M7",
+    url: "https://m7.mountainlake.io/",
+  },
+  {
+    label: "Simplekid",
+    url: "https://ldk.thesimplekid.dev/",
   },
 ];
 
@@ -6361,6 +6390,7 @@ export function maybeInstallE2eTauriMocks() {
       case "get_nsec":
         return "nsec1mock000000000000000000000000000000000000000000000000000000";
       case "get_lightning_wallet_summary":
+      case "refresh_lightning_wallet":
         return {
           provider: "lexe",
           walletSource: "default",
@@ -6377,23 +6407,56 @@ export function maybeInstallE2eTauriMocks() {
           numChannels: 1,
           numUsableChannels: 1,
           bolt12Offer: "lno1mockoffer",
+          cashuMintUrl: null,
+        };
+      case "generate_cashu_wallet_bolt12_offer":
+        return {
+          provider: "cashu",
+          walletSource: "default",
+          hasExistingClientCredential: false,
+          env: "mock-cashu",
+          seedPath: "/mock/cashu-seed",
+          existingClientCredentialPath: "/mock/lexe-client-credential",
+          balanceSats: 50_000,
+          lightningBalanceSats: 50_000,
+          lightningSendableBalanceSats: 50_000,
+          lightningMaxSendableBalanceSats: 50_000,
+          onchainBalanceSats: 0,
+          onchainTrustedBalanceSats: 0,
+          numChannels: 0,
+          numUsableChannels: 0,
+          bolt12Offer: "lno1mockcashunewoffer",
+          cashuMintUrl: "https://m7.mountainlake.io/",
         };
       case "get_lightning_wallet_source_config":
       case "set_lightning_wallet_provider":
-      case "set_lightning_wallet_source": {
+      case "set_lightning_wallet_source":
+      case "set_cashu_wallet_mint": {
         const requestedProvider = (payload as { provider?: string } | null)
           ?.provider;
         const requestedSource = (payload as { source?: string } | null)?.source;
-        const provider = requestedProvider === "mdk" ? "mdk" : "lexe";
+        const requestedCashuMintUrl = (payload as { mintUrl?: string } | null)
+          ?.mintUrl;
+        const provider =
+          command === "set_cashu_wallet_mint"
+            ? "cashu"
+            : requestedProvider === "mdk" || requestedProvider === "cashu"
+              ? requestedProvider
+              : "lexe";
         return {
           provider,
           availableProviders: MOCK_WALLET_PROVIDER_OPTIONS,
           source:
-            provider === "mdk"
+            provider === "mdk" || provider === "cashu"
               ? "default"
               : requestedSource === "existing" || requestedSource === "default"
                 ? requestedSource
                 : "default",
+          cashuMintUrl:
+            requestedCashuMintUrl === "https://ldk.thesimplekid.dev/"
+              ? requestedCashuMintUrl
+              : "https://m7.mountainlake.io/",
+          cashuMintOptions: MOCK_CASHU_MINT_OPTIONS,
           seedPath: "/mock/sprout-wallet-seed",
           existingClientCredentialPath: "/mock/lexe-client-credential",
           hasExistingClientCredential: false,
@@ -6412,6 +6475,16 @@ export function maybeInstallE2eTauriMocks() {
           homeDir: "/mock/mdk-wallet-home",
           logPath: "/mock/mdk-wallet-home/.mdk-wallet/daemon.log",
         };
+      case "get_cashu_wallet_diagnostics":
+        return JSON.stringify(
+          {
+            provider: "cashu",
+            mintUrl: "https://m7.mountainlake.io",
+            outboundPayments: [],
+          },
+          null,
+          2,
+        );
       case "get_user_wallet_bolt12_offer": {
         const pubkey = (payload as { pubkey?: string } | null)?.pubkey
           ?.trim()
