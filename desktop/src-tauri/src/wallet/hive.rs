@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    events,
+    events, nostr_convert,
     relay::{query_relay, submit_event},
     wallet::{
         balance::{wallet_balances, WalletBalances},
@@ -1416,7 +1416,7 @@ async fn hive_contribution_records_from_relay(
         })],
     )
     .await?;
-    let channel_owner_pubkey = resolve_channel_owner_pubkey(state, channel_id).await.ok();
+    let trusted_marker_authors = resolve_hive_contribution_marker_authors(state, channel_id).await;
     let mut by_id = BTreeMap::<String, (u64, String, HiveContributionRecord)>::new();
 
     for event in relay_events {
@@ -1427,7 +1427,7 @@ async fn hive_contribution_records_from_relay(
         let Some(record) = hive_contribution_record_from_event(&event) else {
             continue;
         };
-        if !hive_contribution_marker_authorized(&event, &record, channel_owner_pubkey.as_deref()) {
+        if !hive_contribution_marker_authorized(&event, &record, &trusted_marker_authors) {
             continue;
         }
         let sort_key = (event.created_at.as_secs(), event.id.to_hex());
@@ -1472,10 +1472,65 @@ fn hive_contribution_record_from_event(event: &Event) -> Option<HiveContribution
 fn hive_contribution_marker_authorized(
     event: &Event,
     record: &HiveContributionRecord,
-    channel_owner_pubkey: Option<&str>,
+    trusted_marker_authors: &HashSet<String>,
 ) -> bool {
     let author = event.pubkey.to_hex();
-    author == record.contributor_pubkey || channel_owner_pubkey == Some(author.as_str())
+    hive_contribution_marker_authorized_author(&author, record, trusted_marker_authors)
+}
+
+fn hive_contribution_marker_authorized_author(
+    author: &str,
+    record: &HiveContributionRecord,
+    trusted_marker_authors: &HashSet<String>,
+) -> bool {
+    let author = author.to_ascii_lowercase();
+    author == record.contributor_pubkey || trusted_marker_authors.contains(&author)
+}
+
+async fn resolve_hive_contribution_marker_authors(
+    state: &AppState,
+    channel_id: &str,
+) -> HashSet<String> {
+    let mut authors = HashSet::new();
+    if let Ok(owner_pubkey) = resolve_channel_owner_pubkey(state, channel_id).await {
+        authors.insert(owner_pubkey.to_ascii_lowercase());
+    }
+    match resolve_channel_manager_pubkeys(state, channel_id).await {
+        Ok(manager_pubkeys) => authors.extend(manager_pubkeys),
+        Err(error) => {
+            eprintln!(
+                "buzz-desktop: failed to resolve hive channel {channel_id} manager pubkeys for contribution marker auth: {error}"
+            );
+        }
+    }
+    authors
+}
+
+async fn resolve_channel_manager_pubkeys(
+    state: &AppState,
+    channel_id: &str,
+) -> Result<HashSet<String>, String> {
+    parse_channel_uuid(channel_id)?;
+    let events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [39002],
+            "#d": [channel_id],
+            "limit": 5,
+        })],
+    )
+    .await?;
+    let members_event = events
+        .into_iter()
+        .max_by_key(|event| event.created_at.as_secs())
+        .ok_or_else(|| "channel members not found".to_string())?;
+    let members = nostr_convert::channel_members_from_event(&members_event)?;
+    Ok(members
+        .members
+        .into_iter()
+        .filter(|member| matches!(member.role.as_str(), "owner" | "admin"))
+        .map(|member| member.pubkey.to_ascii_lowercase())
+        .collect())
 }
 
 async fn resolve_hive_channel_offer(state: &AppState, channel_id: &str) -> Result<String, String> {
@@ -1649,7 +1704,8 @@ mod tests {
 
     use super::{
         allocate_revenue_shares, calculate_hive_payout_preview,
-        ownership_shares_from_contributions, parse_contribution_message_parts, HivePaymentRecord,
+        hive_contribution_marker_authorized_author, ownership_shares_from_contributions,
+        parse_contribution_message_parts, HiveContributionRecord, HivePaymentRecord,
         PaidRevenueShareKey,
     };
 
@@ -1697,6 +1753,33 @@ mod tests {
         assert_eq!(shares[1].member_pubkey.as_deref(), Some(bob.as_str()));
         assert_eq!(shares[1].amount_sats, 300);
         assert_eq!(shares[1].ownership_percent, 30.0);
+    }
+
+    #[test]
+    fn contribution_markers_accept_contributor_or_channel_manager() {
+        let contributor = "d".repeat(64);
+        let manager = "a".repeat(64);
+        let outsider = "f".repeat(64);
+        let record = HiveContributionRecord {
+            id: "contribution-1".to_string(),
+            contributor_pubkey: contributor.clone(),
+            amount_sats: 100,
+        };
+        let trusted = HashSet::from([manager.clone()]);
+
+        assert!(hive_contribution_marker_authorized_author(
+            &contributor,
+            &record,
+            &HashSet::new(),
+        ));
+        assert!(hive_contribution_marker_authorized_author(
+            &manager.to_ascii_uppercase(),
+            &record,
+            &trusted,
+        ));
+        assert!(!hive_contribution_marker_authorized_author(
+            &outsider, &record, &trusted,
+        ));
     }
 
     #[test]
