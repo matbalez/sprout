@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ChatHeader } from "@/features/chat/ui/ChatHeader";
 import type { EphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
+import type { ActiveDmHeaderParticipant } from "@/features/channels/useActiveChannelHeader";
 import { getChannelDescription } from "@/features/channels/lib/channelDescription";
+import { getDmParticipantPreview } from "@/features/channels/lib/dmParticipantDisplay";
 import { ChannelHeaderStatusBadge } from "@/features/channels/ui/ChannelHeaderStatusBadge";
 import { ChannelMembersBar } from "@/features/channels/ui/ChannelMembersBar";
 import { getPaidJoinAmount } from "@/features/channels/hooks";
@@ -18,6 +20,7 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import type { Channel, PresenceStatus } from "@/shared/api/types";
+import { UserAvatar } from "@/shared/ui/UserAvatar";
 
 type ChannelScreenHeaderProps = {
   activeChannel: Channel | null;
@@ -25,6 +28,7 @@ type ChannelScreenHeaderProps = {
   activeChannelTitle: string;
   actionsVariant?: "inline" | "compact";
   activeDmAvatarUrl: string | null;
+  activeDmHeaderParticipants: ActiveDmHeaderParticipant[];
   activeDmPresenceStatus: PresenceStatus | null;
   chromeWrapperRef?: React.Ref<HTMLDivElement>;
   currentPubkey?: string;
@@ -47,6 +51,7 @@ export function ChannelScreenHeader({
   activeChannelTitle,
   actionsVariant = "inline",
   activeDmAvatarUrl,
+  activeDmHeaderParticipants,
   activeDmPresenceStatus,
   chromeWrapperRef,
   currentPubkey,
@@ -65,6 +70,9 @@ export function ChannelScreenHeader({
   const queryClient = useQueryClient();
   const [hiveFundAmount, setHiveFundAmount] = React.useState("");
   const [isHiveFundingOpen, setIsHiveFundingOpen] = React.useState(false);
+  const isGroupDm =
+    activeChannel?.channelType === "dm" &&
+    activeDmHeaderParticipants.length > 1;
   const showJoinButton =
     activeChannel !== null &&
     !activeChannel.isMember &&
@@ -212,7 +220,7 @@ export function ChannelScreenHeader({
           size="sm"
           variant="default"
         >
-          <LogIn className="mr-1.5 h-3.5 w-3.5" />
+          <LogIn className="mr-1.5 h-4 w-4" />
           {isJoining ? "Joining…" : joinButtonLabel}
         </Button>
       ) : (
@@ -243,24 +251,82 @@ export function ChannelScreenHeader({
       description={getChannelDescription(activeChannel)}
       leadingContent={
         activeChannel?.channelType === "dm" ? (
-          <ProfileAvatar
-            avatarUrl={activeDmAvatarUrl}
-            className="h-6 w-6 rounded-full text-[10px]"
-            iconClassName="h-3.5 w-3.5"
-            label={activeChannelTitle}
-            testId="chat-header-dm-avatar"
-          />
+          isGroupDm ? (
+            <DmHeaderParticipantStack
+              participants={activeDmHeaderParticipants}
+            />
+          ) : (
+            <ProfileAvatar
+              avatarUrl={activeDmAvatarUrl}
+              className="h-6 w-6 rounded-full text-2xs"
+              iconClassName="h-3.5 w-3.5"
+              label={activeChannelTitle}
+              testId="chat-header-dm-avatar"
+            />
+          )
         ) : undefined
       }
       statusBadge={
         <ChannelHeaderStatusBadge
           channelType={activeChannel?.channelType}
           ephemeralDisplay={activeChannelEphemeralDisplay}
-          presenceStatus={activeDmPresenceStatus}
+          presenceStatus={isGroupDm ? null : activeDmPresenceStatus}
         />
       }
       title={activeChannelTitle}
       visibility={activeChannel?.visibility}
     />
+  );
+}
+
+function DmHeaderParticipantStack({
+  participants,
+}: {
+  participants: ActiveDmHeaderParticipant[];
+}) {
+  const { hiddenCount, visibleParticipants } =
+    getDmParticipantPreview(participants);
+  const stackItemCount = visibleParticipants.length + (hiddenCount > 0 ? 1 : 0);
+
+  return (
+    <div
+      aria-hidden="true"
+      className="mr-1 flex shrink-0 items-center"
+      data-testid="chat-header-dm-avatar-stack"
+    >
+      {visibleParticipants.map((participant, index) => (
+        <div
+          className={index > 0 ? "-ml-2" : ""}
+          data-testid="chat-header-dm-avatar-stack-participant"
+          key={participant.pubkey}
+          style={{
+            zIndex: index + 1,
+            ...(index < stackItemCount - 1 && {
+              mask: "radial-gradient(circle 16px at calc(100% + 4px) 50%, transparent 99%, #fff 100%)",
+              WebkitMask:
+                "radial-gradient(circle 16px at calc(100% + 4px) 50%, transparent 99%, #fff 100%)",
+            }),
+          }}
+        >
+          <UserAvatar
+            avatarUrl={participant.avatarUrl}
+            className="h-7 w-7 text-2xs"
+            displayName={participant.displayName}
+            size="sm"
+          />
+        </div>
+      ))}
+      {hiddenCount > 0 ? (
+        <div
+          className={visibleParticipants.length > 0 ? "-ml-2" : ""}
+          data-testid="chat-header-dm-avatar-stack-more"
+          style={{ zIndex: stackItemCount }}
+        >
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary font-semibold text-secondary-foreground shadow-xs">
+            <span className="text-2xs leading-none">+{hiddenCount}</span>
+          </span>
+        </div>
+      ) : null}
+    </div>
   );
 }

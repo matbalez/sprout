@@ -37,8 +37,12 @@ import {
   collectMessageMentionPubkeys,
   formatTimelineMessages,
 } from "@/features/messages/lib/formatTimelineMessages";
-import { buildThreadPanelData } from "@/features/messages/lib/threadPanel";
+import { getThreadReference } from "@/features/messages/lib/threading";
 import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
+import {
+  resolveTimelineLoadingLatch,
+  selectTimelineLoadingState,
+} from "@/features/messages/lib/timelineLoadingState";
 import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages";
 import { useLoadMissingAncestors } from "@/features/messages/useLoadMissingAncestors";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
@@ -68,8 +72,10 @@ import {
   useChannelActivityTyping,
 } from "./useChannelActivityTyping";
 import { useChannelAgentSessions } from "./useChannelAgentSessions";
+import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
+import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
 
 const HEADER_ACTIONS_COMPACT_BREAKPOINT_PX = 760;
@@ -88,17 +94,30 @@ export function ChannelScreen({
   const {
     markChannelRead,
     markChannelUnread,
+    getChannelReadAt,
+    getThreadReadAt,
+    markThreadRead,
+    setContextParentResolver,
     openCreateChannel,
     openChannelManagement,
     followThread,
     unfollowThread,
     isFollowingThread,
     isNotifiedForThread,
+    readStateVersion,
     setTopbarSearchHidden,
   } = useAppShell();
-  const [profilePanelPubkey, setProfilePanelPubkey] = React.useState<
-    string | null
-  >(null);
+  const {
+    clearMessageRouteTarget,
+    openAgentSessionPubkey,
+    openThreadHeadId,
+    profilePanelPubkey,
+    profilePanelView,
+    setOpenAgentSessionPubkey,
+    setOpenThreadHeadId,
+    setProfilePanelPubkey,
+    setProfilePanelView,
+  } = useChannelPanelHistoryState();
   const {
     canReset: canResetThreadPanelWidth,
     onResetWidth: handleThreadPanelWidthReset,
@@ -109,9 +128,6 @@ export function ChannelScreen({
   const [isAddBotOpen, setIsAddBotOpen] = React.useState(false);
   const [channelContentRef, channelContentWidthPx] =
     useElementWidth<HTMLDivElement>();
-  const [openThreadHeadId, setOpenThreadHeadId] = React.useState<string | null>(
-    null,
-  );
   const isNotifiedForCurrentThread =
     openThreadHeadId != null ? isNotifiedForThread(openThreadHeadId) : false;
   const [expandedThreadReplyIds, setExpandedThreadReplyIds] = React.useState(
@@ -132,20 +148,64 @@ export function ChannelScreen({
   useChannelSubscription(activeChannel);
   const { fetchOlder, hasOlderMessages, isFetchingOlder } =
     useFetchOlderMessages(activeChannel);
-  const latestActiveMessage =
-    messagesQuery.data?.[messagesQuery.data.length - 1] ?? null;
+  // Newest TOP-LEVEL message only. The channel read-marker must clear the
+  // channel timeline without clearing its threads (NIP-RS Option 1): thread
+  // replies are kind-9 channel events, so taking the last message outright
+  // would advance the channel frontier past unread replies and the hierarchical
+  // effective(thread) = max(thread, channel) would silently clear every thread
+  // badge on channel entry. Scanning from the end for the last message with no
+  // reply tag keeps the frontier at the last top-level message, leaving thread
+  // badges intact until the thread itself is read.
+  const latestActiveMessage = React.useMemo(() => {
+    const messages = messagesQuery.data;
+    if (!messages) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (getThreadReference(messages[index].tags).parentId === null) {
+        return messages[index];
+      }
+    }
+    return null;
+  }, [messagesQuery.data]);
+  // No `lastMessageAt` fallback: that timestamp is reply-inclusive (the backend
+  // takes MAX(created_at) over kind-9 events without a parent filter), so using
+  // it when the window has no top-level message would advance the channel
+  // marker past an unread reply and clear its thread/sidebar unread — the exact
+  // regression Fix A prevents. null suppresses the marker advance (markChannelRead
+  // early-returns on markAt === null) until a real top-level position is known.
   const activeReadAt = latestActiveMessage
     ? new Date(latestActiveMessage.created_at * 1_000).toISOString()
-    : (activeChannel?.lastMessageAt ?? null);
+    : null;
   React.useEffect(() => {
     if (!activeChannelId || activeChannel?.isMember === false) {
       return;
     }
-    markChannelRead(activeChannelId, activeReadAt);
+    // Passive channel-open: advance the marker to the newest top-level message
+    // only (NIP-RS Option 1). `topLevelOnly` stops the read-state layer folding
+    // in observed thread replies, so opening a channel clears the timeline but
+    // leaves thread badges intact until each thread is opened — and leaves the
+    // channel's sidebar dot lit (the reply is still unread for the channel).
+    markChannelRead(activeChannelId, activeReadAt, { topLevelOnly: true });
   }, [activeChannel?.isMember, activeChannelId, activeReadAt, markChannelRead]);
+  // Install the NIP-RS parent resolver: every `thread:<root>` context evaluated
+  // while this channel is active belongs to it (getThreadReadAt is only ever
+  // called on the active channel's timeline messages), so the parent is always
+  // the active channel. Non-thread keys (channels) have no parent → null, which
+  // degrades effective() to the own term. Cleared on channel leave / unmount so
+  // a stale channel id never becomes the parent of another channel's threads.
+  React.useEffect(() => {
+    if (!activeChannelId) {
+      setContextParentResolver(null);
+      return;
+    }
+    setContextParentResolver((contextId) =>
+      contextId.startsWith("thread:") ? activeChannelId : null,
+    );
+    return () => setContextParentResolver(null);
+  }, [activeChannelId, setContextParentResolver]);
   const {
     activeChannelTitle,
     activeDmAvatarUrl,
+    activeDmHeaderParticipants,
     activeDmPresenceStatus,
     activeChannelEphemeralDisplay,
   } = useActiveChannelHeader(activeChannel, currentPubkey);
@@ -362,52 +422,34 @@ export function ChannelScreen({
     channelId: activeChannelId,
     messages: timelineMessages,
   });
-  const directReplyIdsByParentId = React.useMemo(() => {
-    const map = new Map<string, string[]>();
-    for (const message of timelineMessages) {
-      if (!message.parentId) continue;
-      const currentReplies = map.get(message.parentId) ?? [];
-      currentReplies.push(message.id);
-      map.set(message.parentId, currentReplies);
-    }
-    return map;
-  }, [timelineMessages]);
-  const getFirstReplyIdForMessage = React.useCallback(
-    (messageId: string) => directReplyIdsByParentId.get(messageId)?.[0] ?? null,
-    [directReplyIdsByParentId],
-  );
-  const getReplyDescendantIdsForMessage = React.useCallback(
-    (messageId: string) => {
-      const descendantIds: string[] = [];
-      const pendingIds = [...(directReplyIdsByParentId.get(messageId) ?? [])];
-      while (pendingIds.length > 0) {
-        const currentId = pendingIds.pop();
-        if (!currentId) continue;
-        descendantIds.push(currentId);
-        pendingIds.push(...(directReplyIdsByParentId.get(currentId) ?? []));
-      }
-      return descendantIds;
-    },
-    [directReplyIdsByParentId],
-  );
-  const threadPanelData = React.useMemo(
-    () =>
-      buildThreadPanelData(
-        timelineMessages,
-        openThreadHeadId,
-        threadReplyTargetId,
-        expandedThreadReplyIds,
-      ),
-    [
-      expandedThreadReplyIds,
-      openThreadHeadId,
-      threadReplyTargetId,
-      timelineMessages,
-    ],
-  );
-  const openThreadHeadMessage = threadPanelData.threadHead;
-  const threadMessages = threadPanelData.visibleReplies;
-  const threadReplyTargetMessage = threadPanelData.replyTargetMessage;
+  const {
+    firstUnreadMessageId,
+    getFirstReplyIdForMessage,
+    getReplyDescendantIdsForMessage,
+    getSubtreeMaxCreatedAt,
+    handleMarkUnread,
+    openThreadHeadMessage,
+    threadFirstUnreadReplyId,
+    threadMessages,
+    threadReplyTargetMessage,
+    threadReplyUnreadCounts,
+    threadUnreadCounts,
+    unreadCount,
+  } = useChannelUnreadState({
+    activeChannelId,
+    timelineMessages,
+    currentPubkey,
+    openThreadHeadId,
+    threadReplyTargetId,
+    expandedThreadReplyIds,
+    isNotifiedForCurrentThread,
+    getChannelReadAt,
+    getThreadReadAt,
+    markChannelUnread,
+    markThreadRead,
+    isNotifiedForThread,
+    readStateVersion,
+  });
   const editTargetMessage = React.useMemo(
     () =>
       timelineMessages.find((message) => message.id === editTargetId) ?? null,
@@ -433,6 +475,8 @@ export function ChannelScreen({
     expandedThreadReplyIds,
     getFirstReplyIdForMessage,
     getReplyDescendantIdsForMessage,
+    getSubtreeMaxCreatedAt,
+    markThreadRead,
     openThreadHeadId,
     sendMessageMutation,
     setExpandedThreadReplyIds,
@@ -474,23 +518,28 @@ export function ChannelScreen({
     activeChannel && !activeChannel.archivedAt && activeChannel.isMember
       ? handleSendVideoReviewComment
       : undefined;
-  const handleMarkUnread = React.useCallback(() => {
-    if (!activeChannelId) return;
-    markChannelUnread(activeChannelId);
-  }, [activeChannelId, markChannelUnread]);
   const {
     channelAgentSessionAgents,
     closeAgentSession: handleCloseAgentSession,
     openAgentSession: handleOpenAgentSession,
-    openAgentSessionPubkey,
     openThreadAndCloseAgentSession: handleOpenThreadAndCloseAgentSession,
   } = useChannelAgentSessions({
     activeChannel,
     activeChannelId,
+    // The agent list comes from three queries; treat it as loaded only once
+    // none of them are in their initial fetch, so a channel with genuinely
+    // zero agents can still auto-close a stale agentSession param. A disabled
+    // query (e.g. no active channel) reports isLoading=false, which is fine.
+    agentsLoaded:
+      !channelMembersQuery.isLoading &&
+      !managedAgentsQuery.isLoading &&
+      !relayAgentsQuery.isLoading,
     channelMembers,
     handleOpenThread,
     managedAgents: activeChannelAgentSessionAgents,
+    openAgentSessionPubkey,
     setExpandedThreadReplyIds,
+    setOpenAgentSessionPubkey,
     setOpenThreadHeadId,
     setProfilePanelPubkey,
     setThreadReplyTargetId,
@@ -505,26 +554,45 @@ export function ChannelScreen({
       setThreadReplyTargetId,
       setThreadScrollTargetId,
     });
-  const isTimelineLoading =
+  // `data !== undefined` is not "loaded": the cache is seeded early by stale
+  // placeholders and the live subscription. Wait for the history fetch to settle.
+  const timelineLoadingNow =
     activeChannel !== null &&
     activeChannel.channelType !== "forum" &&
-    (messagesQuery.isPending ||
-      (messagesQuery.isFetching && resolvedMessages.length === 0));
+    selectTimelineLoadingState({
+      isPending: messagesQuery.isPending,
+      isFetching: messagesQuery.isFetching,
+      isPlaceholderData: messagesQuery.isPlaceholderData,
+      dataLength: messagesQuery.data?.length ?? null,
+    });
+  // Latch loaded per channel so a later background refetch can't flip back to
+  // the skeleton — that re-flip is the "skeleton bouncing up and down" on entry.
+  const settledChannelIdRef = React.useRef<string | null>(null);
+  const { settledChannelId, isLoading: isTimelineLoading } =
+    resolveTimelineLoadingLatch(
+      settledChannelIdRef.current,
+      activeChannelId,
+      timelineLoadingNow,
+    );
+  settledChannelIdRef.current = settledChannelId;
+  // Panel identity (thread/profile/agent session) lives in the URL search
+  // params, so channel changes and back/forward traversals carry it per
+  // history entry — only the local ephemeral targets need resetting here.
   const resetComposerTargets = React.useCallback(
     (_channelId: string | null) => {
-      setOpenThreadHeadId(null);
       setExpandedThreadReplyIds(new Set());
       setThreadScrollTargetId(null);
       setThreadReplyTargetId(null);
-      handleCloseAgentSession();
       setEditTargetId(null);
-      setProfilePanelPubkey(null);
     },
-    [handleCloseAgentSession],
+    [],
   );
   const handleThreadScrollTargetResolved = React.useCallback(() => {
     setThreadScrollTargetId(null);
   }, []);
+  const handleTargetReached = React.useCallback(() => {
+    clearMessageRouteTarget({ replace: true });
+  }, [clearMessageRouteTarget]);
   React.useEffect(() => {
     resetComposerTargets(activeChannelId);
   }, [activeChannelId, resetComposerTargets]);
@@ -543,7 +611,12 @@ export function ChannelScreen({
   });
   React.useEffect(() => {
     if (openThreadHeadId && !openThreadHeadMessage) {
-      setOpenThreadHeadId(null);
+      // While the timeline is still loading (e.g. a reload restoring the
+      // thread param from the URL) the head simply hasn't arrived yet.
+      if (isTimelineLoading) {
+        return;
+      }
+      setOpenThreadHeadId(null, { replace: true });
       setExpandedThreadReplyIds(new Set());
       setThreadScrollTargetId(null);
       return;
@@ -563,8 +636,10 @@ export function ChannelScreen({
   }, [
     editTargetId,
     editTargetMessage,
+    isTimelineLoading,
     openThreadHeadId,
     openThreadHeadMessage,
+    setOpenThreadHeadId,
     threadReplyTargetId,
     threadReplyTargetMessage,
   ]);
@@ -604,6 +679,7 @@ export function ChannelScreen({
       activeChannelTitle={activeChannelTitle}
       actionsVariant={shouldCompactHeaderActions ? "compact" : "inline"}
       activeDmAvatarUrl={activeDmAvatarUrl}
+      activeDmHeaderParticipants={activeDmHeaderParticipants}
       activeDmPresenceStatus={activeDmPresenceStatus}
       chromeWrapperRef={channelHeaderChromeRef}
       currentPubkey={currentPubkey}
@@ -645,7 +721,9 @@ export function ChannelScreen({
                 </React.Suspense>
               </>
             ) : (
-              <React.Suspense fallback={<ViewLoadingFallback kind="channel" />}>
+              <React.Suspense
+                fallback={<ViewLoadingFallback includeHeader kind="channel" />}
+              >
                 <ChannelPane
                   activeChannel={activeChannel}
                   agentPubkeys={agentPubkeys}
@@ -727,12 +805,17 @@ export function ChannelScreen({
                     handleThreadScrollTargetResolved
                   }
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
+                  onTargetReached={handleTargetReached}
                   onToggleReaction={effectiveToggleReaction}
                   openAgentSessionPubkey={openAgentSessionPubkey}
                   openThreadHeadId={openThreadHeadId}
+                  onProfilePanelViewChange={setProfilePanelView}
                   profilePanelPubkey={profilePanelPubkey}
+                  profilePanelView={profilePanelView}
                   personaLookup={personaLookup}
                   profiles={messageProfiles}
+                  firstUnreadMessageId={firstUnreadMessageId}
+                  unreadCount={unreadCount}
                   targetMessageId={mainTimelineTargetMessageId}
                   threadHeadMessage={openThreadHeadMessage}
                   threadMessages={threadMessages}
@@ -740,6 +823,9 @@ export function ChannelScreen({
                   threadTypingPubkeys={threadTypingPubkeys}
                   threadReplyTargetMessage={threadReplyTargetMessage}
                   threadScrollTargetId={threadScrollTargetId}
+                  threadUnreadCounts={threadUnreadCounts}
+                  threadReplyUnreadCounts={threadReplyUnreadCounts}
+                  threadFirstUnreadReplyId={threadFirstUnreadReplyId}
                   isJoining={joinChannelMutation.isPending}
                   onJoinChannel={joinChannelMutation.mutateAsync}
                   typingPubkeys={humanTypingPubkeys}

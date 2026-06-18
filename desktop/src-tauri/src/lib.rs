@@ -896,6 +896,7 @@ pub fn run() {
             register_klaim_faucet_channel,
             pay_klaim_faucet_member,
             get_agent_memory,
+            relay_reconnect_hook,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

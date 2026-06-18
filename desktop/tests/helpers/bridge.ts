@@ -95,11 +95,16 @@ type MockBridgeOptions = {
   channelsReadError?: string;
   feedReadError?: string;
   canvasReadError?: string;
+  openDmDelayMs?: number;
   profileReadDelayMs?: number;
   profileReadError?: string;
   profileUpdateError?: string;
+  profileUpdateErrors?: string[];
   searchProfiles?: MockSearchProfileSeed[];
+  updateAvailable?: boolean;
   updateChannelDelayMs?: number;
+  updateDownloadDelayMs?: number;
+  updateVersion?: string;
   stallWebsocketSends?: boolean;
   userSearchDelayMs?: number;
   // NIP-IA gate inputs — drive the archive-button gate matrix in
@@ -141,6 +146,7 @@ type MockBridgeOptions = {
    * generic PDF so the file-attachment flow can be exercised by default. An
    * explicit `[]` is honoured (models a picker cancel / no files selected).
    */
+  uploadDelayMs?: number;
   uploadDescriptors?: {
     url: string;
     sha256: string;

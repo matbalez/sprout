@@ -12,6 +12,7 @@ import { useCustomEmoji } from "@/features/custom-emoji/hooks";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
   buildOutgoingMessage,
+  findSpoileredImetaMediaUrls,
   type ImetaMedia,
   mergeOutgoingTags,
   stripImetaMediaLines,
@@ -31,8 +32,11 @@ import {
 import { CUSTOM_EMOJI_NODE_NAME } from "@/features/messages/lib/customEmojiNode";
 import {
   type AutocompleteEdit,
+  type LinkSelectionInfo,
   useRichTextEditor,
 } from "@/features/messages/lib/useRichTextEditor";
+import { useLinkEditor } from "@/features/messages/lib/useLinkEditor";
+import { useComposerSpoilerParticles } from "@/features/messages/lib/useComposerSpoilerParticles";
 import { useTypingBroadcast } from "@/features/messages/useTypingBroadcast";
 import { getBuzzCodeBlockClipboardText } from "@/shared/lib/codeBlockClipboard";
 import { cn } from "@/shared/lib/cn";
@@ -132,6 +136,9 @@ export function MessageComposer({
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = React.useState(false);
   const [isFormattingOpen, setIsFormattingOpen] = React.useState(false);
   const [sendError, setSendError] = React.useState<string | null>(null);
+  const [spoileredAttachmentUrls, setSpoileredAttachmentUrls] = React.useState<
+    Set<string>
+  >(() => new Set());
 
   const handleFormattingToggle = React.useCallback((pressed: boolean) => {
     if (pressed) setIsEmojiPickerOpen(false);
@@ -146,6 +153,7 @@ export function MessageComposer({
   const preEditSnapshotRef = React.useRef<{
     content: string;
     pendingImeta: ImetaMedia[];
+    spoileredAttachmentUrls: Set<string>;
   } | null>(null);
   const mentions = useMentions(channelId, undefined, profiles, {
     channelType,
@@ -189,6 +197,16 @@ export function MessageComposer({
   const submitMessageRef = React.useRef<() => void>(() => {});
   const composerScrollRef = React.useRef<HTMLDivElement>(null);
 
+  // Set after `useLinkEditor` exists below; the editor's link-click handler
+  // delegates through this ref to break the hook ordering cycle (the editor
+  // needs `onEditLink`, but the link editor needs the editor's `richText`).
+  const onEditLinkRef = React.useRef<
+    ((info: LinkSelectionInfo) => void) | null
+  >(null);
+  const onLinkSelectionChangeRef = React.useRef<
+    ((info: LinkSelectionInfo | null) => void) | null
+  >(null);
+
   const scrollComposerToBottom = React.useCallback(() => {
     window.requestAnimationFrame(() => {
       const scrollElement = composerScrollRef.current;
@@ -220,6 +238,8 @@ export function MessageComposer({
       return handler ? handler() : false;
     },
     isAutocompleteOpen: isAutocompleteOpenRef,
+    onEditLink: (info) => onEditLinkRef.current?.(info),
+    onLinkSelectionChange: (info) => onLinkSelectionChangeRef.current?.(info),
     onUpdate: ({ markdown, text }) => {
       setContent(markdown);
       contentRef.current = markdown;
@@ -259,6 +279,11 @@ export function MessageComposer({
     focusEditor: richText.focus,
   });
 
+  const linkEditor = useLinkEditor(richText);
+  onEditLinkRef.current = linkEditor.openFromClick;
+  onLinkSelectionChangeRef.current = linkEditor.showFromCursor;
+  useComposerSpoilerParticles(richText.editor, composerScrollRef);
+
   const mentionSendFlow = useMentionSendFlow({
     channelId,
     channelLinks,
@@ -273,6 +298,7 @@ export function MessageComposer({
     setContent,
     setIsEmojiPickerOpen,
     setPendingImeta: media.setPendingImeta,
+    setSpoileredAttachmentUrls,
   });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
@@ -297,6 +323,7 @@ export function MessageComposer({
     }
 
     media.setPendingImeta([]);
+    setSpoileredAttachmentUrls(new Set());
     media.setUploadState({ status: "idle" });
     setIsKudosActive(false);
     setBountyAmountSats(null);
@@ -324,6 +351,7 @@ export function MessageComposer({
       preEditSnapshotRef.current = {
         content: contentRef.current,
         pendingImeta: [...media.pendingImetaRef.current],
+        spoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
       };
       // Strip the trailing `![image|video](url)` lines that correspond to
       // imeta attachments — the user manages those via the attachments row,
@@ -339,6 +367,12 @@ export function MessageComposer({
       // attachments so they show up in `ComposerAttachments` and the user
       // can remove existing ones / add new ones before saving.
       media.setPendingImeta(editTarget.imetaMedia ?? []);
+      setSpoileredAttachmentUrls(
+        findSpoileredImetaMediaUrls(
+          editTarget.body,
+          editTarget.imetaMedia ?? [],
+        ),
+      );
       // Defer focus to the next frame so it runs after any focus-
       // restoration the trigger UI (e.g. the message-row context menu)
       // fires on close. Without this, Radix-style focus-restoration races
@@ -348,8 +382,11 @@ export function MessageComposer({
       const rafId = requestAnimationFrame(() => richText.focusEnd());
       return () => cancelAnimationFrame(rafId);
     } else if (preEditSnapshotRef.current !== null) {
-      const { content: restoredContent, pendingImeta: restoredImeta } =
-        preEditSnapshotRef.current;
+      const {
+        content: restoredContent,
+        pendingImeta: restoredImeta,
+        spoileredAttachmentUrls: restoredSpoileredAttachmentUrls,
+      } = preEditSnapshotRef.current;
       preEditSnapshotRef.current = null;
       setContent(restoredContent);
       contentRef.current = restoredContent;
@@ -357,6 +394,7 @@ export function MessageComposer({
         ? richText.setContent(restoredContent)
         : richText.clearContent();
       media.setPendingImeta(restoredImeta);
+      setSpoileredAttachmentUrls(restoredSpoileredAttachmentUrls);
     }
   }, [editTarget?.id]);
 
@@ -510,6 +548,7 @@ export function MessageComposer({
       const { content: finalContent, mediaTags } = buildOutgoingMessage(
         trimmed,
         currentPendingImeta,
+        spoileredAttachmentUrls,
       );
 
       // NIP-30: attach `["emoji", shortcode, url]` tags for custom emoji in the
@@ -525,10 +564,12 @@ export function MessageComposer({
 
       const savedContent = trimmed;
       const savedImeta = [...currentPendingImeta];
+      const savedSpoileredAttachmentUrls = new Set(spoileredAttachmentUrls);
       setContent("");
       contentRef.current = "";
       richText.clearContent();
       media.setPendingImeta([]);
+      setSpoileredAttachmentUrls(new Set());
       mentions.clearMentions();
       channelLinks.clearChannels();
       emojiAutocomplete.clearEmojis();
@@ -541,6 +582,7 @@ export function MessageComposer({
         contentRef.current = savedContent;
         richText.setContent(savedContent);
         media.setPendingImeta(savedImeta);
+        setSpoileredAttachmentUrls(savedSpoileredAttachmentUrls);
       }
       return;
     }
@@ -576,6 +618,7 @@ export function MessageComposer({
     const savedImeta = [...currentPendingImeta];
     const savedKudos = isKudosActive;
     const savedBountyAmountSats = bountyAmountSats;
+    const savedSpoileredAttachmentUrls = new Set(spoileredAttachmentUrls);
 
     setSendError(null);
     try {
@@ -590,6 +633,7 @@ export function MessageComposer({
           contentRef.current = savedContent;
           richText.setContent(savedContent);
           media.setPendingImeta(savedImeta);
+          setSpoileredAttachmentUrls(savedSpoileredAttachmentUrls);
           setIsKudosActive(savedKudos);
           setBountyAmountSats(savedBountyAmountSats);
           setSendError(
@@ -604,6 +648,7 @@ export function MessageComposer({
           kudos: savedKudos,
         },
         sentDraftKey: effectiveDraftKeyRef.current,
+        spoileredAttachmentUrls,
         trimmed,
       });
     } catch (error) {
@@ -627,6 +672,7 @@ export function MessageComposer({
     bountyAmountSats,
     setIsKudosActive,
     setBountyAmountSats,
+    spoileredAttachmentUrls,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -670,6 +716,14 @@ export function MessageComposer({
         return;
       }
 
+      if (event.key === "Tab" && !event.shiftKey && linkEditor.isCardOpen) {
+        event.preventDefault();
+        if (!linkEditor.focusCardFirstControl()) {
+          requestAnimationFrame(linkEditor.focusCardFirstControl);
+        }
+        return;
+      }
+
       // Escape in edit mode
       if (event.key === "Escape" && editTargetRef.current && onCancelEdit) {
         event.preventDefault();
@@ -684,6 +738,8 @@ export function MessageComposer({
       applyChannelInsert,
       mentions.handleMentionKeyDown,
       applyMentionInsert,
+      linkEditor.isCardOpen,
+      linkEditor.focusCardFirstControl,
       onCancelEdit,
     ],
   );
@@ -789,6 +845,55 @@ export function MessageComposer({
     void media.handlePaperclip();
   }, [media.handlePaperclip]);
 
+  const handleRemoveAttachment = React.useCallback(
+    (url: string) => {
+      setSpoileredAttachmentUrls((current) => {
+        if (!current.has(url)) return current;
+        const next = new Set(current);
+        next.delete(url);
+        return next;
+      });
+      media.removeAttachment(url);
+    },
+    [media.removeAttachment],
+  );
+
+  const handleComposerSpoilerToggle = React.useCallback(
+    ({
+      emptySelection,
+      nextSpoilered,
+    }: {
+      emptySelection: boolean;
+      nextSpoilered?: boolean;
+    }) => {
+      if (!emptySelection) return;
+
+      const mediaUrls = media.pendingImetaRef.current
+        .filter(
+          (attachment) =>
+            attachment.type.startsWith("image/") ||
+            attachment.type.startsWith("video/"),
+        )
+        .map((attachment) => attachment.url);
+      if (mediaUrls.length === 0) return;
+
+      setSpoileredAttachmentUrls((current) => {
+        const shouldSpoiler =
+          nextSpoilered ?? mediaUrls.some((url) => !current.has(url));
+        const next = new Set(current);
+        for (const url of mediaUrls) {
+          if (shouldSpoiler) {
+            next.add(url);
+          } else {
+            next.delete(url);
+          }
+        }
+        return next;
+      });
+    },
+    [media.pendingImetaRef],
+  );
+
   // ── Render ──────────────────────────────────────────────────────────
   return (
     <>
@@ -851,7 +956,7 @@ export function MessageComposer({
                 data-testid="edit-target"
               >
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="text-2xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     Editing message
                   </p>
                   <p className="truncate text-sm text-foreground/80">
@@ -874,7 +979,7 @@ export function MessageComposer({
                 data-testid="reply-target"
               >
                 <div className="min-w-0">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  <p className="text-2xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
                     Replying to {replyTarget.author}
                   </p>
                   <p className="truncate text-sm text-foreground/80">
@@ -917,7 +1022,8 @@ export function MessageComposer({
                   onCancelUpload={media.cancelUpload}
                   uploadingCount={media.uploadingCount}
                   uploadingPreviews={media.uploadingPreviews}
-                  onRemove={media.removeAttachment}
+                  onRemove={handleRemoveAttachment}
+                  spoileredUrls={spoileredAttachmentUrls}
                 />
               </div>
             )}
@@ -934,7 +1040,7 @@ export function MessageComposer({
 
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown handler bridges Tiptap editor to autocomplete and submit */}
             <div
-              className="rich-text-composer max-h-32 overflow-y-auto"
+              className="rich-text-composer relative max-h-32 overflow-y-auto"
               data-testid="message-input-scroll"
               ref={composerScrollRef}
               onKeyDown={handleEditorKeyDown}
@@ -993,9 +1099,12 @@ export function MessageComposer({
                 setIsFormattingOpen(false);
                 activateKudos();
               }}
+              onLinkButton={linkEditor.openFromToolbar}
               onOpenMentionPicker={openMentionPicker}
               onPaperclip={handlePaperclipClick}
+              onSpoilerToggle={handleComposerSpoilerToggle}
               sendDisabled={sendDisabled}
+              spoilerActive={spoileredAttachmentUrls.size > 0}
             />
           </form>
           <ComposerBountyDialog
@@ -1020,6 +1129,9 @@ export function MessageComposer({
         onInvite={mentionSendFlow.inviteNonMembers}
         open={mentionSendFlow.pendingNonMemberSend !== null}
       />
+
+      {linkEditor.card}
+      {linkEditor.dialog}
     </>
   );
 }

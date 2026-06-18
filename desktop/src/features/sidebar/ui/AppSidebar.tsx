@@ -1,20 +1,14 @@
 // biome-ignore format: keep compact to stay within file size limit
 import {
   Activity,
-  ArrowDown,
-  ArrowUp,
   Bot,
   FolderGit2,
   Home,
-  PenSquare,
+  MessageCirclePlus,
   Zap,
 } from "lucide-react";
-import { useReconnectRelay } from "@/shared/api/useReconnectRelay";
-import {
-  isRelayUnreachableError,
-  RELAY_UNREACHABLE_SHORT,
-} from "@/shared/lib/relayError";
 import * as React from "react";
+import { AnimatePresence } from "motion/react";
 import { FeatureGate } from "@/shared/features";
 import { SidebarDndContext } from "@/features/sidebar/ui/SidebarDnd";
 
@@ -43,7 +37,16 @@ import {
 import { CreateChannelDialog } from "@/features/sidebar/ui/CreateChannelDialog";
 import { NewDirectMessageDialog } from "@/features/sidebar/ui/NewDirectMessageDialog";
 import { SidebarProfileCard } from "@/features/sidebar/ui/SidebarProfileCard";
-import { SECTION_ACTION_VISIBILITY_CLASS } from "@/features/sidebar/ui/sidebarSectionStyles";
+import { SidebarRelayConnectionCard } from "@/features/sidebar/ui/SidebarRelayConnectionCard";
+import { useSidebarRelayConnectionCard } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
+import {
+  SidebarLoadingContent,
+  useSidebarLoadingShape,
+} from "@/features/sidebar/ui/sidebarLoadingSkeleton";
+import { SECTION_ICON_BUTTON_CLASS } from "@/features/sidebar/ui/sidebarSectionStyles";
+import { SidebarUpdateCard } from "@/features/settings/SidebarUpdateCard";
+import { useUpdaterContext } from "@/features/settings/hooks/UpdaterProvider";
+import { shouldShowSidebarUpdateCard } from "@/features/settings/sidebarUpdateCardVisibility";
 import type {
   Channel,
   ChannelVisibility,
@@ -56,16 +59,11 @@ import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarGroup,
-  SidebarGroupAction,
-  SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSkeleton,
   SidebarRail,
 } from "@/shared/ui/sidebar";
 
@@ -228,7 +226,31 @@ export function AppSidebar({
   onStarChannel,
   onUnstarChannel,
 }: AppSidebarProps) {
-  const skeletonRows = ["first", "second", "third", "fourth", "fifth", "sixth"];
+  const { status: updateStatus } = useUpdaterContext();
+  const canShowSidebarUpdateCard = shouldShowSidebarUpdateCard(updateStatus);
+  const sidebarRelayConnectionCard = useSidebarRelayConnectionCard(
+    errorMessage,
+    activeWorkspace?.relayUrl,
+  );
+  const [isSidebarUpdateCardDismissed, setIsSidebarUpdateCardDismissed] =
+    React.useState(false);
+  const showSidebarUpdateCard =
+    canShowSidebarUpdateCard && !isSidebarUpdateCardDismissed;
+  const sidebarFooterCardCount =
+    (sidebarRelayConnectionCard.showSidebarRelayConnectionCard ? 1 : 0) +
+    (showSidebarUpdateCard ? 1 : 0);
+  const sidebarContentBottomPaddingClass =
+    sidebarFooterCardCount >= 2
+      ? "pb-[18rem]"
+      : sidebarFooterCardCount >= 1
+        ? "pb-52"
+        : "pb-32";
+  const unreadBelowBottomClass =
+    sidebarFooterCardCount >= 2
+      ? "bottom-56"
+      : sidebarFooterCardCount >= 1
+        ? "bottom-44"
+        : "bottom-24";
   const [isNewDmOpenInternal, setIsNewDmOpenInternal] = React.useState(false);
   const isNewDmOpen = isNewDmOpenProp ?? isNewDmOpenInternal;
   const setIsNewDmOpen = onNewDmOpenChange ?? setIsNewDmOpenInternal;
@@ -236,6 +258,12 @@ export function AppSidebar({
   useSidebarScrollLock(scrollRef);
   const [createDialogKind, setCreateDialogKind] =
     React.useState<CreateChannelKind | null>(null);
+
+  React.useEffect(() => {
+    if (!canShowSidebarUpdateCard) {
+      setIsSidebarUpdateCardDismissed(false);
+    }
+  }, [canShowSidebarUpdateCard]);
 
   // Allow the create-channel dialog to be opened from outside (e.g. the
   // ⌘⇧N global shortcut in AppShell), mirroring the controlled new-DM lift.
@@ -288,8 +316,6 @@ export function AppSidebar({
     assignChannel,
     unassignChannel,
   } = useChannelSections(currentPubkey);
-
-  const { isPending: isReconnectPending, reconnect } = useReconnectRelay();
 
   const [createSectionState, setCreateSectionState] = React.useState<{
     open: boolean;
@@ -381,6 +407,14 @@ export function AppSidebar({
       fallbackDisplayName,
       profileDisplayName: profile?.displayName,
     });
+  const sidebarLoadingShape = useSidebarLoadingShape({
+    activeWorkspaceId: activeWorkspace?.id,
+    currentPubkey,
+    directMessages,
+    dmChannelLabels,
+    isLoading,
+    streamChannels,
+  });
   const shouldLoadAgentCount = useDeferredLoad({
     immediate: selectedView === "agents",
     timeoutMs: 250,
@@ -453,7 +487,7 @@ export function AppSidebar({
             </SidebarMenuButton>
             {homeBadgeCount > 0 ? (
               <SidebarMenuBadge
-                className="right-2 rounded-full bg-primary/15 px-1.5 text-[11px] text-primary peer-data-[active=true]/menu-button:bg-sidebar-active-foreground/20 peer-data-[active=true]/menu-button:text-sidebar-active-foreground"
+                className="right-2 rounded-full bg-primary/15 px-1.5 text-2xs text-primary peer-data-[active=true]/menu-button:bg-sidebar-active-foreground/20 peer-data-[active=true]/menu-button:text-sidebar-active-foreground"
                 data-testid="sidebar-home-count"
               >
                 {Math.min(homeBadgeCount, 99)}
@@ -501,10 +535,10 @@ export function AppSidebar({
             </SidebarMenuButton>
             {shouldShowAgentCount ? (
               <SidebarMenuBadge
-                className="right-2 rounded-full bg-sidebar-accent/70 px-1.5 text-[11px] text-sidebar-foreground/75 peer-data-[active=true]/menu-button:bg-sidebar-active-foreground/20 peer-data-[active=true]/menu-button:text-sidebar-active-foreground"
+                className="right-2 rounded-full bg-sidebar-accent/70 px-1.5 text-2xs leading-none text-sidebar-foreground/75 peer-data-[active=true]/menu-button:bg-sidebar-active-foreground/20 peer-data-[active=true]/menu-button:text-sidebar-active-foreground"
                 data-testid="sidebar-agents-count"
               >
-                {totalAgentCount}
+                <span className="leading-none">{totalAgentCount}</span>
               </SidebarMenuBadge>
             ) : null}
           </SidebarMenuItem>
@@ -529,24 +563,17 @@ export function AppSidebar({
         {unreadAboveCount > 0 ? (
           <MoreUnreadButton
             count={unreadAboveCount}
-            icon={<ArrowUp />}
             onClick={scrollToNextAbove}
             position="top"
             testId="sidebar-more-unread-above"
           />
         ) : null}
-        <SidebarContent className="pb-32" ref={scrollRef}>
+        <SidebarContent
+          className={cn(sidebarContentBottomPaddingClass)}
+          ref={scrollRef}
+        >
           {isLoading ? (
-            <SidebarGroup>
-              <SidebarGroupLabel>Channels</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <SidebarMenu data-testid="sidebar-loading">
-                  {skeletonRows.map((row) => (
-                    <SidebarMenuSkeleton key={row} showIcon />
-                  ))}
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
+            <SidebarLoadingContent shape={sidebarLoadingShape} />
           ) : null}
 
           {!isLoading ? (
@@ -697,21 +724,21 @@ export function AppSidebar({
               </FeatureGate>
               <SidebarSection
                 action={
-                  <SidebarGroupAction
-                    aria-expanded={isNewDmOpen}
-                    aria-label="Start a direct message"
-                    className={cn(
-                      "top-1/2 -translate-y-1/2 text-sidebar-foreground/50 hover:bg-sidebar-border/35 hover:text-sidebar-foreground",
-                      SECTION_ACTION_VISIBILITY_CLASS,
-                    )}
-                    data-testid="new-dm-trigger"
-                    onClick={() => {
-                      setIsNewDmOpen(true);
-                    }}
-                    type="button"
-                  >
-                    <PenSquare className="transition-transform" />
-                  </SidebarGroupAction>
+                  <div className="absolute right-1 top-1/2 z-10 flex -translate-y-1/2 items-center gap-0.5">
+                    <button
+                      aria-expanded={isNewDmOpen}
+                      aria-label="Compose new message"
+                      className={SECTION_ICON_BUTTON_CLASS}
+                      data-testid="new-dm-trigger"
+                      onClick={() => {
+                        setIsNewDmOpen(true);
+                      }}
+                      title="Compose new message"
+                      type="button"
+                    >
+                      <MessageCirclePlus className="h-4 w-4" />
+                    </button>
+                  </div>
                 }
                 dmParticipantsByChannelId={dmParticipantsByChannelId}
                 isCollapsed={collapsedGroups.directMessages}
@@ -735,38 +762,18 @@ export function AppSidebar({
             </>
           ) : null}
 
-          {errorMessage ? (
-            isRelayUnreachableError(errorMessage) ? (
-              <div
-                className="px-3 py-2 text-sm"
-                data-testid="sidebar-relay-unreachable"
-              >
-                <span className="text-muted-foreground">
-                  {RELAY_UNREACHABLE_SHORT}{" "}
-                </span>
-                <button
-                  className="text-primary hover:underline disabled:opacity-50"
-                  data-testid="sidebar-reconnect"
-                  disabled={isReconnectPending}
-                  onClick={() => void reconnect()}
-                  type="button"
-                >
-                  {isReconnectPending ? "Reconnecting…" : "Reconnect"}
-                </button>
-              </div>
-            ) : (
-              <div className="px-3 py-2 text-sm text-destructive">
-                {errorMessage}
-              </div>
-            )
+          {errorMessage &&
+          !sidebarRelayConnectionCard.hasRelayUnreachableError ? (
+            <div className="px-3 py-2 text-sm text-destructive">
+              {errorMessage}
+            </div>
           ) : null}
         </SidebarContent>
 
         {unreadBelowCount > 0 ? (
           <MoreUnreadButton
-            bottomClassName="bottom-28"
+            bottomClassName={unreadBelowBottomClass}
             count={unreadBelowCount}
-            icon={<ArrowDown />}
             onClick={scrollToNextBelow}
             position="bottom"
             testId="sidebar-more-unread-below"
@@ -774,6 +781,31 @@ export function AppSidebar({
         ) : null}
 
         <SidebarFooter className="absolute inset-x-0 bottom-0 z-30 bg-sidebar/55 backdrop-blur-xl supports-[backdrop-filter]:bg-sidebar/45 dark:bg-sidebar/45 dark:supports-[backdrop-filter]:bg-sidebar/35">
+          <AnimatePresence>
+            {sidebarRelayConnectionCard.showSidebarRelayConnectionCard ? (
+              <SidebarRelayConnectionCard
+                className="mb-2 group-data-[collapsible=icon]:hidden"
+                isConnected={
+                  sidebarRelayConnectionCard.isRelayConnectionSuccess
+                }
+                isReconnectPending={
+                  sidebarRelayConnectionCard.isRelayReconnectPending
+                }
+                onDismiss={
+                  sidebarRelayConnectionCard.onDismissRelayConnectionCard
+                }
+                onReconnect={sidebarRelayConnectionCard.onReconnectRelay}
+                key="sidebar-relay-connection-card"
+              />
+            ) : null}
+          </AnimatePresence>
+          {showSidebarUpdateCard ? (
+            <div className="mb-2 group-data-[collapsible=icon]:hidden">
+              <SidebarUpdateCard
+                onDismiss={() => setIsSidebarUpdateCardDismissed(true)}
+              />
+            </div>
+          ) : null}
           <SidebarMenu>
             <SidebarMenuItem>
               <SidebarProfileCard

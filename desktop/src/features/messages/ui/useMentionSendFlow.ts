@@ -37,6 +37,7 @@ type PendingNonMemberMentionSend = {
   savedContent: string;
   savedImeta: ImetaMedia[];
   sendOptions?: SendMessageOptions;
+  savedSpoileredAttachmentUrls: Set<string>;
   sentDraftKey: string | null | undefined;
 };
 
@@ -51,6 +52,7 @@ type SendMessageWithMentionFlowInput = {
   pendingImeta: ImetaMedia[];
   sendOptions?: SendMessageOptions;
   sentDraftKey: string | null | undefined;
+  spoileredAttachmentUrls?: ReadonlySet<string>;
   trimmed: string;
 };
 
@@ -75,6 +77,9 @@ type UseMentionSendFlowOptions = {
   setContent: React.Dispatch<React.SetStateAction<string>>;
   setIsEmojiPickerOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setPendingImeta: (pendingImeta: ImetaMedia[]) => void;
+  setSpoileredAttachmentUrls?: React.Dispatch<
+    React.SetStateAction<Set<string>>
+  >;
 };
 
 function mergeOutgoingTagsWithReferenceMentions(
@@ -122,6 +127,7 @@ export function useMentionSendFlow({
   setContent,
   setIsEmojiPickerOpen,
   setPendingImeta,
+  setSpoileredAttachmentUrls,
 }: UseMentionSendFlowOptions) {
   const [pendingNonMemberSend, setPendingNonMemberSend] =
     React.useState<PendingNonMemberMentionSend | null>(null);
@@ -305,6 +311,7 @@ export function useMentionSendFlow({
     contentRef.current = "";
     richText.clearContent();
     setPendingImeta([]);
+    setSpoileredAttachmentUrls?.(new Set());
     mentions.clearMentions();
     channelLinks.clearChannels();
     emojiAutocomplete.clearEmojis();
@@ -318,6 +325,7 @@ export function useMentionSendFlow({
     setContent,
     setIsEmojiPickerOpen,
     setPendingImeta,
+    setSpoileredAttachmentUrls,
   ]);
 
   React.useEffect(() => {
@@ -381,6 +389,9 @@ export function useMentionSendFlow({
           contentRef.current = draft.savedContent;
           richText.setContent(draft.savedContent);
           setPendingImeta(draft.savedImeta);
+          setSpoileredAttachmentUrls?.(
+            new Set(draft.savedSpoileredAttachmentUrls),
+          );
           draft.onRestoreExtras?.(error);
         }
       } finally {
@@ -397,6 +408,7 @@ export function useMentionSendFlow({
       richText.setContent,
       setContent,
       setPendingImeta,
+      setSpoileredAttachmentUrls,
     ],
   );
 
@@ -424,6 +436,7 @@ export function useMentionSendFlow({
       pendingImeta,
       sendOptions,
       sentDraftKey,
+      spoileredAttachmentUrls = new Set(),
       trimmed,
     }: SendMessageWithMentionFlowInput) => {
       if (isMentionSendPendingRef.current) {
@@ -458,6 +471,7 @@ export function useMentionSendFlow({
         const { content: finalContent, mediaTags } = buildOutgoingMessage(
           trimmed,
           pendingImeta,
+          spoileredAttachmentUrls,
         );
         const outgoingTags = mergeOutgoingTags(
           mediaTags,
@@ -493,6 +507,7 @@ export function useMentionSendFlow({
           savedContent: trimmed,
           savedImeta: [...pendingImeta],
           sendOptions,
+          savedSpoileredAttachmentUrls: new Set(spoileredAttachmentUrls),
           sentDraftKey,
         };
 
