@@ -46,10 +46,10 @@ export function formatWalletTransactionTitle(tx: WalletTransaction) {
 
   if (isBolt12Payment(tx)) {
     if (direction === "inbound" || direction === "incoming") {
-      return "inbound BOLT12 payment";
+      return "incoming BOLT12 payment";
     }
     if (direction === "outbound" || direction === "outgoing") {
-      return "outbound BOLT12 payment";
+      return "outgoing BOLT12 payment";
     }
     return "BOLT12 payment";
   }

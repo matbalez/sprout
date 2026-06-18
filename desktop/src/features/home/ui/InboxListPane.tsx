@@ -138,7 +138,6 @@ export function InboxListPane({
               content={item.preview}
               interactive={false}
               mentionNames={item.mentionNames}
-              tight
             />
           </div>
 

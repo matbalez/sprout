@@ -437,7 +437,7 @@ export function MembersSidebar({
         pubkeys: [user.pubkey],
         role: user.isAgent ? "bot" : "member",
       });
-      if (result.added.length > 0 && !user.isAgent) {
+      if (channel && result.added.length > 0 && !user.isAgent) {
         void processKlaimGiftMembers({
           channel,
           pubkeys: result.added,

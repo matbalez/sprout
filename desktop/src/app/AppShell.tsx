@@ -436,8 +436,34 @@ export function AppShell() {
   }, []);
 
   const handleBrowseChannelJoin = React.useCallback(
-    async (channelId: string) => {
-      await joinChannel(channelId);
+    async (channel: Channel) => {
+      const joinPaymentChannel = await hydrateChannelForJoinPayment(channel);
+      const paidJoinAmountBaseUnits = getPaidJoinAmount(joinPaymentChannel);
+      queryClient.setQueryData<Channel[]>(channelsQueryKey, (current = []) =>
+        sortChannels(
+          current.map((currentChannel) =>
+            currentChannel.id === joinPaymentChannel.id
+              ? {
+                  ...currentChannel,
+                  metadataEventId: joinPaymentChannel.metadataEventId,
+                  paymentPolicy: joinPaymentChannel.paymentPolicy,
+                }
+              : currentChannel,
+          ),
+        ),
+      );
+      const paymentReceiptEventId = await payForChannelAction(
+        joinPaymentChannel,
+        "join",
+      );
+      await joinChannel(channel.id, paymentReceiptEventId ?? undefined);
+      if (paymentReceiptEventId) {
+        try {
+          await postPaidJoinNotice(joinPaymentChannel, paidJoinAmountBaseUnits);
+        } catch (error) {
+          console.warn("Failed to post paid join notice", error);
+        }
+      }
       await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
     },
     [queryClient],
