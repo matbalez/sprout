@@ -1,19 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-import { installMockBridge } from "../helpers/bridge";
+import { installMockBridge, openChannelBrowser } from "../helpers/bridge";
 
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
-});
-
-test("browse channels button opens the channel browser dialog", async ({
-  page,
-}) => {
-  await page.goto("/");
-  await expect(page.getByTestId("app-sidebar")).toBeVisible();
-
-  await page.getByTestId("browse-channels").click();
-  await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 });
 
 test("keyboard shortcut opens the channel browser dialog", async ({ page }) => {
@@ -45,7 +35,7 @@ test("keyboard shortcut opens the channel browser dialog", async ({ page }) => {
 test("channel browser shows channels not yet joined", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   // "design" and "sales" are open channels the mock user is NOT a member of
@@ -59,7 +49,7 @@ test("channel browser shows channels not yet joined", async ({ page }) => {
 test("channel browser search filters by name", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   await page.getByTestId("channel-browser-search").fill("design");
@@ -72,7 +62,7 @@ test("channel browser search filters by name", async ({ page }) => {
 test("channel browser search filters by description", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await page.getByTestId("channel-browser-search").fill("pipeline");
 
   // "sales" has "pipeline" in its description
@@ -135,7 +125,7 @@ test("channel browser shows no results for unmatched search", async ({
 }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await page.getByTestId("channel-browser-search").fill("zzz-nonexistent");
 
   await expect(page.getByText("No channels match your search")).toBeVisible();
@@ -151,7 +141,7 @@ test("joining a channel from browser adds it to the sidebar", async ({
   await expect(streamList).not.toContainText("design");
 
   // Open browser and join
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
   await page
     .getByTestId("browse-channel-design")
@@ -172,7 +162,7 @@ test("clicking a joined channel in browser navigates to it", async ({
 }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   // "general" is already joined — clicking should navigate without join
@@ -188,7 +178,7 @@ test("channel browser does not show DM or private channels", async ({
 }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   // DM channels should not appear
@@ -202,7 +192,7 @@ test("channel browser does not show DM or private channels", async ({
 test("channel browser closes on escape", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   await page.keyboard.press("Escape");
@@ -212,7 +202,7 @@ test("channel browser closes on escape", async ({ page }) => {
 test("keyboard navigation works in channel browser", async ({ page }) => {
   await page.goto("/");
 
-  await page.getByTestId("browse-channels").click();
+  await openChannelBrowser(page);
   await expect(page.getByTestId("channel-browser-dialog")).toBeVisible();
 
   // Filter to unjoined channels only to get a predictable list
