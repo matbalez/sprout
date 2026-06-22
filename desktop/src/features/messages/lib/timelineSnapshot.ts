@@ -11,7 +11,7 @@
  */
 
 import type { TimelineMessage } from "@/features/messages/types";
-import { isSameDay } from "./dateFormatters";
+import { isSameDay, startOfLocalDaySeconds } from "./dateFormatters";
 
 /** Distance (px) from the bottom within which the timeline counts as "at bottom". */
 export const BOTTOM_THRESHOLD_PX = 72;
@@ -88,7 +88,11 @@ export function selectLatestMessageAutoScrollBehavior({
 
 /** A single day boundary in the timeline: where it starts and how many messages it covers. */
 export type DayGroupBoundary = {
-  /** Stable key for the day section. */
+  /**
+   * Stable key for the day section: the local start-of-day of the messages it
+   * covers, so prepending an older message into an already-rendered day reuses
+   * the same key instead of remounting the whole `<section>`.
+   */
   key: string;
   /** Index into `messages` of the first message in this day. */
   startIndex: number;
@@ -114,7 +118,7 @@ export function buildDayGroupBoundaries(
 
     if (!prev || !isSameDay(prev.createdAt, message.createdAt)) {
       boundaries.push({
-        key: `day-${message.createdAt}`,
+        key: `day-${startOfLocalDaySeconds(message.createdAt)}`,
         startIndex: i,
         count: 1,
         headingTimestamp: message.createdAt,
@@ -199,6 +203,32 @@ export function selectTimelineBodySurface({
   return renderState;
 }
 
+export type TimelineSnapshotIdentity = {
+  channelId: string | null;
+};
+
+export function isDeferredTimelineSnapshotStale({
+  deferredSnapshot,
+  liveSnapshot,
+}: {
+  deferredSnapshot: TimelineSnapshotIdentity;
+  liveSnapshot: TimelineSnapshotIdentity;
+}): boolean {
+  return deferredSnapshot.channelId !== liveSnapshot.channelId;
+}
+
+// True when an older page merged into the live cache but the deferred render
+// hasn't painted it yet; false on the initial empty-to-loaded settle.
+export function isRenderedTimelineBehindHistoryPrepend(
+  rendered: TimelineMessage[],
+  live: TimelineMessage[],
+): boolean {
+  if (rendered.length === 0 || rendered.length >= live.length) {
+    return false;
+  }
+  return rendered[0]?.id !== live[0]?.id;
+}
+
 export type TimelineIntroSurface =
   | "direct-message-intro"
   | "channel-intro"
@@ -207,10 +237,12 @@ export type TimelineIntroSurface =
 export function selectTimelineIntroSurface({
   hasChannelIntro,
   hasDirectMessageIntro,
+  hasReachedChannelStart,
   isSkeletonVisible,
 }: {
   hasChannelIntro: boolean;
   hasDirectMessageIntro: boolean;
+  hasReachedChannelStart: boolean;
   isSkeletonVisible: boolean;
 }): TimelineIntroSurface {
   if (isSkeletonVisible) {
@@ -219,7 +251,7 @@ export function selectTimelineIntroSurface({
   if (hasDirectMessageIntro) {
     return "direct-message-intro";
   }
-  if (hasChannelIntro) {
+  if (hasChannelIntro && hasReachedChannelStart) {
     return "channel-intro";
   }
   return null;

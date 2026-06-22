@@ -151,6 +151,7 @@ type ChannelPaneProps = {
   personaLookup?: Map<string, string>;
   profiles?: UserProfileLookup;
   openThreadHeadId: string | null;
+  shouldShowThreadSkeleton: boolean;
   openAgentSessionPubkey: string | null;
   onProfilePanelViewChange: (
     view: ProfilePanelView,
@@ -238,6 +239,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   personaLookup,
   profiles,
   openThreadHeadId,
+  shouldShowThreadSkeleton,
   openAgentSessionPubkey,
   onProfilePanelViewChange,
   profilePanelPubkey,
@@ -282,7 +284,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   useComposerHeightPadding(
     timelineScrollRef,
     composerWrapperRef,
-    `${isSinglePanelView}:${hasMainComposerOverlay}`,
+    `${activeChannelId}:${isSinglePanelView}:${hasMainComposerOverlay}`,
   );
 
   const clearWelcomeComposerDismissTimer = React.useCallback(() => {
@@ -864,6 +866,9 @@ export const ChannelPane = React.memo(function ChannelPane({
                 threadHeadVideoReviewContext={threadHeadVideoReviewContext}
                 widthPx={threadPanelWidthPx}
                 threadReplies={threadMessages}
+                threadUnreadCount={threadUnreadCounts?.get(
+                  threadHeadMessage.id,
+                )}
                 threadReplyUnreadCounts={threadReplyUnreadCounts}
                 threadTypingPubkeys={threadTypingPubkeys}
                 toolbarExtraActions={
@@ -895,7 +900,7 @@ export const ChannelPane = React.memo(function ChannelPane({
               panel
             );
           })()
-        : openThreadHeadId && activeChannel
+        : shouldShowThreadSkeleton
           ? (() => {
               const panel = (
                 <MessageThreadPanelSkeleton

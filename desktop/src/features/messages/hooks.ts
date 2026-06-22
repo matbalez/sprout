@@ -65,6 +65,12 @@ import type { UserProfileLookup } from "@/features/profile/lib/identity";
 // Same .mjs the renderer uses, so the cache-update projection can't drift
 // from the on-render overlay.
 import { applyEditTagOverlay } from "@/features/messages/lib/applyEditTagOverlay.mjs";
+import { backfillAuxForMessages } from "@/features/messages/lib/auxBackfill";
+import { countTopLevelTimelineRows } from "@/features/messages/lib/formatTimelineMessages";
+import {
+  MIN_TOP_LEVEL_ROWS_PER_FETCH,
+  pageOlderMessagesUntilRowFloor,
+} from "@/features/messages/lib/pageOlderMessages";
 import {
   buildMessageBountyTag,
   resolveBountyTargetPubkey,
@@ -83,7 +89,7 @@ type WalletBotMutationResult = RelayEvent & {
   walletBotEvents?: RelayEvent[];
 };
 
-const CHANNEL_HISTORY_LIMIT = 200;
+const CHANNEL_HISTORY_LIMIT = 300;
 
 function getLocalRenderKey(message: RelayEvent) {
   return message.localKey ?? message.id;
@@ -184,7 +190,25 @@ export function useChannelMessagesQuery(channel: Channel | null) {
         history,
       );
 
-      return mergedHistory;
+      // Paint messages immediately; backfill their reactions/edits/deletions
+      // by `#e` in the background (it self-merges into the same cache key).
+      void backfillAuxForMessages(queryClient, channel.id, history);
+
+      // Seed the cache, then — only if the cold window renders thinner than a
+      // normal scroll page — top it up to the same visible-row floor. A
+      // reply-heavy channel's 300-message cold load can be ~12 rows; a normal
+      // channel already clears the floor and skips the extra fetch entirely.
+      queryClient.setQueryData<RelayEvent[]>(queryKey, mergedHistory);
+      if (
+        countTopLevelTimelineRows(mergedHistory) < MIN_TOP_LEVEL_ROWS_PER_FETCH
+      ) {
+        await pageOlderMessagesUntilRowFloor(
+          queryClient,
+          channel.id,
+          () => true,
+        );
+      }
+      return queryClient.getQueryData<RelayEvent[]>(queryKey) ?? mergedHistory;
     },
     staleTime: 5 * 60 * 1_000,
     gcTime: 5 * 60 * 1_000,
@@ -209,6 +233,8 @@ export function useChannelSubscription(channel: Channel | null) {
       channelMessagesKey(channelId),
       (current = []) => mergeTimelineHistoryMessages(current, history),
     );
+
+    void backfillAuxForMessages(queryClient, channelId, history);
   });
 
   const appendMessage = useEffectEvent((event: RelayEvent) => {
@@ -308,16 +334,15 @@ export function useChannelSubscription(channel: Channel | null) {
         }
 
         cleanup = dispose;
-
-        void syncLatestHistory().catch((error) => {
-          if (!isDisposed) {
-            console.error(
-              "Failed to refresh channel history after subscribing",
-              channelId,
-              error,
-            );
-          }
-        });
+        // No post-subscribe history refetch: useChannelMessagesQuery already
+        // loaded the latest CHANNEL_HISTORY_LIMIT (300) events, and the live
+        // subscription itself backfills up to 50 most-recent events via its
+        // initial REQ (buildChannelFilter(id, 50)). Both write into the same
+        // channelMessagesKey cache, so any window between the two REQs is
+        // covered by the live sub's overlap unless >50 messages land in
+        // <1s — vanishingly rare in practice. The reconnect listener above
+        // still bridges gaps from connection drops, where the gap *is*
+        // unbounded.
       })
       .catch((error) => {
         console.error("Failed to subscribe to channel", channelId, error);

@@ -104,8 +104,8 @@ export function ChannelScreen({
     unfollowThread,
     isFollowingThread,
     isNotifiedForThread,
+    isThreadMuted,
     readStateVersion,
-    setTopbarSearchHidden,
   } = useAppShell();
   const {
     clearMessageRouteTarget,
@@ -128,8 +128,6 @@ export function ChannelScreen({
   const [isAddBotOpen, setIsAddBotOpen] = React.useState(false);
   const [channelContentRef, channelContentWidthPx] =
     useElementWidth<HTMLDivElement>();
-  const isNotifiedForCurrentThread =
-    openThreadHeadId != null ? isNotifiedForThread(openThreadHeadId) : false;
   const [expandedThreadReplyIds, setExpandedThreadReplyIds] = React.useState(
     () => new Set<string>(),
   );
@@ -140,10 +138,41 @@ export function ChannelScreen({
     string | null
   >(null);
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
+  // Thread panel state is URL-backed, but router navigation is intentionally
+  // deferred out of the click handler. Keep a tiny optimistic override so the
+  // auxiliary pane can open/close in the urgent render, then let the URL-backed
+  // state hydrate the real thread contents when it catches up.
+  const [optimisticOpenThreadHeadId, setOptimisticOpenThreadHeadId] =
+    React.useState<string | null | undefined>(undefined);
+  const clearOptimisticThreadOverride = React.useCallback(() => {
+    setOptimisticOpenThreadHeadId(undefined);
+  }, []);
   const mainInsetRef = useMainInsetRef();
   const currentPubkey = currentIdentity?.pubkey;
   const activeChannelId = activeChannel?.id ?? null;
   const isWalletBotActive = isWalletBotChannel(activeChannel);
+  const effectiveOpenThreadHeadId =
+    optimisticOpenThreadHeadId === undefined
+      ? openThreadHeadId
+      : optimisticOpenThreadHeadId;
+  const isNotifiedForEffectiveThread =
+    effectiveOpenThreadHeadId != null
+      ? isNotifiedForThread(effectiveOpenThreadHeadId)
+      : false;
+  const previousActiveChannelIdRef = React.useRef(activeChannelId);
+  React.useEffect(() => {
+    const didChangeChannel =
+      previousActiveChannelIdRef.current !== activeChannelId;
+    previousActiveChannelIdRef.current = activeChannelId;
+    setOptimisticOpenThreadHeadId((current) => {
+      if (current === undefined) {
+        return current;
+      }
+      return didChangeChannel || openThreadHeadId === current
+        ? undefined
+        : current;
+    });
+  }, [activeChannelId, openThreadHeadId]);
   const messagesQuery = useChannelMessagesQuery(activeChannel);
   useChannelSubscription(activeChannel);
   const { fetchOlder, hasOlderMessages, isFetchingOlder } =
@@ -169,9 +198,9 @@ export function ChannelScreen({
   // No `lastMessageAt` fallback: that timestamp is reply-inclusive (the backend
   // takes MAX(created_at) over kind-9 events without a parent filter), so using
   // it when the window has no top-level message would advance the channel
-  // marker past an unread reply and clear its thread/sidebar unread — the exact
-  // regression Fix A prevents. null suppresses the marker advance (markChannelRead
-  // early-returns on markAt === null) until a real top-level position is known.
+  // marker past an unread reply and clear its thread unread. null suppresses
+  // the marker advance (markChannelRead early-returns on markAt === null) until
+  // a real top-level position is known.
   const activeReadAt = latestActiveMessage
     ? new Date(latestActiveMessage.created_at * 1_000).toISOString()
     : null;
@@ -180,10 +209,9 @@ export function ChannelScreen({
       return;
     }
     // Passive channel-open: advance the marker to the newest top-level message
-    // only (NIP-RS Option 1). `topLevelOnly` stops the read-state layer folding
-    // in observed thread replies, so opening a channel clears the timeline but
-    // leaves thread badges intact until each thread is opened — and leaves the
-    // channel's sidebar dot lit (the reply is still unread for the channel).
+    // only (NIP-RS Option 1). Opening a channel clears the main timeline while
+    // leaving thread badges and Home inbox thread activity intact until each
+    // thread itself is read.
     markChannelRead(activeChannelId, activeReadAt, { topLevelOnly: true });
   }, [activeChannel?.isMember, activeChannelId, activeReadAt, markChannelRead]);
   // Install the NIP-RS parent resolver: every `thread:<root>` context evaluated
@@ -334,7 +362,7 @@ export function ChannelScreen({
     activeChannelId,
     channelMembers,
     managedAgents,
-    openThreadHeadId,
+    openThreadHeadId: effectiveOpenThreadHeadId,
     relayAgents,
     typingEntries,
   });
@@ -442,12 +470,11 @@ export function ChannelScreen({
     openThreadHeadId,
     threadReplyTargetId,
     expandedThreadReplyIds,
-    isNotifiedForCurrentThread,
     getChannelReadAt,
     getThreadReadAt,
     markChannelUnread,
     markThreadRead,
-    isNotifiedForThread,
+    isThreadMuted,
     readStateVersion,
   });
   const editTargetMessage = React.useMemo(
@@ -477,7 +504,8 @@ export function ChannelScreen({
     getReplyDescendantIdsForMessage,
     getSubtreeMaxCreatedAt,
     markThreadRead,
-    openThreadHeadId,
+    openThreadHeadId: effectiveOpenThreadHeadId,
+    onOptimisticOpenThreadHeadIdChange: setOptimisticOpenThreadHeadId,
     sendMessageMutation,
     setExpandedThreadReplyIds,
     setEditTargetId,
@@ -556,18 +584,23 @@ export function ChannelScreen({
     });
   // `data !== undefined` is not "loaded": the cache is seeded early by stale
   // placeholders and the live subscription. Wait for the history fetch to settle.
-  const timelineLoadingNow =
-    activeChannel !== null &&
-    activeChannel.channelType !== "forum" &&
-    selectTimelineLoadingState({
-      isPending: messagesQuery.isPending,
-      isFetching: messagesQuery.isFetching,
-      isPlaceholderData: messagesQuery.isPlaceholderData,
-      dataLength: messagesQuery.data?.length ?? null,
-    });
   // Latch loaded per channel so a later background refetch can't flip back to
   // the skeleton — that re-flip is the "skeleton bouncing up and down" on entry.
   const settledChannelIdRef = React.useRef<string | null>(null);
+  const hasSettledThisChannel =
+    activeChannelId !== null && settledChannelIdRef.current === activeChannelId;
+  const timelineLoadingNow =
+    activeChannel !== null &&
+    activeChannel.channelType !== "forum" &&
+    selectTimelineLoadingState(
+      {
+        isPending: messagesQuery.isPending,
+        isFetching: messagesQuery.isFetching,
+        isPlaceholderData: messagesQuery.isPlaceholderData,
+        dataLength: messagesQuery.data?.length ?? null,
+      },
+      hasSettledThisChannel,
+    );
   const { settledChannelId, isLoading: isTimelineLoading } =
     resolveTimelineLoadingLatch(
       settledChannelIdRef.current,
@@ -616,6 +649,7 @@ export function ChannelScreen({
       if (isTimelineLoading) {
         return;
       }
+      clearOptimisticThreadOverride();
       setOpenThreadHeadId(null, { replace: true });
       setExpandedThreadReplyIds(new Set());
       setThreadScrollTargetId(null);
@@ -634,6 +668,7 @@ export function ChannelScreen({
       setEditTargetId(null);
     }
   }, [
+    clearOptimisticThreadOverride,
     editTargetId,
     editTargetMessage,
     isTimelineLoading,
@@ -646,7 +681,23 @@ export function ChannelScreen({
 
   useLoadMissingAncestors(activeChannel, resolvedMessages);
   const hasAuxiliaryPanel = Boolean(
-    openThreadHeadMessage || openAgentSessionPubkey || profilePanelPubkey,
+    effectiveOpenThreadHeadId || openAgentSessionPubkey || profilePanelPubkey,
+  );
+  const displayedThreadHeadMessage =
+    openThreadHeadMessage?.id === effectiveOpenThreadHeadId
+      ? openThreadHeadMessage
+      : null;
+  const displayedThreadMessages = displayedThreadHeadMessage
+    ? threadMessages
+    : [];
+  const displayedThreadReplyTargetMessage = displayedThreadHeadMessage
+    ? threadReplyTargetMessage
+    : null;
+  const displayedThreadFirstUnreadReplyId = displayedThreadHeadMessage
+    ? threadFirstUnreadReplyId
+    : null;
+  const shouldShowThreadSkeleton = Boolean(
+    effectiveOpenThreadHeadId && activeChannel && !displayedThreadHeadMessage,
   );
   const isNarrowPanelViewport =
     channelContentWidthPx > 0 &&
@@ -665,12 +716,6 @@ export function ChannelScreen({
     resetKey: activeChannelId,
     enabled: !isSinglePanelView,
   });
-  React.useEffect(() => {
-    setTopbarSearchHidden(isSinglePanelView);
-    return () => {
-      setTopbarSearchHidden(false);
-    };
-  }, [isSinglePanelView, setTopbarSearchHidden]);
 
   const channelHeader = (
     <ChannelScreenHeader
@@ -754,7 +799,7 @@ export function ChannelScreen({
                   followThreadById={followThread}
                   unfollowThreadById={unfollowThread}
                   isFollowingThreadById={isFollowingThread}
-                  isFollowingThread={isNotifiedForCurrentThread}
+                  isFollowingThread={isNotifiedForEffectiveThread}
                   isSending={sendMessageMutation.isPending}
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
@@ -762,13 +807,15 @@ export function ChannelScreen({
                   onCancelEdit={handleCancelEdit}
                   onCancelThreadReply={handleCancelThreadReply}
                   onFollowThread={
-                    openThreadHeadId != null && !isNotifiedForCurrentThread
-                      ? () => followThread(openThreadHeadId)
+                    effectiveOpenThreadHeadId != null &&
+                    !isNotifiedForEffectiveThread
+                      ? () => followThread(effectiveOpenThreadHeadId)
                       : undefined
                   }
                   onUnfollowThread={
-                    openThreadHeadId != null && isNotifiedForCurrentThread
-                      ? () => unfollowThread(openThreadHeadId)
+                    effectiveOpenThreadHeadId != null &&
+                    isNotifiedForEffectiveThread
+                      ? () => unfollowThread(effectiveOpenThreadHeadId)
                       : undefined
                   }
                   onCloseAgentSession={handleCloseAgentSession}
@@ -808,7 +855,8 @@ export function ChannelScreen({
                   onTargetReached={handleTargetReached}
                   onToggleReaction={effectiveToggleReaction}
                   openAgentSessionPubkey={openAgentSessionPubkey}
-                  openThreadHeadId={openThreadHeadId}
+                  openThreadHeadId={effectiveOpenThreadHeadId}
+                  shouldShowThreadSkeleton={shouldShowThreadSkeleton}
                   onProfilePanelViewChange={setProfilePanelView}
                   profilePanelPubkey={profilePanelPubkey}
                   profilePanelView={profilePanelView}
@@ -817,15 +865,15 @@ export function ChannelScreen({
                   firstUnreadMessageId={firstUnreadMessageId}
                   unreadCount={unreadCount}
                   targetMessageId={mainTimelineTargetMessageId}
-                  threadHeadMessage={openThreadHeadMessage}
-                  threadMessages={threadMessages}
+                  threadHeadMessage={displayedThreadHeadMessage}
+                  threadMessages={displayedThreadMessages}
                   threadPanelWidthPx={threadPanelWidthPx}
                   threadTypingPubkeys={threadTypingPubkeys}
-                  threadReplyTargetMessage={threadReplyTargetMessage}
+                  threadReplyTargetMessage={displayedThreadReplyTargetMessage}
                   threadScrollTargetId={threadScrollTargetId}
                   threadUnreadCounts={threadUnreadCounts}
                   threadReplyUnreadCounts={threadReplyUnreadCounts}
-                  threadFirstUnreadReplyId={threadFirstUnreadReplyId}
+                  threadFirstUnreadReplyId={displayedThreadFirstUnreadReplyId}
                   isJoining={joinChannelMutation.isPending}
                   onJoinChannel={joinChannelMutation.mutateAsync}
                   typingPubkeys={humanTypingPubkeys}

@@ -1,7 +1,34 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 import { openSettings } from "../helpers/settings";
+
+async function expectThreadReplyUnobscured(row: Locator) {
+  await expect
+    .poll(async () =>
+      row.evaluate((element) => {
+        const threadBody = element.closest(
+          '[data-testid="message-thread-body"]',
+        ) as HTMLElement | null;
+        const threadPanel = element.closest(
+          '[data-testid="message-thread-panel"]',
+        ) as HTMLElement | null;
+        const composer = threadPanel?.querySelector<HTMLElement>(
+          '[data-testid="message-input"]',
+        );
+        if (!threadBody || !composer) return false;
+
+        const rowRect = element.getBoundingClientRect();
+        const bodyRect = threadBody.getBoundingClientRect();
+        const composerRect = composer.getBoundingClientRect();
+        const visibleBottom = Math.min(bodyRect.bottom, composerRect.top);
+        return (
+          rowRect.top >= bodyRect.top - 1 && rowRect.bottom <= visibleBottom + 1
+        );
+      }),
+    )
+    .toBe(true);
+}
 
 test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
@@ -548,7 +575,6 @@ test("opens a single-level thread panel with inline expansion", async ({
   const siblingReply = `Sibling threaded reply ${timestamp}`;
   const nestedReply = `Nested threaded reply ${timestamp}`;
   const nestedReplyFromBob = `Nested reply from Bob ${timestamp}`;
-  const nestedReplyVisibleTopMaxPx = 300;
   const fillerReplies = Array.from(
     { length: 14 },
     (_, index) => `Thread filler reply ${index} ${timestamp}`,
@@ -574,7 +600,7 @@ test("opens a single-level thread panel with inline expansion", async ({
     throw new Error("Expected root message row to have a data-message-id.");
   }
   const rootSummaryRow = timeline.locator(
-    `[data-thread-head-id="${rootMessageId}"]`,
+    `[data-testid="message-thread-summary"][data-thread-head-id="${rootMessageId}"]`,
   );
 
   await rootMessage.hover();
@@ -717,22 +743,7 @@ test("opens a single-level thread panel with inline expansion", async ({
   await expect(
     threadReplies.getByTestId("message-row").filter({ hasText: siblingReply }),
   ).toHaveCount(1);
-  await expect
-    .poll(async () => {
-      return nestedReplyRow.evaluate((row) => {
-        const threadBody = row.closest(
-          '[data-testid="message-thread-body"]',
-        ) as HTMLElement | null;
-        if (!threadBody) {
-          return Number.POSITIVE_INFINITY;
-        }
-
-        const rowRect = row.getBoundingClientRect();
-        const bodyRect = threadBody.getBoundingClientRect();
-        return rowRect.top - bodyRect.top;
-      });
-    })
-    .toBeLessThanOrEqual(nestedReplyVisibleTopMaxPx);
+  await expectThreadReplyUnobscured(nestedReplyRow);
 
   const firstReplyId = await firstReplyRow.getAttribute("data-message-id");
   if (!firstReplyId) {
@@ -761,10 +772,13 @@ test("opens a single-level thread panel with inline expansion", async ({
   await expect(nestedReplyFromBobRow).toBeVisible();
 
   const firstReplySummaryRow = threadReplies.locator(
-    `[data-thread-head-id="${firstReplyId}"]`,
+    `[data-testid="message-thread-summary"][data-thread-head-id="${firstReplyId}"]`,
   );
-  await expect(firstReplySummaryRow).toHaveCount(1);
-  await expect(firstReplySummaryRow).toContainText("2 replies");
+  await expect(firstReplySummaryRow).toHaveCount(0);
+  const firstReplyBranchRail = threadReplies.locator(
+    `[data-testid="thread-collapse-rail"][data-thread-head-id="${firstReplyId}"]`,
+  );
+  await expect(firstReplyBranchRail).toHaveCount(1);
 
   await expect(rootSummaryRow).toContainText("18 replies");
   await expect(
@@ -782,24 +796,11 @@ test("opens a single-level thread panel with inline expansion", async ({
     )
     .toBe("1,2");
 
-  await expect
-    .poll(async () => {
-      return nestedReplyRow.evaluate((row) => {
-        const threadBody = row.closest(
-          '[data-testid="message-thread-body"]',
-        ) as HTMLElement | null;
-        if (!threadBody) {
-          return Number.POSITIVE_INFINITY;
-        }
+  await expectThreadReplyUnobscured(nestedReplyRow);
 
-        const rowRect = row.getBoundingClientRect();
-        const bodyRect = threadBody.getBoundingClientRect();
-        return rowRect.top - bodyRect.top;
-      });
-    })
-    .toBeLessThanOrEqual(nestedReplyVisibleTopMaxPx);
-
-  await firstReplySummaryRow.click();
+  await firstReplyBranchRail.click();
+  await expect(firstReplySummaryRow).toHaveCount(1);
+  await expect(firstReplySummaryRow).toContainText("2 replies");
   await expect(
     threadReplies.getByTestId("message-row").filter({ hasText: nestedReply }),
   ).toHaveCount(0);
@@ -917,15 +918,12 @@ test("narrow thread view collapses channel header actions into a menu", async ({
   await expect(page.getByTestId("channel-management-trigger")).toBeVisible();
 });
 
-test("single-panel thread view hides topbar search and channel actions", async ({
-  page,
-}) => {
+test("single-panel thread view hides channel actions", async ({ page }) => {
   await page.setViewportSize({ width: 860, height: 720 });
 
   await page.goto("/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
-  await expect(page.getByTestId("open-search")).toBeVisible();
   await expect(page.getByTestId("channel-add-bot-trigger")).toHaveCount(0);
 
   const rootMessage = page.locator('[data-message-id="mock-general-alice"]');
@@ -935,13 +933,11 @@ test("single-panel thread view hides topbar search and channel actions", async (
   await page.getByTestId("reply-message-mock-general-alice").click();
   await expect(threadPanel).toBeVisible();
   await expect(threadPanel.getByTestId("message-thread-back")).toBeVisible();
-  await expect(page.getByTestId("open-search")).toHaveCount(0);
   await expect(page.getByTestId("channel-actions-menu-trigger")).toHaveCount(0);
   await expect(page.getByTestId("channel-add-bot-trigger")).toHaveCount(0);
 
   await threadPanel.getByTestId("message-thread-back").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
-  await expect(page.getByTestId("open-search")).toBeVisible();
   await expect(page.getByTestId("channel-add-bot-trigger")).toHaveCount(0);
 });
 
@@ -1081,7 +1077,8 @@ test("ArrowUp in an empty composer edits your last message right after sending",
   // Edit mode is entered for the just-sent message.
   const editBanner = page.getByTestId("edit-target");
   await expect(editBanner).toBeVisible();
-  await expect(editBanner).toContainText(message);
+  await expect(editBanner).toContainText("Editing message");
+  await expect(editBanner).not.toContainText(message);
   await expect(input).toHaveText(message);
 });
 
@@ -1147,7 +1144,8 @@ test("ArrowUp edits your last thread reply right after sending it", async ({
 
   const editBanner = threadPanel.getByTestId("edit-target");
   await expect(editBanner).toBeVisible();
-  await expect(editBanner).toContainText(reply);
+  await expect(editBanner).toContainText("Editing message");
+  await expect(editBanner).not.toContainText(reply);
   await expect(threadInput).toHaveText(reply);
 });
 

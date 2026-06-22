@@ -4,7 +4,9 @@ import test from "node:test";
 import {
   BOTTOM_THRESHOLD_PX,
   buildDayGroupBoundaries,
+  isDeferredTimelineSnapshotStale,
   isNearBottomMetrics,
+  isRenderedTimelineBehindHistoryPrepend,
   resolveDeepLinkTarget,
   selectDeferredListRenderState,
   selectLatestMessageAutoScrollBehavior,
@@ -212,6 +214,31 @@ test("buildDayGroupBoundaries: group counts always sum to message count", () => 
   assert.equal(total, messages.length);
 });
 
+test("buildDayGroupBoundaries: same-day group key is stable across a prepend", () => {
+  // The day section is keyed by this value; if it changes when an older
+  // message lands on the same calendar day, React remounts the whole section
+  // on every scroll-up prepend — the timeline flicker. The key must depend on
+  // the calendar day, not the first message's exact timestamp.
+  const before = buildDayGroupBoundaries([
+    message({ id: "b", createdAt: dayAt(2026, 6, 14, 9) }),
+    message({ id: "c", createdAt: dayAt(2026, 6, 14, 10) }),
+  ]);
+  const afterPrepend = buildDayGroupBoundaries([
+    message({ id: "a", createdAt: dayAt(2026, 6, 14, 8) }),
+    message({ id: "b", createdAt: dayAt(2026, 6, 14, 9) }),
+    message({ id: "c", createdAt: dayAt(2026, 6, 14, 10) }),
+  ]);
+  assert.equal(before[0].key, afterPrepend[0].key);
+});
+
+test("buildDayGroupBoundaries: distinct calendar days get distinct keys", () => {
+  const groups = buildDayGroupBoundaries([
+    message({ id: "a", createdAt: dayAt(2026, 6, 13, 12) }),
+    message({ id: "b", createdAt: dayAt(2026, 6, 14, 12) }),
+  ]);
+  assert.notEqual(groups[0].key, groups[1].key);
+});
+
 // --- jump-to-message deep links ----------------------------------------------
 
 test("resolveDeepLinkTarget: unresolved with no target", () => {
@@ -389,11 +416,48 @@ test("timeline-body-surface: empty only when live and deferred rows are empty", 
   );
 });
 
+test("deferred-snapshot: stale when channel ids diverge during channel switch", () => {
+  assert.equal(
+    isDeferredTimelineSnapshotStale({
+      deferredSnapshot: { channelId: "chan-a" },
+      liveSnapshot: { channelId: "chan-b" },
+    }),
+    true,
+  );
+});
+
+test("deferred-snapshot: fresh when channel ids match", () => {
+  assert.equal(
+    isDeferredTimelineSnapshotStale({
+      deferredSnapshot: { channelId: "chan-a" },
+      liveSnapshot: { channelId: "chan-a" },
+    }),
+    false,
+  );
+});
+
+test("timeline-body-surface: stale deferred channel snapshot paints skeleton instead of old list", () => {
+  const isStale = isDeferredTimelineSnapshotStale({
+    deferredSnapshot: { channelId: "chan-a" },
+    liveSnapshot: { channelId: "chan-b" },
+  });
+
+  assert.equal(
+    selectTimelineBodySurface({
+      deferredCount: 4,
+      isLoading: isStale,
+      liveCount: 0,
+    }),
+    "skeleton",
+  );
+});
+
 test("timeline-intro-surface: skeleton suppresses intro while loading", () => {
   assert.equal(
     selectTimelineIntroSurface({
       hasChannelIntro: true,
       hasDirectMessageIntro: false,
+      hasReachedChannelStart: true,
       isSkeletonVisible: true,
     }),
     null,
@@ -413,9 +477,22 @@ test("timeline-intro-surface: intro may coexist with the message list", () => {
     selectTimelineIntroSurface({
       hasChannelIntro: true,
       hasDirectMessageIntro: false,
+      hasReachedChannelStart: true,
       isSkeletonVisible: false,
     }),
     "channel-intro",
+  );
+});
+
+test("timeline-intro-surface: channel intro waits for oldest-history boundary", () => {
+  assert.equal(
+    selectTimelineIntroSurface({
+      hasChannelIntro: true,
+      hasDirectMessageIntro: false,
+      hasReachedChannelStart: false,
+      isSkeletonVisible: false,
+    }),
+    null,
   );
 });
 
@@ -424,6 +501,7 @@ test("timeline-intro-surface: direct-message intro wins over channel intro", () 
     selectTimelineIntroSurface({
       hasChannelIntro: true,
       hasDirectMessageIntro: true,
+      hasReachedChannelStart: false,
       isSkeletonVisible: false,
     }),
     "direct-message-intro",
@@ -435,8 +513,47 @@ test("timeline-intro-surface: no intro without an intro model", () => {
     selectTimelineIntroSurface({
       hasChannelIntro: false,
       hasDirectMessageIntro: false,
+      hasReachedChannelStart: true,
       isSkeletonVisible: false,
     }),
     null,
   );
+});
+
+test("isRenderedTimelineBehindHistoryPrepend: false when both empty", () => {
+  assert.equal(isRenderedTimelineBehindHistoryPrepend([], []), false);
+});
+
+test("isRenderedTimelineBehindHistoryPrepend: false during initial empty-to-loaded settle", () => {
+  // Rendered still empty while the live cache filled on open: not a prepend lag,
+  // so a freshly opened short channel can still show its intro.
+  assert.equal(
+    isRenderedTimelineBehindHistoryPrepend([], [{ id: "a" }]),
+    false,
+  );
+});
+
+test("isRenderedTimelineBehindHistoryPrepend: false when rendered matches live", () => {
+  const a = { id: "a" };
+  const b = { id: "b" };
+  assert.equal(isRenderedTimelineBehindHistoryPrepend([a, b], [a, b]), false);
+});
+
+test("isRenderedTimelineBehindHistoryPrepend: true when rendered trails a live prepend", () => {
+  const older = { id: "older" };
+  const a = { id: "a" };
+  const b = { id: "b" };
+  // Live cache gained an older root; rendered still starts at `a` and is shorter.
+  assert.equal(
+    isRenderedTimelineBehindHistoryPrepend([a, b], [older, a, b]),
+    true,
+  );
+});
+
+test("isRenderedTimelineBehindHistoryPrepend: false when rendered oldest already matches live oldest", () => {
+  const a = { id: "a" };
+  const b = { id: "b" };
+  // Rendered shorter than live but oldest unchanged (e.g. a newer live append):
+  // not behind an older-history prepend.
+  assert.equal(isRenderedTimelineBehindHistoryPrepend([a], [a, b]), false);
 });
