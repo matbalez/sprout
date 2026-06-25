@@ -40,10 +40,6 @@ export const contactListQueryKey = (pubkey: string) =>
   ["contact-list", pubkey] as const;
 export const allPulseTimelinesQueryKey = ["pulse-timeline"] as const;
 
-// ---------------------------------------------------------------------------
-// Module-private helper
-// ---------------------------------------------------------------------------
-
 /**
  * Persists a freshly-fetched profile to localStorage as the offline fallback.
  * Reuses an existing avatar data URL when the avatar URL is unchanged to avoid
@@ -74,10 +70,6 @@ async function persistSelfProfile(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Hooks
-// ---------------------------------------------------------------------------
-
 export function useProfileQuery(enabled = true) {
   const { activeWorkspace } = useWorkspaces();
   const identityQuery = useIdentityQuery();
@@ -104,6 +96,7 @@ export function useProfileQuery(enabled = true) {
             avatarUrl: cached.avatarUrl,
             about: null,
             nip05Handle: null,
+            ownerPubkey: null,
           } satisfies Profile)
         : undefined,
     [cached, pubkey],

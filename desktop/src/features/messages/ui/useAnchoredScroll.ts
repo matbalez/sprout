@@ -38,6 +38,8 @@ type UseAnchoredScrollOptions = {
    *  restoration re-run trigger so the anchor reasserts itself around the
    *  prepend on the fetch-state toggle, not only on the `messages` change. */
   isFetchingOlder?: boolean;
+  /** Re-runs restoration when surrounding chrome changes size without changing messages. */
+  layoutShiftKey?: string | number | null;
   /** When set, scroll to and highlight this message on mount and on change. */
   targetMessageId?: string | null;
   onTargetReached?: (messageId: string) => void;
@@ -212,6 +214,7 @@ export function useAnchoredScroll({
   fetchOlder,
   hasOlderMessages = false,
   isFetchingOlder = false,
+  layoutShiftKey = null,
   targetMessageId = null,
   onTargetReached,
 }: UseAnchoredScrollOptions): UseAnchoredScrollResult {
@@ -363,7 +366,7 @@ export function useAnchoredScroll({
   // before the render. This is the single mechanism for keeping scroll
   // stable across prepends, appends, image loads, embed expansions, etc.
   // ---------------------------------------------------------------------------
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `isFetchingOlder` is an intentional re-run trigger, not a read. It re-runs restoration on fetch-state toggles so the anchor reasserts itself around the prepend; the correction is a no-op when nothing above the anchor moved.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `isFetchingOlder` and `layoutShiftKey` are intentional re-run triggers, not reads. They re-run restoration when fetch state or surrounding layout changes so the anchor reasserts itself; the correction is a no-op when nothing above the anchor moved.
   React.useLayoutEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -410,6 +413,11 @@ export function useAnchoredScroll({
     const prevCount = prevMessageCountRef.current;
     const newLatestArrived =
       lastMessage !== undefined && lastMessage.id !== prevLastId;
+    // Count growth, not tail-id change, is the reliable "messages arrived"
+    // signal. The relay can deliver a message that sorts ahead of an existing
+    // same-second row, so the list grows without the *last* id changing —
+    // `newLatestArrived` misses that case and the unread counter never bumps.
+    const messagesArrived = messages.length - prevCount;
 
     // One-shot: an outbound send armed `scrollToBottomOnNextUpdate`. When the
     // resulting append lands, snap to bottom regardless of the current anchor,
@@ -441,9 +449,8 @@ export function useAnchoredScroll({
         setIsAtBottom(true);
       }
 
-      if (newLatestArrived) {
-        const added = Math.max(1, messages.length - prevCount);
-        setNewMessageCount((current) => current + added);
+      if (messagesArrived > 0) {
+        setNewMessageCount((current) => current + messagesArrived);
       }
     }
 
@@ -452,6 +459,7 @@ export function useAnchoredScroll({
   }, [
     isFetchingOlder,
     isLoading,
+    layoutShiftKey,
     messages,
     onTargetReached,
     scrollContainerRef,

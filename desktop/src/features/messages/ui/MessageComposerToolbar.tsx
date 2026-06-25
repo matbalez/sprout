@@ -20,6 +20,7 @@ import {
   type SpoilerToggleState,
   toggleSpoilerFormatting,
 } from "./FormattingToolbar";
+import { SelectionFormattingTray } from "./SelectionFormattingTray";
 
 /** Spring for enter/exit of button groups — all fire simultaneously. */
 const presenceSpring = {
@@ -110,6 +111,11 @@ export const MessageComposerToolbar = React.memo(
 
     return (
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+        <SelectionFormattingTray
+          disabled={formattingDisabled}
+          editor={editor}
+          onLinkButton={onLinkButton}
+        />
         <div className="flex min-h-10 min-w-0 flex-1 items-center gap-1 py-1">
           {/*
            * AnimatePresence with mode="popLayout" — exiting elements

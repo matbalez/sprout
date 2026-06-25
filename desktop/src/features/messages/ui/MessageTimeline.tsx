@@ -9,6 +9,7 @@ import {
 } from "@/features/messages/lib/timelineSnapshot";
 import { getDmParticipantPreview } from "@/features/channels/lib/dmParticipantDisplay";
 import type { TimelineMessage } from "@/features/messages/types";
+import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { ChannelType } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
@@ -33,6 +34,7 @@ type MessageTimelineProps = {
   channelName?: string;
   channelType?: ChannelType | null;
   messages: TimelineMessage[];
+  mainEntries?: MainTimelineEntry[];
   directMessageIntro?: {
     displayName: string;
     participants: DirectMessageIntroParticipant[];
@@ -49,15 +51,18 @@ type MessageTimelineProps = {
   /** True when the timeline has the composer overlay below it. */
   hasComposerOverlay?: boolean;
   isFetchingOlder?: boolean;
+  layoutShiftKey?: string | number | null;
   messageFooters?: Record<string, React.ReactNode>;
   /** Map from lowercase pubkey → persona display name for bot members. */
   personaLookup?: Map<string, string>;
   profiles?: UserProfileLookup;
   followThreadById?: (rootId: string) => void;
   isFollowingThreadById?: (rootId: string) => boolean;
+  isMessageUnreadById?: (messageId: string) => boolean;
   onDelete?: (message: TimelineMessage) => void;
   onEdit?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
+  onMarkRead?: (message: TimelineMessage) => void;
   onReply?: (message: TimelineMessage) => void;
   isSendingVideoReviewComment?: boolean;
   onSendVideoReviewComment?: (
@@ -137,6 +142,7 @@ const MessageTimelineBase = React.forwardRef<
     channelIntro = null,
     directMessageIntro = null,
     messages,
+    mainEntries,
     isLoading = false,
     emptyTitle = "No messages yet",
     emptyDescription = "Send the first message to start the thread.",
@@ -145,14 +151,17 @@ const MessageTimelineBase = React.forwardRef<
     hasComposerOverlay = true,
     hasOlderMessages = true,
     isFetchingOlder = false,
+    layoutShiftKey = null,
     followThreadById,
     isFollowingThreadById,
+    isMessageUnreadById,
     messageFooters,
     personaLookup,
     profiles,
     onDelete,
     onEdit,
     onMarkUnread,
+    onMarkRead,
     onReply,
     channelName,
     channelType,
@@ -237,6 +246,7 @@ const MessageTimelineBase = React.forwardRef<
     hasOlderMessages,
     isFetchingOlder,
     isLoading: showTimelineSkeleton,
+    layoutShiftKey,
     messages: deferredMessages,
     onTargetReached,
     scrollContainerRef,
@@ -536,11 +546,16 @@ const MessageTimelineBase = React.forwardRef<
                     followThreadById={followThreadById}
                     highlightedMessageId={highlightedMessageId}
                     isFollowingThreadById={isFollowingThreadById}
+                    isMessageUnreadById={isMessageUnreadById}
                     messageFooters={messageFooters}
+                    mainEntries={
+                      deferredMessages === messages ? mainEntries : undefined
+                    }
                     messages={deferredMessages}
                     onDelete={onDelete}
                     onEdit={onEdit}
                     onMarkUnread={onMarkUnread}
+                    onMarkRead={onMarkRead}
                     onReply={onReply}
                     isSendingVideoReviewComment={isSendingVideoReviewComment}
                     onSendVideoReviewComment={onSendVideoReviewComment}

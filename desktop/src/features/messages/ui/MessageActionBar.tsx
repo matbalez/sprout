@@ -8,6 +8,7 @@ import {
   CornerUpLeft,
   EllipsisVertical,
   Link2,
+  MailCheck,
   MailOpen,
   Pencil,
   SmilePlus,
@@ -85,10 +86,6 @@ function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
-// ---------------------------------------------------------------------------
-// MoreActionsMenu — dropdown with edit, mark unread, copy, and delete actions
-// ---------------------------------------------------------------------------
-
 function MoreActionsMenu({
   channelId,
   message,
@@ -96,11 +93,13 @@ function MoreActionsMenu({
   onEdit,
   onFollowThread,
   onMarkUnread,
+  onMarkRead,
   onOpenChange,
   onRemindLater,
   onUnfollowThread,
   open,
   isFollowingThread,
+  isUnread,
 }: {
   /** Channel UUID for the "Copy link" action. When null/undefined, the
    *  Copy link entry is hidden (e.g. inbox preview rows that don't have it). */
@@ -110,11 +109,13 @@ function MoreActionsMenu({
   onEdit?: (message: TimelineMessage) => void;
   onFollowThread?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
+  onMarkRead?: (message: TimelineMessage) => void;
   onOpenChange: (open: boolean) => void;
   onRemindLater?: (message: TimelineMessage) => void;
   onUnfollowThread?: (message: TimelineMessage) => void;
   open: boolean;
   isFollowingThread?: boolean;
+  isUnread?: boolean;
 }) {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   // Set true the moment the user picks "Edit message". The
@@ -173,14 +174,23 @@ function MoreActionsMenu({
             </DropdownMenuItem>
           ) : null}
 
-          {onMarkUnread ? (
+          {onMarkRead || onMarkUnread ? (
             <DropdownMenuItem
+              data-testid={`mark-read-toggle-${message.id}`}
               onClick={() => {
-                onMarkUnread(message);
+                if (isUnread) {
+                  onMarkRead?.(message);
+                } else {
+                  onMarkUnread?.(message);
+                }
               }}
             >
-              <MailOpen className="h-4 w-4" />
-              Mark unread
+              {isUnread ? (
+                <MailCheck className="h-4 w-4" />
+              ) : (
+                <MailOpen className="h-4 w-4" />
+              )}
+              {isUnread ? "Mark read" : "Mark unread"}
             </DropdownMenuItem>
           ) : null}
 
@@ -296,10 +306,6 @@ function MoreActionsMenu({
   );
 }
 
-// ---------------------------------------------------------------------------
-// MessageActionBar — reaction picker, reply button, and more-actions menu
-// ---------------------------------------------------------------------------
-
 function QuickReactionButton({
   customEmojiUrl,
   emoji,
@@ -353,6 +359,7 @@ export function MessageActionBar({
   onEdit,
   onFollowThread,
   onMarkUnread,
+  onMarkRead,
   onReactionBadgeBurstRequest,
   onReactionSelect,
   onRemindLater,
@@ -361,6 +368,7 @@ export function MessageActionBar({
   reactionErrorMessage = null,
   reactions,
   isFollowingThread,
+  isUnread,
 }: {
   activeReplyTargetId?: string | null;
   /** Channel UUID — required for the "Copy link" action; when omitted the
@@ -371,6 +379,7 @@ export function MessageActionBar({
   onEdit?: (message: TimelineMessage) => void;
   onFollowThread?: (message: TimelineMessage) => void;
   onMarkUnread?: (message: TimelineMessage) => void;
+  onMarkRead?: (message: TimelineMessage) => void;
   onReactionBadgeBurstRequest?: (emoji: string) => void;
   onReactionSelect?: (emoji: string) => Promise<void>;
   onRemindLater?: (message: TimelineMessage) => void;
@@ -379,6 +388,9 @@ export function MessageActionBar({
   reactionErrorMessage?: string | null;
   reactions: TimelineReaction[];
   isFollowingThread?: boolean;
+  /** Current read state of the clicked message, from the same predicate the
+   *  unread badge uses. Drives the single mark-read/unread toggle label. */
+  isUnread?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [isReactionPickerOpen, setIsReactionPickerOpen] = React.useState(false);
@@ -476,6 +488,7 @@ export function MessageActionBar({
     Boolean(onEdit) ||
     Boolean(onDelete) ||
     Boolean(onMarkUnread) ||
+    Boolean(onMarkRead) ||
     Boolean(onFollowThread) ||
     Boolean(onUnfollowThread) ||
     Boolean(onRemindLater) ||
@@ -660,11 +673,13 @@ export function MessageActionBar({
               onEdit={onEdit}
               onFollowThread={onFollowThread}
               onMarkUnread={onMarkUnread}
+              onMarkRead={onMarkRead}
               onOpenChange={setIsDropdownOpen}
               onRemindLater={onRemindLater}
               onUnfollowThread={onUnfollowThread}
               open={isDropdownOpen}
               isFollowingThread={isFollowingThread}
+              isUnread={isUnread}
             />
           ) : null}
         </div>

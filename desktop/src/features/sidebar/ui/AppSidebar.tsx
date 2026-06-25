@@ -21,12 +21,14 @@ import {
   type ChannelSection,
 } from "@/features/sidebar/lib/useChannelSections";
 import { useDmSidebarMetadata } from "@/features/sidebar/useDmSidebarMetadata";
+import { sortDmChannelsByLabel } from "@/features/sidebar/lib/dmSidebarSort";
 import { useSidebarScrollLock } from "@/features/sidebar/lib/useSidebarScrollLock";
 import { useUnreadOverflow } from "@/features/sidebar/lib/useUnreadOverflow";
 import {
   CreateSectionDialog,
   DeleteSectionAlertDialog,
   RenameSectionDialog,
+  useLeaveChannelDialog,
 } from "@/features/sidebar/ui/ChannelSectionDialogs";
 import { MoreUnreadButton } from "@/features/sidebar/ui/MoreUnreadButton";
 import { SidebarSection } from "@/features/sidebar/ui/SidebarSection";
@@ -47,6 +49,7 @@ import {
   SECTION_ACTION_VISIBILITY_CLASS,
   SECTION_ICON_BUTTON_CLASS,
 } from "@/features/sidebar/ui/sidebarSectionStyles";
+import { useDeferredModalOpen } from "@/shared/ui/deferredModalOpen";
 import { SidebarUpdateCard } from "@/features/settings/SidebarUpdateCard";
 import { useUpdaterContext } from "@/features/settings/hooks/UpdaterProvider";
 import { shouldShowSidebarUpdateCard } from "@/features/settings/sidebarUpdateCardVisibility";
@@ -76,10 +79,6 @@ type CollapsibleSidebarGroup =
   | "channels"
   | "forums"
   | "directMessages";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 type CreateChannelKind = "stream" | "forum";
 
@@ -145,6 +144,7 @@ type AppSidebarProps = {
     updates: Partial<Pick<Workspace, "name" | "relayUrl" | "token">>,
   ) => void;
   onRemoveWorkspace: (id: string) => void;
+  onCreateAgent: () => void;
   onSelectAgents: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
@@ -178,10 +178,6 @@ type AppSidebarProps = {
   onUnstarChannel?: (channelId: string) => void;
 };
 
-// ---------------------------------------------------------------------------
-// AppSidebar
-// ---------------------------------------------------------------------------
-
 export function AppSidebar({
   activeWorkspace,
   channels,
@@ -214,6 +210,7 @@ export function AppSidebar({
   onOpenDm,
   onUpdateWorkspace,
   onRemoveWorkspace,
+  onCreateAgent,
   onSelectAgents,
   onSelectProjects,
   onSelectPulse,
@@ -315,6 +312,14 @@ export function AppSidebar({
 
   const [createDialogKind, setCreateDialogKind] =
     React.useState<CreateChannelKind | null>(null);
+  const { openNextFrame: openModalNextFrame } = useDeferredModalOpen();
+  const openCreateDialog = React.useCallback(
+    (kind: CreateChannelKind) => {
+      setCreateDialogKind(null);
+      openModalNextFrame(() => setCreateDialogKind(kind));
+    },
+    [openModalNextFrame],
+  );
 
   React.useEffect(() => {
     if (!canShowSidebarUpdateCard) {
@@ -329,9 +334,9 @@ export function AppSidebar({
   // dialog's `onOpenChange` below.
   React.useEffect(() => {
     if (isCreateChannelOpenProp) {
-      setCreateDialogKind("stream");
+      openCreateDialog("stream");
     }
-  }, [isCreateChannelOpenProp]);
+  }, [isCreateChannelOpenProp, openCreateDialog]);
   const [collapsedGroups, setCollapsedGroups] = React.useState<
     Record<CollapsibleSidebarGroup, boolean>
   >({
@@ -382,6 +387,8 @@ export function AppSidebar({
     React.useState<ChannelSection | null>(null);
   const [deleteSectionTarget, setDeleteSectionTarget] =
     React.useState<ChannelSection | null>(null);
+  const { requestLeaveChannel, dialog: leaveChannelDialog } =
+    useLeaveChannelDialog();
 
   const sectionIds = React.useMemo(
     () => channelSections.map((s) => s.id),
@@ -464,6 +471,10 @@ export function AppSidebar({
       fallbackDisplayName,
       profileDisplayName: profile?.displayName,
     });
+  const sortedDirectMessages = React.useMemo(
+    () => sortDmChannelsByLabel(directMessages, dmChannelLabels),
+    [directMessages, dmChannelLabels],
+  );
   const sidebarLoadingShape = useSidebarLoadingShape({
     activeWorkspaceId: activeWorkspace?.id,
     currentPubkey,
@@ -510,6 +521,15 @@ export function AppSidebar({
     [createDialogKind, onCreateChannel, onCreateForum],
   );
 
+  const handleOpenCreateChannel = React.useCallback(() => {
+    if (onCreateChannelOpenChange) {
+      onCreateChannelOpenChange(true);
+      return;
+    }
+
+    openCreateDialog("stream");
+  }, [onCreateChannelOpenChange, openCreateDialog]);
+
   return (
     <Sidebar
       className="!border-r-0"
@@ -530,18 +550,23 @@ export function AppSidebar({
           />
         ) : null}
         <div
-          className="mt-(--buzz-top-chrome-height,2.5rem) shrink-0 px-2 pt-2"
+          className="shrink-0 px-2 pt-2.5"
           data-testid="sidebar-pinned-header"
         >
           <TopbarSearch
+            channelLabels={dmChannelLabels}
             channels={searchChannels}
             currentPubkey={currentPubkey}
             focusRequest={searchFocusRequest}
             onOpenChannel={onSelectChannel}
             onOpenResult={onOpenSearchResult}
+            onOpenUser={(user) => onOpenDm({ pubkeys: [user.pubkey] })}
+            onCreateAgent={onCreateAgent}
+            onCreateChannel={handleOpenCreateChannel}
+            suggestionChannels={channels}
           />
           <SidebarHeader
-            className="cursor-default select-none px-0 pb-0 pt-2"
+            className="cursor-default select-none px-0 pb-0 pt-2.5"
             data-tauri-drag-region
           >
             <SidebarMenu>
@@ -623,7 +648,7 @@ export function AppSidebar({
         </div>
 
         <SidebarContent
-          className="buzz-sidebar-scrollbar overscroll-none"
+          className="buzz-sidebar-scrollbar overscroll-none pt-4"
           ref={scrollRef}
         >
           {isLoading ? (
@@ -661,6 +686,7 @@ export function AppSidebar({
                   starredChannelIds={starredChannelIds}
                   onStarChannel={onStarChannel}
                   onUnstarChannel={onUnstarChannel}
+                  onLeaveChannel={requestLeaveChannel}
                 />
               ) : null}
               <SidebarDndContext
@@ -714,22 +740,20 @@ export function AppSidebar({
                     starredChannelIds={starredChannelIds}
                     onStarChannel={onStarChannel}
                     onUnstarChannel={onUnstarChannel}
+                    onLeaveChannel={requestLeaveChannel}
                   />
                 ))}
                 <ChannelGroupSection
                   browseAriaLabel="Browse channels"
                   createAriaLabel="Create a channel"
                   draggable
-                  groupClassName={
-                    channelSections.length > 0 ? undefined : "pt-1"
-                  }
                   hasUnread={unreadChannelIds.size > 0}
                   isCollapsed={collapsedGroups.channels}
                   isActiveChannel={selectedView === "channel"}
                   items={sectionBuckets.unassigned}
                   listTestId="stream-list"
                   onBrowseClick={onBrowseChannels}
-                  onCreateClick={() => setCreateDialogKind("stream")}
+                  onCreateClick={() => openCreateDialog("stream")}
                   onMarkAllRead={onMarkAllChannelsRead}
                   onMarkChannelRead={onMarkChannelRead}
                   onMarkChannelUnread={onMarkChannelUnread}
@@ -750,6 +774,7 @@ export function AppSidebar({
                   starredChannelIds={starredChannelIds}
                   onStarChannel={onStarChannel}
                   onUnstarChannel={onUnstarChannel}
+                  onLeaveChannel={requestLeaveChannel}
                 />
               </SidebarDndContext>
               <FeatureGate feature="forum">
@@ -760,7 +785,7 @@ export function AppSidebar({
                   isActiveChannel={selectedView === "channel"}
                   items={forumChannels}
                   listTestId="forum-list"
-                  onCreateClick={() => setCreateDialogKind("forum")}
+                  onCreateClick={() => openCreateDialog("forum")}
                   onMarkAllRead={onMarkAllChannelsRead}
                   onMarkChannelRead={onMarkChannelRead}
                   onMarkChannelUnread={onMarkChannelUnread}
@@ -796,7 +821,7 @@ export function AppSidebar({
                 dmParticipantsByChannelId={dmParticipantsByChannelId}
                 isCollapsed={collapsedGroups.directMessages}
                 isActiveChannel={selectedView === "channel"}
-                items={directMessages}
+                items={sortedDirectMessages}
                 channelLabels={dmChannelLabels}
                 onHideDm={onHideDm}
                 onMarkChannelRead={onMarkChannelRead}
@@ -806,7 +831,7 @@ export function AppSidebar({
                 presenceByChannelId={dmPresenceByChannelId}
                 selectedChannelId={selectedChannelId}
                 testId="dm-list"
-                title="Direct Messages"
+                title="Direct messages"
                 unreadChannelCounts={unreadChannelCounts}
                 unreadChannelIds={unreadChannelIds}
                 mutedChannelIds={mutedChannelIds}
@@ -963,6 +988,7 @@ export function AppSidebar({
           setDeleteSectionTarget(null);
         }}
       />
+      {leaveChannelDialog}
       <SidebarRail />
     </Sidebar>
   );

@@ -6,10 +6,13 @@ use crate::{
     managed_agents::{
         append_log_marker, known_acp_runtime, login_shell_path, managed_agent_log_path,
         missing_command_message, normalize_agent_args, open_log_file, resolve_command,
-        ManagedAgentProcess, ManagedAgentRecord, ManagedAgentSummary,
+        spawn_key_refusal, ManagedAgentProcess, ManagedAgentRecord, ManagedAgentSummary,
     },
     util::now_iso,
 };
+
+mod path;
+use path::build_augmented_path;
 
 type RespondToEnv = (Vec<(&'static str, String)>, Vec<&'static str>);
 
@@ -53,6 +56,12 @@ pub(crate) const KNOWN_AGENT_BINARIES: &[&str] = &[
     "buzz_dev_mcp",
 ];
 
+/// Script interpreters that may host managed agent wrappers (e.g. npm shims).
+/// A process whose name matches here is NOT immediately claimed — it must also
+/// carry `BUZZ_MANAGED_AGENT` in its environment (checked by the caller via
+/// `process_has_buzz_marker()`). This avoids sweeping unrelated node processes.
+pub(crate) const KNOWN_SCRIPT_INTERPRETERS: &[&str] = &["node"];
+
 /// Check if a process name matches any of our known agent binaries.
 /// Uses exact match or prefix-with-separator to avoid false positives
 /// (e.g. `"goose"` must not match `"mongoose"`).
@@ -65,6 +74,15 @@ fn name_matches_known_binary(name: &str) -> bool {
             }
         }
     })
+}
+
+/// Check if a process name is a known script interpreter that may be hosting
+/// a managed agent wrapper (e.g. `node` running an npm shim for `codex-acp`).
+/// Callers must additionally verify `BUZZ_MANAGED_AGENT` ownership.
+fn name_matches_interpreter(name: &str) -> bool {
+    KNOWN_SCRIPT_INTERPRETERS
+        .iter()
+        .any(|&interp| name == interp)
 }
 
 #[cfg(unix)]
@@ -102,7 +120,9 @@ pub(crate) fn process_belongs_to_us(pid: u32) -> bool {
         return false;
     }
     let name = String::from_utf8_lossy(&buf[..len as usize]);
-    name_matches_known_binary(&name)
+    // Fall through for script interpreters (e.g. `node` hosting an npm shim):
+    // the caller's `process_has_buzz_marker()` check decides true ownership.
+    name_matches_known_binary(&name) || name_matches_interpreter(&name)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -114,13 +134,18 @@ pub(crate) fn process_belongs_to_us(pid: u32) -> bool {
         if name_matches_known_binary(name.trim()) {
             return true;
         }
+        // Interpreter check: `node` is 4 bytes, never truncated.
+        if name_matches_interpreter(name.trim()) {
+            return true;
+        }
     }
 
     // Fallback: read /proc/<pid>/exe which is a symlink to the full binary path.
     // This is not subject to the 15-byte truncation limit.
     if let Ok(exe_path) = std::fs::read_link(format!("/proc/{pid}/exe")) {
         if let Some(basename) = exe_path.file_name().and_then(|n| n.to_str()) {
-            return name_matches_known_binary(basename);
+            // Fall through for script interpreters — caller checks the marker.
+            return name_matches_known_binary(basename) || name_matches_interpreter(basename);
         }
     }
 
@@ -1203,6 +1228,7 @@ pub(crate) fn reap_dead_instance_agents(_our_instance_id: &str, _skip_pids: &[u3
 pub fn kill_stale_tracked_processes(
     records: &mut [ManagedAgentRecord],
     runtimes: &HashMap<String, ManagedAgentProcess>,
+    instance_id: &str,
 ) -> bool {
     use crate::managed_agents::BackendKind;
 
@@ -1215,7 +1241,7 @@ pub fn kill_stale_tracked_processes(
             continue;
         };
         if !runtimes.contains_key(&record.pubkey) {
-            if process_belongs_to_us(pid) {
+            if process_belongs_to_us(pid) && process_has_buzz_marker(pid, instance_id) {
                 let _ = terminate_process(pid);
             }
             record.runtime_pid = None;
@@ -1230,6 +1256,7 @@ pub fn kill_stale_tracked_processes(
 pub fn sync_managed_agent_processes(
     records: &mut [ManagedAgentRecord],
     runtimes: &mut HashMap<String, ManagedAgentProcess>,
+    instance_id: &str,
 ) -> bool {
     let mut changed = false;
     let mut exited = Vec::new();
@@ -1283,7 +1310,10 @@ pub fn sync_managed_agent_processes(
             continue;
         };
 
-        if process_is_running(pid) && process_belongs_to_us(pid) {
+        if process_is_running(pid)
+            && process_belongs_to_us(pid)
+            && process_has_buzz_marker(pid, instance_id)
+        {
             continue;
         }
 
@@ -1296,6 +1326,35 @@ pub fn sync_managed_agent_processes(
     }
 
     changed
+}
+
+/// Classify an agent's persona against the live catalog for the Agents-menu
+/// drift indicator. Returns `(out_of_date, orphaned)`.
+///
+/// Drift basis is the RECORD's `persona_source_version`, never the engram:
+/// - persona_id set + persona present: out_of_date when the snapshot hash
+///   differs from the persona's current content hash.
+/// - persona_id set + persona gone: orphaned (no current hash to respawn into,
+///   so never out_of_date — we must not tell the user to respawn into nothing).
+/// - no persona_id: neither — a hand-built agent has no persona to drift from.
+fn persona_drift_state(
+    record: &ManagedAgentRecord,
+    personas: &[crate::managed_agents::types::PersonaRecord],
+) -> (bool, bool) {
+    let Some(persona_id) = record.persona_id.as_deref() else {
+        return (false, false);
+    };
+    let Some(persona) = personas.iter().find(|p| p.id == persona_id) else {
+        return (false, true);
+    };
+    let current = crate::managed_agents::persona_events::persona_content_hash(
+        &crate::managed_agents::persona_events::persona_event_content(persona),
+    );
+    let out_of_date = record
+        .persona_source_version
+        .as_deref()
+        .is_some_and(|pinned| pinned != current);
+    (out_of_date, false)
 }
 
 pub fn build_managed_agent_summary(
@@ -1355,16 +1414,24 @@ pub fn build_managed_agent_summary(
         }
     };
 
-    // Resolve the effective model and system_prompt from the linked persona
-    // (mirrors spawn-time logic) so the UI displays the current persona values,
-    // not the stale record snapshot.
-    let (effective_prompt, effective_model, _effective_provider) =
-        resolve_effective_prompt_model_provider(
-            record.persona_id.as_deref(),
-            personas,
-            record.system_prompt.clone(),
-            record.model.clone(),
-        );
+    // Display contract: show the pinned record snapshot — what the agent
+    // actually runs — not the live persona. The drift flags below signal when
+    // the snapshot has fallen behind an edited persona; showing live values
+    // next to an "out of date" badge would contradict it.
+    let (persona_out_of_date, persona_orphaned) = persona_drift_state(record, personas);
+
+    // Resolve the effective harness the same way, then derive args/mcp from it,
+    // so the UI reflects the persona's current harness (or an explicit pin).
+    let effective_command = crate::managed_agents::effective_agent_command(
+        record.persona_id.as_deref(),
+        personas,
+        record.agent_command_override.as_deref(),
+    );
+    let effective_args = normalize_agent_args(&effective_command, record.agent_args.clone());
+    let effective_mcp_command = known_acp_runtime(&effective_command)
+        .and_then(|r| r.mcp_command)
+        .unwrap_or("")
+        .to_string();
 
     Ok(ManagedAgentSummary {
         pubkey: record.pubkey.clone(),
@@ -1372,15 +1439,19 @@ pub fn build_managed_agent_summary(
         persona_id: record.persona_id.clone(),
         relay_url: record.relay_url.clone(),
         acp_command: record.acp_command.clone(),
-        agent_command: record.agent_command.clone(),
-        agent_args: record.agent_args.clone(),
-        mcp_command: record.mcp_command.clone(),
+        agent_command: effective_command,
+        agent_command_override: record.agent_command_override.clone(),
+        agent_args: effective_args,
+        mcp_command: effective_mcp_command,
         turn_timeout_seconds: record.turn_timeout_seconds,
         idle_timeout_seconds: record.idle_timeout_seconds,
         max_turn_duration_seconds: record.max_turn_duration_seconds,
         parallelism: record.parallelism,
-        system_prompt: effective_prompt,
-        model: effective_model,
+        system_prompt: record.system_prompt.clone(),
+        model: record.model.clone(),
+        provider: record.provider.clone(),
+        persona_out_of_date,
+        persona_orphaned,
         mcp_toolsets: record.mcp_toolsets.clone(),
         env_vars: record.env_vars.clone(),
         backend: record.backend.clone(),
@@ -1467,10 +1538,12 @@ pub(crate) fn build_respond_to_env(
     Ok((set, remove))
 }
 
-/// Resolve the effective system prompt, model, and provider for a spawn. The
-/// linked persona always wins so persona edits propagate on the next spawn; the
-/// record snapshot is the fallback only when no persona is linked or it was
-/// deleted. Provider comes from the persona (the record has no provider field).
+/// Resolve the effective system prompt, model, and provider from the *live*
+/// persona for **display and model-discovery only** — the ModelPicker shows the
+/// current persona model as selected. The spawn and deploy paths deliberately
+/// do NOT use this; they read the pinned record snapshot so a running agent
+/// stays on the config it was created with. The linked persona wins here; the
+/// record values are the fallback when no persona is linked or it was deleted.
 pub(crate) fn resolve_effective_prompt_model_provider(
     persona_id: Option<&str>,
     personas: &[crate::managed_agents::types::PersonaRecord],
@@ -1498,6 +1571,9 @@ pub fn spawn_agent_child(
     record: &ManagedAgentRecord,
     owner_hex: Option<&str>,
 ) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
+    if let Some(error) = spawn_key_refusal(record) {
+        return Err(error);
+    }
     let log_path = managed_agent_log_path(app, &record.pubkey)?;
     append_log_marker(
         &log_path,
@@ -1513,27 +1589,40 @@ pub fn spawn_agent_child(
     let stderr = stdout
         .try_clone()
         .map_err(|error| format!("failed to clone log handle: {error}"))?;
-    let agent_args = normalize_agent_args(&record.agent_command, record.agent_args.clone());
+    // Resolve the effective harness (agent command) from the linked persona, so
+    // persona harness edits propagate on the next spawn; an explicit per-agent
+    // override wins. `agent_args` and `mcp_command` are pure derivations of the
+    // command, so we recompute them from the effective value rather than the
+    // frozen record snapshot. Mirrors the model resolution below.
+    let personas = super::load_personas(app).unwrap_or_default();
+    let effective_command = super::effective_agent_command(
+        record.persona_id.as_deref(),
+        &personas,
+        record.agent_command_override.as_deref(),
+    );
+    let agent_args = normalize_agent_args(&effective_command, record.agent_args.clone());
     let resolved_acp_command = resolve_command(&record.acp_command)
         .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
-    let resolved_mcp_command: Option<std::path::PathBuf> = if record.mcp_command.is_empty() {
+    let effective_mcp_command = known_acp_runtime(&effective_command)
+        .and_then(|r| r.mcp_command)
+        .unwrap_or("");
+    let resolved_mcp_command: Option<std::path::PathBuf> = if effective_mcp_command.is_empty() {
         None
     } else {
-        match resolve_command(&record.mcp_command) {
+        match resolve_command(effective_mcp_command) {
             Some(path) => Some(path),
             None => {
                 eprintln!(
-                    "buzz-desktop: mcp_command {:?} not found, skipping",
-                    record.mcp_command
+                    "buzz-desktop: mcp_command {effective_mcp_command:?} not found, skipping"
                 );
                 None
             }
         }
     };
     // Resolve agent command to a full path (DMG launches have minimal PATH).
-    let resolved_agent_command = resolve_command(&record.agent_command)
+    let resolved_agent_command = resolve_command(&effective_command)
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|| record.agent_command.clone());
+        .unwrap_or_else(|| effective_command.clone());
     let default_agents_to_lexe = crate::wallet::default_agents_to_lexe_payments(app)
         .unwrap_or_else(|error| {
             eprintln!(
@@ -1551,32 +1640,29 @@ pub fn spawn_agent_child(
                 OPT_OUT_MANAGED_AGENT_MCP_TOOLSETS
             });
 
+    // The agent's effective relay drives both the child's relay connection
+    // (BUZZ_RELAY_URL) and git credential-helper URL: an explicit per-agent
+    // relay wins; an empty one falls back to the active workspace relay.
+    let effective_relay_url = {
+        use tauri::Manager;
+        let state = app.state::<crate::app_state::AppState>();
+        crate::relay::effective_agent_relay_url(
+            &record.relay_url,
+            &crate::relay::relay_ws_url_with_override(&state),
+        )
+    };
+
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink
     //   - bundled sidecars (buzz, buzz-acp, etc.) via exe parent (Contents/MacOS/)
     //   - runtimes (node, python, etc.) via login shell PATH
-    let augmented_path = {
-        let mut parts: Vec<std::path::PathBuf> = Vec::new();
-        if let Some(home) = dirs::home_dir() {
-            parts.push(home.join(".local").join("bin"));
-        }
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
-                parts.push(parent.to_path_buf());
-            }
-        }
-        if let Some(shell_path) = login_shell_path() {
-            parts.push(std::path::PathBuf::from(shell_path));
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            // join_paths uses the platform separator (':' on Unix, ';' on Windows).
-            std::env::join_paths(parts)
-                .ok()
-                .map(|s| s.to_string_lossy().into_owned())
-        }
-    };
+    let augmented_path = build_augmented_path(
+        dirs::home_dir(),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)),
+        login_shell_path(),
+    );
 
     let mut command = std::process::Command::new(&resolved_acp_command);
     if let Some(home) = super::default_agent_workdir() {
@@ -1590,7 +1676,7 @@ pub fn spawn_agent_child(
     }
     command.env("RUST_LOG", child_rust_log_filter());
     command.env("BUZZ_PRIVATE_KEY", &record.private_key_nsec);
-    command.env("BUZZ_RELAY_URL", &record.relay_url);
+    command.env("BUZZ_RELAY_URL", &effective_relay_url);
     command.env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));
     if toolsets_request_payments(effective_mcp_toolsets) {
@@ -1615,7 +1701,7 @@ pub fn spawn_agent_child(
     }
     // Enable MCP hook tools (_Stop, _PostCompact) for agents that need them.
     // Uses "*" because build_mcp_servers() hard-codes the server name to "buzz-mcp".
-    let runtime_meta = known_acp_runtime(&record.agent_command);
+    let runtime_meta = known_acp_runtime(&effective_command);
     if runtime_meta.is_some_and(|r| r.mcp_hooks) {
         command.env("MCP_HOOK_SERVERS", "*");
     }
@@ -1650,18 +1736,16 @@ pub fn spawn_agent_child(
         command.env("BUZZ_ACP_PERSONA_NAME", persona_name);
     }
 
-    // Resolve system prompt, model, and provider: the linked persona is the
-    // source of truth, so persona edits reach the agent on the next spawn. Fall
-    // back to the record snapshot only when no persona is linked or it was
-    // deleted. Provider flows from the persona (the record has no provider).
-    let personas = super::load_personas(app).unwrap_or_default();
-    let (effective_prompt, effective_model, effective_provider) =
-        resolve_effective_prompt_model_provider(
-            record.persona_id.as_deref(),
-            &personas,
-            record.system_prompt.clone(),
-            record.model.clone(),
-        );
+    // System prompt, model, and provider come from the record snapshot — the
+    // record is the authoritative spawn source. For persona-created agents the
+    // snapshot was pinned at create (see `create_managed_agent`); for others
+    // these are the user-supplied values. Reading the record (never the live
+    // persona) is what keeps a running agent pinned across restarts: a persona
+    // edit reaches the agent only via delete+respawn, which rewrites the
+    // snapshot.
+    let effective_prompt = record.system_prompt.clone();
+    let effective_model = record.model.clone();
+    let effective_provider = record.provider.clone();
 
     if let Some(prompt) = &effective_prompt {
         command.env("BUZZ_ACP_SYSTEM_PROMPT", prompt);
@@ -1725,7 +1809,7 @@ pub fn spawn_agent_child(
     //
     // NOSTR_PRIVATE_KEY mirrors BUZZ_PRIVATE_KEY — keep in sync.
     if let Some(cred_helper) = resolve_command("git-credential-nostr") {
-        let relay_http_url = crate::relay::relay_http_base_url(&record.relay_url);
+        let relay_http_url = crate::relay::relay_http_base_url(&effective_relay_url);
 
         command.env("NOSTR_PRIVATE_KEY", &record.private_key_nsec);
         command.env("GIT_TERMINAL_PROMPT", "0");
@@ -1754,19 +1838,24 @@ pub fn spawn_agent_child(
         command.env(key, value);
     }
 
-    // ── User env vars: persona first, then per-agent (last wins) ────────
+    // ── User env vars: the record snapshot ─────────────────────────────
     //
-    // Precedence: desktop parent env < persona env_vars < agent env_vars.
-    // These writes go LAST so user-provided values win over every Buzz-set
-    // env above — EXCEPT reserved keys (BUZZ_PRIVATE_KEY, NOSTR_PRIVATE_KEY,
-    // BUZZ_AUTH_TAG, BUZZ_API_TOKEN, BUZZ_ACP_PRIVATE_KEY,
-    // BUZZ_ACP_API_TOKEN), which `merged_user_env` strips. Those carry
-    // Buzz's identity and must never be GUI-overridable.
-    // Fail closed on persona-lookup errors: persona env_vars carry API
-    // credentials, so silently substituting an empty map would spawn an
-    // unauthenticated agent and surface as a confusing downstream auth error.
-    let persona_env = super::env_vars::resolve_persona_env(app, record.persona_id.as_deref())?;
-    for (key, value) in super::env_vars::merged_user_env(&persona_env, &record.env_vars) {
+    // The record's `env_vars` is the complete, pinned env map — persona env
+    // (snapshotted at create) already merged under the agent's own overrides.
+    // We read it directly and never look up the live persona, so credential
+    // edits on the persona reach the agent only via delete+respawn (which
+    // rewrites the snapshot), not on a plain restart. `merged_user_env` with an
+    // empty persona map still applies the reserved-key / malformed-key / NUL
+    // filtering as defense-in-depth for older on-disk records.
+    //
+    // These writes go LAST so user-provided values win over every Buzz-set env
+    // above — EXCEPT reserved keys (BUZZ_PRIVATE_KEY, NOSTR_PRIVATE_KEY,
+    // BUZZ_AUTH_TAG, BUZZ_API_TOKEN, BUZZ_ACP_PRIVATE_KEY, BUZZ_ACP_API_TOKEN),
+    // which `merged_user_env` strips. Those carry Buzz's identity and must
+    // never be GUI-overridable.
+    for (key, value) in
+        super::env_vars::merged_user_env(&std::collections::BTreeMap::new(), &record.env_vars)
+    {
         command.env(key, value);
     }
 
@@ -1862,7 +1951,10 @@ pub fn start_managed_agent_process(
     }
 
     if let Some(pid) = record.runtime_pid {
-        if process_is_running(pid) && process_belongs_to_us(pid) {
+        if process_is_running(pid)
+            && process_belongs_to_us(pid)
+            && process_has_buzz_marker(pid, &current_instance_id(app))
+        {
             record.updated_at = now_iso();
             record.last_error = None;
             return Ok(());

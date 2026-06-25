@@ -30,7 +30,7 @@ function profilesWithCurrentUser(
   profiles: UserProfileLookup | undefined,
   currentProfile: Pick<
     Profile,
-    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
   > | null,
 ) {
   if (!currentProfile) {
@@ -43,6 +43,7 @@ function profilesWithCurrentUser(
       displayName: currentProfile.displayName,
       avatarUrl: currentProfile.avatarUrl,
       nip05Handle: currentProfile.nip05Handle,
+      ownerPubkey: currentProfile.ownerPubkey,
     } satisfies UserProfileSummary,
   };
 }
@@ -60,7 +61,7 @@ export function buildSharedAgentInvocationPaymentTarget({
   currentIdentity: Identity;
   currentProfile?: Pick<
     Profile,
-    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
   > | null;
   ownerPubkey: string | null | undefined;
   profiles?: UserProfileLookup;
@@ -124,7 +125,7 @@ export function collectSharedAgentInvocationPaymentTargets({
   currentIdentity: Identity;
   currentProfile?: Pick<
     Profile,
-    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
   > | null;
   managedAgents: readonly ManagedAgent[];
   mentionPubkeys: readonly string[];

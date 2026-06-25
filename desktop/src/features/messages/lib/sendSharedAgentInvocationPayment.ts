@@ -30,7 +30,7 @@ async function collectSharedAgentOwnerFallbackTargets({
   currentIdentity: Identity;
   currentProfile?: Pick<
     Profile,
-    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
   > | null;
   existingTargets: readonly SharedAgentInvocationPaymentTarget[];
   managedAgents: readonly ManagedAgent[];
@@ -100,7 +100,7 @@ export async function payForSharedAgentInvocations({
   channelId: string;
   currentProfile?: Pick<
     Profile,
-    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+    "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
   > | null;
   managedAgents: readonly ManagedAgent[];
   mentionPubkeys: readonly string[];

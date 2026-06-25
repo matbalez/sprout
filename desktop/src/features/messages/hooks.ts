@@ -364,7 +364,7 @@ export function useSendMessageMutation(
   sharedAgentInvocationPayments?: {
     currentProfile?: Pick<
       Profile,
-      "pubkey" | "displayName" | "avatarUrl" | "nip05Handle"
+      "pubkey" | "displayName" | "avatarUrl" | "nip05Handle" | "ownerPubkey"
     > | null;
     managedAgents: readonly ManagedAgent[];
     profiles?: UserProfileLookup;

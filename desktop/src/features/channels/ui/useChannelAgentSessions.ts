@@ -29,6 +29,7 @@ type UseChannelAgentSessionsOptions = {
   handleOpenThread: (message: TimelineMessage) => void;
   managedAgents: ChannelAgentSessionAgent[];
   openAgentSessionPubkey: string | null;
+  setChannelManagementOpen: (open: boolean) => void;
   setExpandedThreadReplyIds: (value: Set<string>) => void;
   setOpenAgentSessionPubkey: PanelValueSetter;
   setOpenThreadHeadId: (value: string | null) => void;
@@ -162,6 +163,7 @@ export function useChannelAgentSessions({
   handleOpenThread,
   managedAgents,
   openAgentSessionPubkey,
+  setChannelManagementOpen,
   setExpandedThreadReplyIds,
   setOpenAgentSessionPubkey,
   setOpenThreadHeadId,
@@ -191,9 +193,11 @@ export function useChannelAgentSessions({
       setThreadScrollTargetId(null);
       setThreadReplyTargetId(null);
       setProfilePanelPubkey(null);
+      setChannelManagementOpen(false);
       setOpenAgentSessionPubkey(pubkey);
     },
     [
+      setChannelManagementOpen,
       setExpandedThreadReplyIds,
       setOpenAgentSessionPubkey,
       setOpenThreadHeadId,
@@ -214,9 +218,15 @@ export function useChannelAgentSessions({
     (message: TimelineMessage) => {
       setOpenAgentSessionPubkey(null);
       setProfilePanelPubkey(null);
+      setChannelManagementOpen(false);
       handleOpenThread(message);
     },
-    [handleOpenThread, setOpenAgentSessionPubkey, setProfilePanelPubkey],
+    [
+      handleOpenThread,
+      setChannelManagementOpen,
+      setOpenAgentSessionPubkey,
+      setProfilePanelPubkey,
+    ],
   );
 
   React.useEffect(() => {

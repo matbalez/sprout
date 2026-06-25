@@ -33,6 +33,7 @@ import type {
   UpdateChannelTemplateInput,
 } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
+import { SettingsSectionHeader } from "./SettingsSectionHeader";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -55,10 +56,6 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
-
-// ---------------------------------------------------------------------------
-// ChannelTemplatesSettingsCard
-// ---------------------------------------------------------------------------
 
 export function ChannelTemplatesSettingsCard() {
   const templatesQuery = useChannelTemplatesQuery();
@@ -103,27 +100,26 @@ export function ChannelTemplatesSettingsCard() {
 
   return (
     <section className="min-w-0" data-testid="settings-channel-templates">
-      <div className="mb-12 flex min-w-0 items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="text-2xl font-semibold tracking-tight">
-            Channel Templates
-          </h2>
-          <p className="text-base font-normal text-muted-foreground">
+      <SettingsSectionHeader
+        title="Channel Templates"
+        description={
+          <>
             Save reusable channel configurations and apply them when creating
             new channels.
-          </p>
-        </div>
-        <Button
-          className="shrink-0"
-          onClick={() => setIsCreateOpen(true)}
-          size="sm"
-          type="button"
-          variant="outline"
-        >
-          <Plus className="mr-1.5 h-4 w-4" />
-          Create
-        </Button>
-      </div>
+          </>
+        }
+        action={
+          <Button
+            onClick={() => setIsCreateOpen(true)}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <Plus className="mr-1.5 h-4 w-4" />
+            Create
+          </Button>
+        }
+      />
 
       {templatesQuery.isLoading ? (
         <p className="py-6 text-center text-sm text-muted-foreground">
@@ -191,10 +187,6 @@ export function ChannelTemplatesSettingsCard() {
     </section>
   );
 }
-
-// ---------------------------------------------------------------------------
-// TemplateRow
-// ---------------------------------------------------------------------------
 
 function TemplateRow({
   template,
@@ -276,10 +268,6 @@ function TemplateRow({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// TemplateFormDialog (create + edit)
-// ---------------------------------------------------------------------------
 
 function TemplateFormDialog({
   template,
@@ -584,10 +572,6 @@ function TemplateFormDialog({
   );
 }
 
-// ---------------------------------------------------------------------------
-// TemplateTeamSelector — chip-based team toggle for templates
-// ---------------------------------------------------------------------------
-
 function TemplateTeamSelector({
   isPending,
   isLoading,
@@ -645,10 +629,6 @@ function TemplateTeamSelector({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// RuntimeAssignments — per-entry runtime dropdowns for selected agents
-// ---------------------------------------------------------------------------
 
 function RuntimeAssignments({
   isPending,

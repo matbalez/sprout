@@ -18,8 +18,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 
-/** Default TTL for ephemeral channels: 1 day of inactivity. */
-const EPHEMERAL_TTL_SECONDS = 86400;
+/** Default TTL for ephemeral channels: 7 days of inactivity. */
+const EPHEMERAL_TTL_SECONDS = 604800;
 const CREATE_FIELD_SHELL_CLASS =
   "rounded-xl border border-input bg-muted/40 transition-colors duration-150 ease-out hover:border-muted-foreground/40 focus-within:border-muted-foreground/50";
 const CREATE_FIELD_CONTROL_CLASS =
@@ -45,10 +45,6 @@ type CreateChannelDialogProps = {
     hiveChannel?: boolean;
   }) => Promise<void>;
 };
-
-// ---------------------------------------------------------------------------
-// CreateChannelDialog
-// ---------------------------------------------------------------------------
 
 export function CreateChannelDialog({
   channelKind,
@@ -80,7 +76,6 @@ export function CreateChannelDialog({
   const durationLabel = ephemeral ? "Temporary" : "Ongoing";
   const DurationIcon = ephemeral ? ClockFading : Hash;
 
-  // Reset form state when dialog opens/closes or kind changes
   React.useEffect(() => {
     if (!open) return;
 
@@ -127,7 +122,6 @@ export function CreateChannelDialog({
 
     setSelectedTemplateId(templateId);
 
-    // Pre-fill fields from template (always overwrite to avoid stale values)
     setDescription(template.description ?? "");
     setVisibility(template.visibility);
 
@@ -244,7 +238,7 @@ export function CreateChannelDialog({
                     }}
                   />
                   <ChannelDurationOption
-                    ariaLabel="Ephemeral - auto-archives after 1 day of inactivity"
+                    ariaLabel="Ephemeral - auto-archives after 7 days of inactivity"
                     checked={ephemeral}
                     description="For quick discussions that archive automatically when inactive."
                     icon={ClockFading}
@@ -275,7 +269,6 @@ export function CreateChannelDialog({
             void handleSubmit(event);
           }}
         >
-          {/* Name */}
           <div className="space-y-1.5">
             <label
               className="text-sm font-medium text-foreground"
@@ -316,7 +309,6 @@ export function CreateChannelDialog({
             </div>
           </div>
 
-          {/* Description */}
           <div className="space-y-1.5">
             <label
               className="text-sm font-medium text-foreground"
@@ -516,7 +508,6 @@ export function CreateChannelDialog({
             </div>
           ) : null}
 
-          {/* Error */}
           {errorMessage ? (
             <p className="text-sm text-destructive">{errorMessage}</p>
           ) : null}

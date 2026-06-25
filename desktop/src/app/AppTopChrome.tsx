@@ -4,9 +4,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from "lucide-react";
-import * as React from "react";
 
+import { isMacPlatform } from "@/shared/lib/platform";
+import { useIsFullscreen } from "@/shared/lib/useIsFullscreen";
 import { Button } from "@/shared/ui/button";
+import { cn } from "@/shared/lib/cn";
+import { topChromeBackdrop } from "@/shared/layout/chromeLayout";
 import { useOptionalSidebar } from "@/shared/ui/sidebar";
 
 type AppTopChromeProps = {
@@ -17,8 +20,7 @@ type AppTopChromeProps = {
 };
 
 const TOP_CHROME_ICON_BUTTON_CLASS =
-  "h-7 w-7 rounded-[4px] text-muted-foreground/70 hover:bg-border/45 hover:text-foreground [&_svg]:size-4";
-const TOP_CHROME_WHEEL_GUARD_HEIGHT = 40;
+  "h-7 w-7 rounded-[4px] text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground [&_svg]:size-4";
 
 function TopChromeSidebarTrigger() {
   const sidebar = useOptionalSidebar();
@@ -48,30 +50,26 @@ export function AppTopChrome({
   onGoBack,
   onGoForward,
 }: AppTopChromeProps) {
-  React.useEffect(() => {
-    const handleWheel = (event: WheelEvent) => {
-      if (event.clientY <= TOP_CHROME_WHEEL_GUARD_HEIGHT) {
-        event.preventDefault();
-      }
-    };
-
-    document.addEventListener("wheel", handleWheel, {
-      capture: true,
-      passive: false,
-    });
-    return () => {
-      document.removeEventListener("wheel", handleWheel, { capture: true });
-    };
-  }, []);
+  const isFullscreen = useIsFullscreen();
+  // On macOS the traffic-light buttons overlay the chrome (see
+  // `trafficLightPosition` in `tauri.conf.json`), so the nav row clears their
+  // x-position and shifts to align the nav icon centers with the native dot
+  // centers. In fullscreen those buttons hide, so use the standard alignment.
+  const navRowPaddingClass =
+    isMacPlatform() && !isFullscreen ? "pl-20" : "pl-3";
+  const navRowAlignmentClass =
+    isMacPlatform() && !isFullscreen ? "translate-y-[3px]" : null;
 
   return (
-    <>
-      <div
-        aria-hidden="true"
-        className="fixed inset-x-0 top-0 z-20 h-10 cursor-default select-none"
-        data-tauri-drag-region
-      />
-      <div className="fixed left-[80px] top-[6px] z-45 flex items-center gap-0.5">
+    <div
+      className={cn(
+        "relative z-45 flex shrink-0 cursor-default select-none items-center bg-sidebar pr-3 text-sidebar-foreground",
+        topChromeBackdrop.height,
+        navRowPaddingClass,
+      )}
+      data-tauri-drag-region
+    >
+      <div className={cn("flex items-center gap-0.5", navRowAlignmentClass)}>
         <TopChromeSidebarTrigger />
         <Button
           aria-label="Go back"
@@ -96,6 +94,6 @@ export function AppTopChrome({
           <ChevronRight />
         </Button>
       </div>
-    </>
+    </div>
   );
 }

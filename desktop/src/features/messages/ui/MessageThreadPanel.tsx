@@ -63,6 +63,7 @@ type MessageThreadPanelProps = {
   onEditLastOwnMessage?: () => boolean;
   onEditSave?: (content: string, mediaTags?: string[][]) => Promise<void>;
   onMarkUnread?: (message: TimelineMessage) => void;
+  onMarkRead?: (message: TimelineMessage) => void;
   onExpandReplies: (message: TimelineMessage) => void;
   onScrollTargetResolved: () => void;
   onSelectReplyTarget: (message: TimelineMessage) => void;
@@ -90,16 +91,15 @@ type MessageThreadPanelProps = {
   toolbarExtraActions?: React.ReactNode;
   widthPx: number;
   isFollowingThread?: boolean;
+  isMessageUnreadById?: (messageId: string) => boolean;
   onFollowThread?: () => void;
   onUnfollowThread?: () => void;
 };
 
-/** Stable `useDeferredValue` initial value; mirrors `EMPTY_MESSAGES`. */
 const EMPTY_THREAD_REPLIES: MainTimelineEntry[] = [];
 const THREAD_PANEL_MESSAGE_GUTTER_CLASS = "px-2";
 const THREAD_PANEL_COMPOSER_GUTTER_CLASS = "px-5";
-const THREAD_PANEL_SUMMARY_INDENT_OFFSET_PX = -2;
-
+const THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM = -0.125;
 type MessageThreadPanelSkeletonProps = {
   isSinglePanelView?: boolean;
   layout?: "standalone" | "split";
@@ -264,7 +264,7 @@ export function MessageThreadPanelSkeleton({
       className={cn(
         "min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pb-24 [overflow-anchor:none]",
         isSplitLayout && auxiliaryPanelContentPaddingClass,
-        !isSplitLayout && !isFloatingOverlay && "pt-[4.75rem]",
+        !isSplitLayout && !isFloatingOverlay && "pt-[3.25rem]",
       )}
       data-testid="message-thread-loading"
     >
@@ -321,8 +321,8 @@ export function MessageThreadPanelSkeleton({
           className={cn(
             "flex cursor-default select-none items-center",
             isSinglePanelView
-              ? `relative ${PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS} -mb-[4.75rem] min-h-[4.75rem] shrink-0 gap-2.5 bg-background/80 pb-[0.1875rem] pl-4 pr-2 pt-[2.6875rem] backdrop-blur-md supports-[backdrop-filter]:bg-background/70 sm:pr-3 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55`
-              : "relative z-50 min-h-11 shrink-0 gap-3 bg-background/80 px-3 py-1.5 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55",
+              ? `relative ${PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS} -mb-[3.25rem] min-h-[3.25rem] shrink-0 gap-2.5 bg-background/80 px-4 py-2 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 sm:pr-3 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55`
+              : "relative z-50 min-h-[3.25rem] shrink-0 gap-3 bg-background/80 px-5 py-2 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55",
           )}
           data-tauri-drag-region
         >
@@ -349,6 +349,7 @@ export function MessageThreadPanel({
   isSending,
   isSinglePanelView = false,
   isFollowingThread,
+  isMessageUnreadById,
   onCancelEdit,
   onCancelReply,
   onClose,
@@ -358,6 +359,7 @@ export function MessageThreadPanel({
   onEditSave,
   onFollowThread,
   onMarkUnread,
+  onMarkRead,
   onExpandReplies,
   onScrollTargetResolved,
   onSelectReplyTarget,
@@ -616,7 +618,7 @@ export function MessageThreadPanel({
       className={cn(
         "min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain pb-24 [overflow-anchor:none]",
         isSplitLayout && auxiliaryPanelContentPaddingClass,
-        !isSplitLayout && !isFloatingOverlay && "pt-[4.75rem]",
+        !isSplitLayout && !isFloatingOverlay && "pt-[3.25rem]",
       )}
       data-testid="message-thread-body"
       onScroll={onScroll}
@@ -645,6 +647,7 @@ export function MessageThreadPanel({
                 highlightedBranch?.id === threadHead.id
               }
               isFollowingThread={isFollowingThread}
+              isUnread={isMessageUnreadById?.(threadHead.id)}
               layoutVariant="thread-reply"
               message={threadHead}
               onCollapseDescendants={
@@ -667,6 +670,7 @@ export function MessageThreadPanel({
                 onFollowThread ? (_msg) => onFollowThread() : undefined
               }
               onMarkUnread={onMarkUnread}
+              onMarkRead={onMarkRead}
               onToggleReaction={onToggleReaction}
               onUnfollowThread={
                 onUnfollowThread ? (_msg) => onUnfollowThread() : undefined
@@ -693,7 +697,9 @@ export function MessageThreadPanel({
                   message={threadHead}
                   onOpenThread={expandThreadHeadReplies}
                   summary={visibleThreadHeadSummary}
-                  summaryIndentOffsetPx={THREAD_PANEL_SUMMARY_INDENT_OFFSET_PX}
+                  summaryIndentOffsetRem={
+                    THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM
+                  }
                   unreadCount={threadUnreadCount}
                 />
               </div>
@@ -764,6 +770,7 @@ export function MessageThreadPanel({
                         }
                         highlightThreadLineDepths={highlightedLineDepths}
                         hoverBackground={!entry.summary}
+                        isUnread={isMessageUnreadById?.(entry.message.id)}
                         layoutVariant="thread-reply"
                         message={entry.message}
                         onCollapseDepthGuide={handleCollapseDepthGuide}
@@ -793,6 +800,7 @@ export function MessageThreadPanel({
                             : undefined
                         }
                         onMarkUnread={onMarkUnread}
+                        onMarkRead={onMarkRead}
                         onReply={onSelectReplyTarget}
                         onToggleReaction={onToggleReaction}
                         profiles={profiles}
@@ -815,8 +823,8 @@ export function MessageThreadPanel({
                           }
                           onOpenThread={onExpandReplies}
                           summary={entry.summary}
-                          summaryIndentOffsetPx={
-                            THREAD_PANEL_SUMMARY_INDENT_OFFSET_PX
+                          summaryIndentOffsetRem={
+                            THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM
                           }
                           showDepthGuides={shouldShowThreadBranchGuides}
                           unreadCount={threadReplyUnreadCounts?.get(
@@ -985,8 +993,8 @@ export function MessageThreadPanel({
           className={cn(
             "flex cursor-default select-none items-center",
             isSinglePanelView
-              ? `relative ${PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS} -mb-[4.75rem] min-h-[4.75rem] shrink-0 gap-2.5 bg-background/80 pb-[0.1875rem] pl-4 pr-2 pt-[2.6875rem] backdrop-blur-md supports-[backdrop-filter]:bg-background/70 sm:pr-3 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55`
-              : "relative z-50 min-h-11 shrink-0 gap-3 bg-background/80 px-3 py-1.5 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55",
+              ? `relative ${PANEL_SINGLE_COLUMN_HEADER_LAYER_CLASS} -mb-[3.25rem] min-h-[3.25rem] shrink-0 gap-2.5 bg-background/80 px-4 py-2 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 sm:pr-3 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55`
+              : "relative z-50 min-h-[3.25rem] shrink-0 gap-3 bg-background/80 px-5 py-2 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 dark:bg-background/70 dark:backdrop-blur-xl dark:supports-[backdrop-filter]:bg-background/55",
           )}
           data-tauri-drag-region
         >

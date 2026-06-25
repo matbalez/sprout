@@ -215,7 +215,6 @@ export function ForumThreadPanel({
         data-scroll-restoration-id={`forum-thread:${channelId}`}
         ref={scrollRef}
       >
-        {/* Original post */}
         <div
           className={cn(
             "group border-b border-border/60 p-4",
@@ -260,13 +259,11 @@ export function ForumThreadPanel({
           </div>
         </div>
 
-        {/* Replies header */}
         <div className="flex items-center gap-1.5 border-b border-border/60 px-4 py-2.5 text-sm font-medium text-muted-foreground">
           <MessageSquare className="h-4 w-4" />
           {replies.length} {replies.length === 1 ? "reply" : "replies"}
         </div>
 
-        {/* Reply list */}
         <div className="divide-y divide-border/40">
           {replies.map((reply) => (
             <ReplyRow
@@ -287,7 +284,6 @@ export function ForumThreadPanel({
         </div>
       </div>
 
-      {/* Reply composer */}
       <div className="border-t border-border/60 p-4">
         <ForumComposer
           channelId={channelId}
