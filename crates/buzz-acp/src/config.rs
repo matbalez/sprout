@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use clap::Parser;
+use clap::ValueEnum;
 use nostr::Keys;
 use thiserror::Error;
 use url::Url;
@@ -56,8 +57,16 @@ pub enum MultipleEventHandling {
     /// Queue new events while a turn is in-flight. Deliver after current turn
     /// completes. Existing behavior — zero code change in this path.
     Queue,
+    /// Cancel the in-flight turn and re-dispatch a merged prompt that frames
+    /// the new events as a **steering message** — one that arrived while the
+    /// agent was working, to be woven into the in-progress task rather than
+    /// treated as a replacement. Fires for any author the inbound author gate
+    /// admits (owner ∪ allowlist ∪ siblings). This is the default mid-turn
+    /// delivery path. Requires DedupMode::Queue.
+    Steer,
     /// Cancel the in-flight turn and re-dispatch a merged prompt combining
-    /// the original events with the new ones, for ANY new @mention.
+    /// the original events with the new ones, framed as a **supersede** (the
+    /// new request replaces the old), for ANY new @mention.
     /// Requires DedupMode::Queue.
     Interrupt,
     /// Cancel the in-flight turn only when the new @mention is from the agent
@@ -73,7 +82,7 @@ pub enum MultipleEventHandling {
 /// - `allowlist`  — owner + explicit pubkey list (`--respond-to-allowlist`).
 /// - `anyone`     — all events forwarded (no author filtering).
 /// - `nobody`     — all events dropped (proactive/heartbeat-only mode).
-#[derive(Debug, Clone, Default, PartialEq, clap::ValueEnum)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, clap::ValueEnum)]
 pub enum RespondTo {
     #[default]
     OwnerOnly,
@@ -289,12 +298,15 @@ pub struct CliArgs {
     pub dedup: DedupMode,
 
     /// How to handle new @mentions while a turn is already in-flight.
-    /// queue: events wait (default). interrupt: cancel+re-prompt on any mention.
-    /// owner-interrupt: cancel only for agent owner's mentions.
+    /// steer (default): cancel+re-prompt, framing the new mention as a message
+    /// that arrived mid-task — the agent keeps working and weaves it in.
+    /// queue: events wait until the current turn completes.
+    /// interrupt: cancel+re-prompt framed as a supersede (new replaces old).
+    /// owner-interrupt: interrupt only for the agent owner's mentions.
     #[arg(
         long,
         env = "BUZZ_ACP_MULTIPLE_EVENT_HANDLING",
-        default_value = "queue",
+        default_value = "steer",
         value_enum
     )]
     pub multiple_event_handling: MultipleEventHandling,
@@ -393,6 +405,14 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_RESPOND_TO_ALLOWLIST", value_delimiter = ',')]
     pub respond_to_allowlist: Option<Vec<String>>,
 
+    /// Comma-separated list of allowed `--respond-to` modes.
+    /// When set, the harness rejects startup if `--respond-to` is not in this list.
+    /// Modes: owner-only, allowlist, anyone, nobody.
+    /// Default: empty (all modes allowed — no restriction).
+    /// Example: `BUZZ_ACP_ALLOWED_RESPOND_TO=owner-only,allowlist`
+    #[arg(long, env = "BUZZ_ACP_ALLOWED_RESPOND_TO", value_delimiter = ',')]
+    pub allowed_respond_to: Option<Vec<String>>,
+
     /// Path to a persona pack directory. Used with --persona-name to configure
     /// the agent from a .persona.md pack instead of CLI flags.
     #[arg(long, env = "BUZZ_ACP_PERSONA_PACK")]
@@ -460,6 +480,8 @@ pub struct Config {
     pub respond_to: RespondTo,
     /// Validated allowlist of pubkey hex strings (used when respond_to == Allowlist).
     pub respond_to_allowlist: HashSet<String>,
+    /// Allowed `respond_to` modes. Empty = all modes allowed.
+    pub allowed_respond_to: Vec<String>,
     /// Per-persona env vars to inject at agent spawn time (e.g., GOOSE_PROVIDER, GOOSE_MODEL, BUZZ_AGENT_MODEL).
     /// Populated from persona pack resolution. Empty when no pack is configured.
     pub persona_env_vars: Vec<(String, String)>,
@@ -492,6 +514,33 @@ fn validate_allowlist(entries: &[String]) -> Result<HashSet<String>, ConfigError
     Ok(validated)
 }
 
+/// Validate the `--multiple-event-handling` / `--dedup` combination.
+///
+/// Every mid-turn cancel mode (`Steer`, `Interrupt`, `OwnerInterrupt`) requires
+/// `DedupMode::Queue`: `DedupMode::Drop` discards events during the cancel drain
+/// window, which would produce incomplete merged prompts. `Queue` handling
+/// imposes no constraint.
+fn validate_multiple_event_handling(
+    handling: MultipleEventHandling,
+    dedup: DedupMode,
+) -> Result<(), ConfigError> {
+    let is_cancel_mode = matches!(
+        handling,
+        MultipleEventHandling::Steer
+            | MultipleEventHandling::Interrupt
+            | MultipleEventHandling::OwnerInterrupt
+    );
+    if is_cancel_mode && matches!(dedup, DedupMode::Drop) {
+        return Err(ConfigError::ConfigFile(
+            "--multiple-event-handling=steer (or interrupt/owner-interrupt) requires \
+             --dedup=queue. DedupMode::Drop discards events during the cancel drain window, \
+             producing incomplete merged prompts."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn normalize_agent_command_identity(command: &str) -> String {
     let normalized = command.trim().replace('\\', "/");
     let trimmed = normalized.trim_end_matches('/');
@@ -518,17 +567,22 @@ fn default_agent_args(command: &str) -> Option<Vec<String>> {
     }
 }
 
-/// Build `-c` flag pairs that allowlist the relay hostname in Codex's network sandbox.
+/// Build `-c` flag pairs that enable network access and allowlist the relay hostname
+/// in Codex's network sandbox.
 ///
-/// Codex sandboxes MCP subprocesses (including `buzz-cli`) behind a local proxy with
-/// a domain allowlist. Without this, `buzz-cli` requests to the relay are blocked before
+/// Codex sandboxes MCP subprocesses (including `buzz-cli`) behind a Seatbelt sandbox
+/// that blocks all outbound network by default, plus a managed proxy with a domain
+/// allowlist. Without these flags, `buzz-cli` requests to the relay are blocked before
 /// they reach WARP or any other outbound network path.
 ///
-/// Returns `["-c", "network_proxy.mode=\"full\"", "-c", "network_proxy.domains.\"<host>\"=\"allow\""]`
+/// Returns `["-c", "sandbox_workspace_write.network_access=true", "-c",
+/// "network_proxy.mode=\"full\"", "-c", "network_proxy.domains.\"<host>\"=\"allow\""]`
 /// for Codex agents, or an empty vec for non-Codex agents or when the hostname cannot
 /// be parsed from the relay URL.
 ///
-/// The `network_proxy` keys map to `NetworkProxyConfigToml` in codex-acp's config schema:
+/// The flags form a layered defense:
+/// - `sandbox_workspace_write.network_access=true` opens the Seatbelt sandbox gate so
+///   outbound TCP/TLS connections are allowed at the OS level
 /// - `network_proxy.mode="full"` enables the managed proxy for all outbound traffic
 /// - `network_proxy.domains."<host>"="allow"` adds the relay hostname to the allowlist
 ///
@@ -562,6 +616,8 @@ pub fn codex_network_args(agent_command: &str, relay_url: &str) -> Vec<String> {
     tracing::debug!(host, "injecting codex network allowlist for host");
 
     vec![
+        "-c".into(),
+        "sandbox_workspace_write.network_access=true".into(),
         "-c".into(),
         "network_proxy.mode=\"full\"".into(),
         "-c".into(),
@@ -623,7 +679,14 @@ impl Config {
         // Legacy env-var propagation is intentionally NOT done here.
         // Call `propagate_legacy_env_vars()` before the tokio runtime starts
         // (in the sync `fn main()` wrapper) — see Rust 2024 edition safety.
-        let mut args = CliArgs::parse();
+        let args = CliArgs::parse();
+        Self::from_args(args)
+    }
+
+    /// Build a `Config` from already-parsed `CliArgs`. Separated from `from_cli()` so
+    /// tests can construct `CliArgs` via `CliArgs::try_parse_from` and exercise the full
+    /// validation path without going through process args.
+    pub fn from_args(mut args: CliArgs) -> Result<Self, ConfigError> {
         let keys = Keys::parse(&args.private_key)?;
         // Best-effort zeroize: overwrite the raw private key string to reduce
         // exposure via core dumps or heap inspection (#41). Without the `zeroize`
@@ -808,6 +871,31 @@ impl Config {
             HashSet::new()
         };
 
+        // Validate respond_to against the allowed set.
+        let allowed_respond_to = if let Some(raw) = args.allowed_respond_to {
+            // Validate each entry is a known RespondTo mode.
+            for s in &raw {
+                RespondTo::from_str(s.trim(), true).map_err(|_| {
+                    ConfigError::ConfigFile(format!(
+                        "invalid value in BUZZ_ACP_ALLOWED_RESPOND_TO: '{s}' \
+                         (valid values: owner-only, allowlist, anyone, nobody)"
+                    ))
+                })?;
+            }
+            let allowed_modes: Vec<String> = raw.iter().map(|s| s.trim().to_string()).collect();
+            if !allowed_modes.is_empty() && !allowed_modes.contains(&args.respond_to.to_string()) {
+                return Err(ConfigError::ConfigFile(format!(
+                    "respond_to '{}' is not permitted on this deployment \
+                     (BUZZ_ACP_ALLOWED_RESPOND_TO={})",
+                    args.respond_to,
+                    raw.join(",")
+                )));
+            }
+            allowed_modes
+        } else {
+            Vec::new()
+        };
+
         //
         // Precedence: CLI/env args > persona values > built-in defaults.
         // Persona fills in what's missing. Explicit flags always win.
@@ -855,18 +943,7 @@ impl Config {
         }
         let model = args.model.or(persona_model);
 
-        if matches!(
-            args.multiple_event_handling,
-            MultipleEventHandling::Interrupt | MultipleEventHandling::OwnerInterrupt
-        ) && matches!(args.dedup, DedupMode::Drop)
-        {
-            return Err(ConfigError::ConfigFile(
-                "--multiple-event-handling=interrupt (or owner-interrupt) requires --dedup=queue. \
-                 DedupMode::Drop discards events during the cancel drain window, \
-                 producing incomplete merged prompts."
-                    .into(),
-            ));
-        }
+        validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
 
         let config = Config {
             keys,
@@ -899,6 +976,7 @@ impl Config {
             permission_mode: args.permission_mode,
             respond_to: args.respond_to,
             respond_to_allowlist,
+            allowed_respond_to,
             persona_env_vars,
             relay_observer: args.relay_observer,
             agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
@@ -917,8 +995,15 @@ impl Config {
             }
             other => format!("respond_to={other}"),
         };
+        let allowed_respond_to_detail = if self.allowed_respond_to.is_empty() {
+            String::new()
+        } else {
+            let mut modes = self.allowed_respond_to.clone();
+            modes.sort();
+            format!(" allowed_respond_to=[{}]", modes.join(","))
+        };
         format!(
-            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}",
+            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}",
             self.relay_url,
             self.keys.public_key().to_hex(),
             self.agent_command,
@@ -940,6 +1025,7 @@ impl Config {
             self.model.as_deref().unwrap_or("(agent default)"),
             self.permission_mode,
             respond_to_detail,
+            allowed_respond_to_detail,
         )
     }
 }
@@ -1225,6 +1311,7 @@ fn rule_applies_to_channel(rule: &SubscriptionRule, channel_id: Uuid) -> bool {
 mod tests {
     use super::*;
     use crate::filter::{ChannelScope, SubscriptionRule};
+    use clap::{Parser, ValueEnum};
 
     /// Build a minimal Config for testing without CLI parsing.
     fn test_config(mode: SubscribeMode) -> Config {
@@ -1259,6 +1346,7 @@ mod tests {
             permission_mode: PermissionMode::BypassPermissions,
             respond_to: RespondTo::Anyone,
             respond_to_allowlist: HashSet::new(),
+            allowed_respond_to: Vec::new(),
             persona_env_vars: vec![],
             relay_observer: false,
             agent_owner: None,
@@ -1431,6 +1519,8 @@ mod tests {
             args,
             vec![
                 "-c",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
                 "network_proxy.domains.\"sprout-oss.stage.blox.sqprod.co\"=\"allow\"",
@@ -1444,6 +1534,8 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "-c",
+                "sandbox_workspace_write.network_access=true",
                 "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
@@ -1459,6 +1551,8 @@ mod tests {
             args,
             vec![
                 "-c",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
                 "network_proxy.domains.\"relay.example.com\"=\"allow\"",
@@ -1472,6 +1566,8 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "-c",
+                "sandbox_workspace_write.network_access=true",
                 "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
@@ -1488,6 +1584,8 @@ mod tests {
             args,
             vec![
                 "-c",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
                 "network_proxy.domains.\"relay.example.com\"=\"allow\"",
@@ -1503,6 +1601,8 @@ mod tests {
             args,
             vec![
                 "-c",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
                 "network_proxy.mode=\"full\"",
                 "-c",
                 "network_proxy.domains.\"relay.example.com\"=\"allow\"",
@@ -1515,6 +1615,16 @@ mod tests {
         assert!(codex_network_args("goose", "wss://relay.example.com").is_empty());
         assert!(codex_network_args("claude-agent-acp", "wss://relay.example.com").is_empty());
         assert!(codex_network_args("buzz-agent", "wss://relay.example.com").is_empty());
+    }
+
+    #[test]
+    fn codex_network_args_includes_sandbox_network_access() {
+        // The sandbox gate must be the first flag pair — without it, the Seatbelt
+        // sandbox blocks outbound connections before the proxy can intercept them.
+        let args = codex_network_args("codex-acp", "wss://relay.example.com");
+        assert_eq!(args.len(), 6, "expected 3 flag pairs (6 elements)");
+        assert_eq!(args[0], "-c");
+        assert_eq!(args[1], "sandbox_workspace_write.network_access=true");
     }
 
     #[test]
@@ -2282,6 +2392,61 @@ channels = "ALL"
         assert!(result.is_empty());
     }
 
+    // ── Multiple-event-handling validation + default ──────────────────────────
+
+    #[test]
+    fn test_multiple_event_handling_default_is_steer() {
+        // Parse a minimal arg set; the default for --multiple-event-handling
+        // must be `steer` (steering is the default mid-turn delivery path).
+        let args = CliArgs::parse_from(["buzz-acp", "--private-key", &"0".repeat(64)]);
+        assert_eq!(args.multiple_event_handling, MultipleEventHandling::Steer);
+        // Dedup default must remain `queue` so steering's requirement is met.
+        assert!(matches!(args.dedup, DedupMode::Queue));
+    }
+
+    #[test]
+    fn test_validate_steer_requires_queue_dedup() {
+        // Steer + Drop is rejected (drain window would drop events).
+        let err = validate_multiple_event_handling(MultipleEventHandling::Steer, DedupMode::Drop)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("requires"),
+            "expected a dedup-requirement error, got: {err}"
+        );
+        // Steer + Queue is accepted.
+        assert!(
+            validate_multiple_event_handling(MultipleEventHandling::Steer, DedupMode::Queue)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_queue_handling_allows_any_dedup() {
+        // The non-cancel `Queue` handling imposes no dedup constraint.
+        assert!(
+            validate_multiple_event_handling(MultipleEventHandling::Queue, DedupMode::Drop).is_ok()
+        );
+        assert!(
+            validate_multiple_event_handling(MultipleEventHandling::Queue, DedupMode::Queue)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_validate_interrupt_modes_still_require_queue() {
+        for mode in [
+            MultipleEventHandling::Interrupt,
+            MultipleEventHandling::OwnerInterrupt,
+        ] {
+            assert!(
+                validate_multiple_event_handling(mode, DedupMode::Drop).is_err(),
+                "{mode:?} + Drop should be rejected"
+            );
+        }
+    }
+
+    // ── Idle timeout constant + guard (PR #935) ───────────────────────────────
+
     #[test]
     fn default_idle_timeout_is_900_seconds() {
         // Lock the constant value so accidental changes are caught.
@@ -2305,6 +2470,189 @@ channels = "ALL"
         assert!(
             idle_valid < max_turn_valid,
             "default idle (900) must be less than default max_turn (3600)"
+        );
+    }
+
+    // --- BUZZ_ACP_ALLOWED_RESPOND_TO gate ---
+
+    fn parse_allowed_respond_to(raw: &[&str]) -> Result<HashSet<RespondTo>, ConfigError> {
+        let mut set = HashSet::new();
+        for s in raw {
+            let mode = RespondTo::from_str(s.trim(), true).map_err(|_| {
+                ConfigError::ConfigFile(format!(
+                    "invalid value in BUZZ_ACP_ALLOWED_RESPOND_TO: '{s}' \
+                     (valid values: owner-only, allowlist, anyone, nobody)"
+                ))
+            })?;
+            set.insert(mode);
+        }
+        Ok(set)
+    }
+
+    fn check_allowed_respond_to(
+        allowed_raw: &[&str],
+        respond_to: RespondTo,
+    ) -> Result<(), ConfigError> {
+        let set = parse_allowed_respond_to(allowed_raw)?;
+        if !set.is_empty() && !set.contains(&respond_to) {
+            return Err(ConfigError::ConfigFile(format!(
+                "respond_to '{}' is not permitted on this deployment \
+                 (BUZZ_ACP_ALLOWED_RESPOND_TO={})",
+                respond_to,
+                allowed_raw.join(",")
+            )));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn allowed_respond_to_rejects_disallowed_mode() {
+        let result = check_allowed_respond_to(&["owner-only", "allowlist"], RespondTo::Anyone);
+        assert!(
+            result.is_err(),
+            "anyone should be rejected when not in allowed set"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not permitted"),
+            "error should mention 'not permitted': {msg}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_accepts_allowed_mode() {
+        let result = check_allowed_respond_to(&["owner-only", "allowlist"], RespondTo::OwnerOnly);
+        assert!(result.is_ok(), "owner-only should be accepted: {result:?}");
+    }
+
+    #[test]
+    fn allowed_respond_to_empty_allows_all() {
+        // No restriction — anyone is accepted.
+        let result = check_allowed_respond_to(&[], RespondTo::Anyone);
+        assert!(
+            result.is_ok(),
+            "empty allowed set should permit any mode: {result:?}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_rejects_invalid_mode_string() {
+        let result = parse_allowed_respond_to(&["owner-only", "badvalue"]);
+        assert!(result.is_err(), "invalid mode string should be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid value in BUZZ_ACP_ALLOWED_RESPOND_TO"),
+            "error should name the env var: {msg}"
+        );
+        assert!(
+            msg.contains("badvalue"),
+            "error should name the bad value: {msg}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_summary_shows_restriction_when_set() {
+        let mut config = test_config(SubscribeMode::Mentions);
+        config.allowed_respond_to = vec!["owner-only".to_string(), "allowlist".to_string()];
+        let s = config.summary();
+        assert!(
+            s.contains("allowed_respond_to="),
+            "summary should include allowed_respond_to when set: {s}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_summary_omitted_when_empty() {
+        let config = test_config(SubscribeMode::Mentions);
+        let s = config.summary();
+        assert!(
+            !s.contains("allowed_respond_to="),
+            "summary should not include allowed_respond_to when empty: {s}"
+        );
+    }
+
+    // --- Integration tests: full env-var → CliArgs → Config::from_args() path ---
+    //
+    // These tests exercise the actual wiring: BUZZ_ACP_ALLOWED_RESPOND_TO in the
+    // environment causes clap to populate CliArgs::allowed_respond_to, which then
+    // flows through Config::from_args() to produce a ConfigError. If the #[arg(env)]
+    // attribute or field name were removed, these tests would fail.
+    //
+    // We pass the value via the CLI flag (`--allowed-respond-to`) rather than
+    // std::env::set_var to avoid test-parallelism races on shared env state.
+    // The env-var wiring is covered by the clap #[arg(env)] attribute itself.
+
+    // A minimal valid private key for test use (secp256k1 scalar = 1).
+    const TEST_PRIVATE_KEY: &str =
+        "0000000000000000000000000000000000000000000000000000000000000001";
+
+    #[test]
+    fn allowed_respond_to_full_path_rejects_disallowed_mode() {
+        // --allowed-respond-to=owner-only,allowlist + --respond-to=anyone → ConfigError
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--respond-to",
+            "anyone",
+            "--allowed-respond-to",
+            "owner-only,allowlist",
+        ])
+        .expect("clap should parse args");
+        let result = Config::from_args(args);
+
+        assert!(
+            result.is_err(),
+            "from_args should reject respond_to=anyone when not in allowed set"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("not permitted"),
+            "error should mention 'not permitted': {msg}"
+        );
+        assert!(
+            msg.contains("anyone"),
+            "error should name the disallowed mode: {msg}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_full_path_accepts_allowed_mode() {
+        // --allowed-respond-to=owner-only,allowlist + --respond-to=owner-only → Ok
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--respond-to",
+            "owner-only",
+            "--allowed-respond-to",
+            "owner-only,allowlist",
+        ])
+        .expect("clap should parse args");
+        let result = Config::from_args(args);
+
+        assert!(
+            result.is_ok(),
+            "from_args should accept respond_to=owner-only when in allowed set: {result:?}"
+        );
+    }
+
+    #[test]
+    fn allowed_respond_to_full_path_unset_allows_all() {
+        // No --allowed-respond-to flag → anyone is accepted.
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--respond-to",
+            "anyone",
+        ])
+        .expect("clap should parse args");
+        let result = Config::from_args(args);
+
+        assert!(
+            result.is_ok(),
+            "from_args should accept any mode when allowed list is unset: {result:?}"
         );
     }
 }

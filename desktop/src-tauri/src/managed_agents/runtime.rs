@@ -371,9 +371,71 @@ fn sigterm_then_sigkill(pids: &[i32]) {
     }
 }
 
+/// Resolve orphan candidate PIDs to their actual process group IDs, dedupe,
+/// and signal the groups. An orphaned grandchild (e.g. `goose` or `buzz-dev-mcp`)
+/// whose harness has exited retains the harness's PGID — signaling that PGID
+/// kills the entire orphaned subtree. Falls back to the candidate PID itself
+/// when PGID resolution fails (process may have exited between detection and
+/// kill).
+#[cfg(target_os = "macos")]
+fn resolve_pgids_and_kill(candidate_pids: &[i32]) {
+    let candidate_set: std::collections::HashSet<i32> = candidate_pids.iter().copied().collect();
+    let mut pgids = std::collections::HashSet::new();
+    for &pid in candidate_pids {
+        let pgid = unsafe { libc::getpgid(pid) };
+        if pgid > 0 {
+            pgids.insert(pgid);
+        } else {
+            // Process may have exited; try signaling it directly as a group.
+            pgids.insert(pid);
+        }
+    }
+    // PID-recycling guard: if a resolved PGID is alive but isn't one of our
+    // orphan candidates, the old harness PID was recycled by a new process
+    // that called setsid() — skip it to avoid killing an unrelated group.
+    pgids.retain(|&pgid| {
+        if candidate_set.contains(&pgid) {
+            return true;
+        }
+        let alive = unsafe { libc::kill(pgid, 0) } == 0;
+        !alive
+    });
+    let unique: Vec<i32> = pgids.into_iter().collect();
+    sigterm_then_sigkill(&unique);
+}
+
+/// Resolve orphan candidate PIDs to their actual process group IDs, dedupe,
+/// and signal the groups. Linux variant reads PGID from /proc/<pid>/stat.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn resolve_pgids_and_kill(candidate_pids: &[i32]) {
+    let candidate_set: std::collections::HashSet<i32> = candidate_pids.iter().copied().collect();
+    let mut pgids = std::collections::HashSet::new();
+    for &pid in candidate_pids {
+        if let Some(pgid) = read_pgid_linux(pid as u32) {
+            pgids.insert(pgid as i32);
+        } else {
+            // Process may have exited; try signaling it directly as a group.
+            pgids.insert(pid);
+        }
+    }
+    // PID-recycling guard: if a resolved PGID is alive but isn't one of our
+    // orphan candidates, the old harness PID was recycled by a new process
+    // that called setsid() — skip it to avoid killing an unrelated group.
+    pgids.retain(|&pgid| {
+        if candidate_set.contains(&pgid) {
+            return true;
+        }
+        let alive = unsafe { libc::kill(pgid, 0) } == 0;
+        !alive
+    });
+    let unique: Vec<i32> = pgids.into_iter().collect();
+    sigterm_then_sigkill(&unique);
+}
+
 /// Kill orphaned agent processes using PID file receipts. Reads all files from
 /// `agent-pids/`, verifies each PID still belongs to a known agent binary,
-/// then kills the process group. Deletes the PID file after killing.
+/// then resolves each candidate's actual PGID and signals the process group.
+/// Deletes the PID file after killing.
 ///
 /// `skip_pids` are PIDs already handled by the tracked-agent path.
 #[cfg(unix)]
@@ -395,7 +457,7 @@ pub(crate) fn sweep_orphaned_agent_processes(app: &AppHandle, skip_pids: &[u32])
         .collect();
 
     if !targets.is_empty() {
-        sigterm_then_sigkill(&targets);
+        resolve_pgids_and_kill(&targets);
     }
 
     // Clean up PID files for processes we just killed or that are already gone.
@@ -519,6 +581,13 @@ pub(crate) fn sweep_system_agent_processes(instance_id: &str, skip_pids: &[u32])
         if skip_pids.contains(&info.pbi_ppid) {
             continue;
         }
+        // Grandchild check: the harness is spawned with process_group(0), so
+        // all descendants share its PGID. If this process's PGID matches a
+        // tracked harness PID, it's a live descendant — not an orphan.
+        let pgid = unsafe { libc::getpgid(pid) };
+        if pgid > 0 && skip_pids.contains(&(pgid as u32)) {
+            continue;
+        }
         if !process_has_buzz_marker(upid, instance_id) {
             continue;
         }
@@ -530,7 +599,7 @@ pub(crate) fn sweep_system_agent_processes(instance_id: &str, skip_pids: &[u32])
             "buzz-desktop: system sweep found {} orphaned agent process(es), cleaning up",
             orphans.len()
         );
-        sigterm_then_sigkill(&orphans);
+        resolve_pgids_and_kill(&orphans);
     }
 }
 
@@ -544,6 +613,17 @@ fn read_ppid_linux(pid: u32) -> Option<u32> {
     // Fields after ')': " S ppid pgid ..."
     let ppid_str = after_comm.split_whitespace().nth(1)?;
     ppid_str.parse::<u32>().ok()
+}
+
+/// Read the process group ID from /proc/<pid>/stat. Same parsing strategy as
+/// `read_ppid_linux` — field 3 after the closing ')' is the PGID.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn read_pgid_linux(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    // Fields after ')': " S ppid pgid ..."
+    let pgid_str = after_comm.split_whitespace().nth(2)?;
+    pgid_str.parse::<u32>().ok()
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -591,6 +671,14 @@ pub(crate) fn sweep_system_agent_processes(instance_id: &str, skip_pids: &[u32])
                 continue;
             }
         }
+        // Grandchild check: the harness is spawned with process_group(0), so
+        // all descendants share its PGID. If this process's PGID matches a
+        // tracked harness PID, it's a live descendant — not an orphan.
+        if let Some(pgid) = read_pgid_linux(upid) {
+            if skip_pids.contains(&pgid) {
+                continue;
+            }
+        }
         orphans.push(pid);
     }
 
@@ -599,7 +687,7 @@ pub(crate) fn sweep_system_agent_processes(instance_id: &str, skip_pids: &[u32])
             "buzz-desktop: system sweep found {} orphaned agent process(es), cleaning up",
             orphans.len()
         );
-        sigterm_then_sigkill(&orphans);
+        resolve_pgids_and_kill(&orphans);
     }
 }
 
@@ -629,7 +717,7 @@ pub(crate) fn sweep_system_agent_processes_with_grace(
             "buzz-desktop: periodic sweep confirmed {} orphaned agent process(es), cleaning up",
             confirmed.len()
         );
-        sigterm_then_sigkill(&confirmed);
+        resolve_pgids_and_kill(&confirmed);
     }
     current
 }
@@ -710,6 +798,13 @@ pub(crate) fn collect_same_instance_orphans(
         if skip_pids.contains(&info.pbi_ppid) {
             continue;
         }
+        // Grandchild check: the harness is spawned with process_group(0), so
+        // all descendants share its PGID. If this process's PGID matches a
+        // tracked harness PID, it's a live descendant — not an orphan.
+        let pgid = unsafe { libc::getpgid(pid) };
+        if pgid > 0 && skip_pids.contains(&(pgid as u32)) {
+            continue;
+        }
         if process_has_buzz_marker(upid, instance_id) {
             orphans.insert(upid);
         }
@@ -760,6 +855,14 @@ pub(crate) fn collect_same_instance_orphans(
         // shortly, and the two-tick grace prevents acting on transient failures.
         if let Some(ppid) = read_ppid_linux(upid) {
             if skip_pids.contains(&ppid) {
+                continue;
+            }
+        }
+        // Grandchild check: the harness is spawned with process_group(0), so
+        // all descendants share its PGID. If this process's PGID matches a
+        // tracked harness PID, it's a live descendant — not an orphan.
+        if let Some(pgid) = read_pgid_linux(upid) {
+            if skip_pids.contains(&pgid) {
                 continue;
             }
         }
@@ -1157,7 +1260,7 @@ pub(crate) fn reap_dead_instance_agents(our_instance_id: &str, skip_pids: &[u32]
             "buzz-desktop: reaping {} orphaned agent(s) from dead instance '{instance_id}'",
             agent_pids.len()
         );
-        sigterm_then_sigkill(agent_pids);
+        resolve_pgids_and_kill(agent_pids);
     }
 }
 
@@ -1215,7 +1318,7 @@ pub(crate) fn reap_dead_instance_agents(our_instance_id: &str, skip_pids: &[u32]
             "buzz-desktop: reaping {} orphaned agent(s) from dead instance '{instance_id}'",
             agent_pids.len()
         );
-        sigterm_then_sigkill(agent_pids);
+        resolve_pgids_and_kill(agent_pids);
     }
 }
 
@@ -1257,7 +1360,7 @@ pub fn sync_managed_agent_processes(
     records: &mut [ManagedAgentRecord],
     runtimes: &mut HashMap<String, ManagedAgentProcess>,
     instance_id: &str,
-) -> bool {
+) -> (bool, Vec<String>) {
     let mut changed = false;
     let mut exited = Vec::new();
 
@@ -1297,6 +1400,7 @@ pub fn sync_managed_agent_processes(
         exited.push(pubkey.clone());
     }
 
+    let mut exited_pubkeys: Vec<String> = exited.clone();
     for pubkey in exited {
         runtimes.remove(&pubkey);
     }
@@ -1323,9 +1427,10 @@ pub fn sync_managed_agent_processes(
             record.last_stopped_at = Some(now_iso());
         }
         changed = true;
+        exited_pubkeys.push(record.pubkey.clone());
     }
 
-    changed
+    (changed, exited_pubkeys)
 }
 
 /// Classify an agent's persona against the live catalog for the Agents-menu
@@ -1538,28 +1643,6 @@ pub(crate) fn build_respond_to_env(
     Ok((set, remove))
 }
 
-/// Resolve the effective system prompt, model, and provider from the *live*
-/// persona for **display and model-discovery only** — the ModelPicker shows the
-/// current persona model as selected. The spawn and deploy paths deliberately
-/// do NOT use this; they read the pinned record snapshot so a running agent
-/// stays on the config it was created with. The linked persona wins here; the
-/// record values are the fallback when no persona is linked or it was deleted.
-pub(crate) fn resolve_effective_prompt_model_provider(
-    persona_id: Option<&str>,
-    personas: &[crate::managed_agents::types::PersonaRecord],
-    record_prompt: Option<String>,
-    record_model: Option<String>,
-) -> (Option<String>, Option<String>, Option<String>) {
-    match persona_id.and_then(|pid| personas.iter().find(|p| p.id == pid)) {
-        Some(p) => (
-            Some(p.system_prompt.clone()),
-            p.model.clone(),
-            p.provider.clone(),
-        ),
-        None => (record_prompt, record_model, None),
-    }
-}
-
 /// Spawn an agent process without holding any locks on records or runtimes.
 /// Returns the child process and log path on success. The caller is responsible
 /// for updating `ManagedAgentRecord` fields and inserting into the runtimes map.
@@ -1720,7 +1803,7 @@ pub fn spawn_agent_child(
         .unwrap_or(super::types::DEFAULT_AGENT_MAX_TURN_DURATION_SECONDS);
     command.env("BUZZ_ACP_MAX_TURN_DURATION", max_dur.to_string());
     command.env("BUZZ_ACP_AGENTS", record.parallelism.to_string());
-    command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "owner-interrupt");
+    command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "steer");
     command.env("BUZZ_ACP_DEDUP", "queue");
     if let Some(meta) = runtime_meta {
         for (key, value) in meta.default_env {
@@ -1916,7 +1999,7 @@ fn child_rust_log_filter() -> String {
 
 /// Databricks host/model baked in at compile time for internal builds. Empty
 /// in OSS builds, where the `BUZZ_BUILD_DATABRICKS_*` env is unset.
-fn build_databricks_defaults() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn build_databricks_defaults() -> Vec<(&'static str, &'static str)> {
     let mut defaults = Vec::new();
     if let Some(host) = option_env!("BUZZ_DESKTOP_BUILD_DATABRICKS_HOST") {
         if !host.is_empty() {
@@ -2051,7 +2134,7 @@ pub fn stop_managed_agent_process(
 /// switching need the initial bootstrap value. Provider injection is skipped
 /// when `provider_locked` is true (e.g. Claude runtimes that only work with
 /// Anthropic).
-fn runtime_metadata_env_vars<'a>(
+pub(crate) fn runtime_metadata_env_vars<'a>(
     model_env_var: Option<&'a str>,
     provider_env_var: Option<&'a str>,
     provider_locked: bool,
@@ -2068,6 +2151,31 @@ fn runtime_metadata_env_vars<'a>(
         }
     }
     vars
+}
+
+/// Resolve the effective (prompt, model, provider) triple for a persona-linked agent.
+///
+/// Given a persona_id, finds the persona in the list and returns its system_prompt,
+/// model, and provider as the authoritative values. Falls back to the record's own
+/// prompt/model and None for provider when no persona is linked or found.
+///
+/// Used by `agent_config.rs` to inject persona defaults into the config surface
+/// before running the reader, so BuzzExplicit-tagged fields can be re-tagged to
+/// PersonaDefault for fields the record did not independently set.
+pub(crate) fn resolve_effective_prompt_model_provider(
+    persona_id: Option<&str>,
+    personas: &[crate::managed_agents::types::PersonaRecord],
+    record_prompt: Option<String>,
+    record_model: Option<String>,
+) -> (Option<String>, Option<String>, Option<String>) {
+    match persona_id.and_then(|pid| personas.iter().find(|p| p.id == pid)) {
+        Some(p) => (
+            Some(p.system_prompt.clone()),
+            p.model.clone(),
+            p.provider.clone(),
+        ),
+        None => (record_prompt, record_model, None),
+    }
 }
 
 #[cfg(test)]

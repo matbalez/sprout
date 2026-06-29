@@ -58,6 +58,7 @@ export type InboxTypeLabel = {
 
 export type InboxReply = {
   authorLabel: string;
+  authorPubkey: string;
   avatarUrl: string | null;
   content: string;
   depth?: number;

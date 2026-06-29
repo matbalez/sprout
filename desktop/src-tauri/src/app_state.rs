@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::huddle::HuddleState;
+use crate::managed_agents::config_bridge::SessionConfigCache;
 use crate::managed_agents::ManagedAgentProcess;
-
 pub struct AppState {
     pub keys: Mutex<Keys>,
     pub http_client: reqwest::Client,
@@ -37,6 +37,9 @@ pub struct AppState {
     /// Loopback broker config used by managed agents to request payments from
     /// the active desktop wallet integration without seeing wallet credentials.
     pub agent_payment_broker: Mutex<Option<crate::wallet::AgentPaymentBrokerConfig>>,
+    /// Cached ACP session config from running agents, keyed by agent pubkey.
+    /// Populated when the harness emits `session_config_captured` observer events.
+    pub session_config_cache: Mutex<HashMap<String, SessionConfigCache>>,
     /// IOKit power assertion state — prevents idle sleep while agents run.
     pub prevent_sleep: Arc<Mutex<crate::prevent_sleep::PreventSleepState>>,
     /// In-process mesh-llm node started by Buzz Desktop.
@@ -88,6 +91,7 @@ pub fn build_app_state() -> AppState {
     AppState {
         keys: Mutex::new(keys),
         http_client: reqwest::Client::builder()
+            .resolve("localhost", std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
             .pool_idle_timeout(std::time::Duration::from_secs(10))
             .pool_max_idle_per_host(1)
             .build()
@@ -96,6 +100,7 @@ pub fn build_app_state() -> AppState {
         managed_agents_store_lock: Mutex::new(()),
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),
+        session_config_cache: Mutex::new(HashMap::new()),
         huddle_state: Mutex::new(HuddleState::default()),
         wallet_state: crate::wallet::WalletRuntimeState::default(),
         app_handle: Mutex::new(None),
@@ -120,6 +125,22 @@ impl AppState {
     /// huddle module.
     pub fn huddle(&self) -> Result<std::sync::MutexGuard<'_, crate::huddle::HuddleState>, String> {
         self.huddle_state.lock().map_err(|e| e.to_string())
+    }
+
+    pub fn get_session_cache(&self, pubkey: &str) -> Option<SessionConfigCache> {
+        self.session_config_cache.lock().ok()?.get(pubkey).cloned()
+    }
+
+    pub fn put_session_cache(&self, pubkey: &str, cache: SessionConfigCache) {
+        if let Ok(mut map) = self.session_config_cache.lock() {
+            map.insert(pubkey.to_string(), cache);
+        }
+    }
+
+    pub fn clear_session_cache(&self, pubkey: &str) {
+        if let Ok(mut map) = self.session_config_cache.lock() {
+            map.remove(pubkey);
+        }
     }
 
     /// Emit the current huddle state to the frontend via Tauri event.

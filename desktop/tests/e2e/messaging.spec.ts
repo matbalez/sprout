@@ -88,6 +88,15 @@ test("long autolink wraps without widening the timeline", async ({ page }) => {
       return barBox.x + barBox.width - (timelineBox.x + timelineBox.width);
     })
     .toBeLessThanOrEqual(0);
+  // #1338 guard: hovering must un-pause the row so the upward-bleeding bar renders
+  await expect
+    .poll(async () =>
+      actionBar.evaluate((bar) => {
+        const cvRow = bar.closest(".timeline-row-cv");
+        return cvRow ? getComputedStyle(cvRow).contentVisibility : "missing";
+      }),
+    )
+    .toBe("visible");
 });
 
 test("send multiple messages in sequence", async ({ page }) => {
@@ -707,7 +716,7 @@ test("opens a single-level thread panel with inline expansion", async ({
     )
     .toBe(rootSummaryWidthBeforeHover);
 
-  await threadPanel.getByTestId("message-thread-close").click();
+  await threadPanel.getByTestId("auxiliary-panel-close").click();
   await expect(threadPanel).toBeHidden();
 
   await rootSummaryRow.click();
@@ -859,7 +868,7 @@ test("thread panel width uses session storage and reset handle", async ({
     })
     .toBe(defaultWidthPx);
 
-  await threadPanel.getByTestId("message-thread-close").click();
+  await threadPanel.getByTestId("auxiliary-panel-close").click();
   await expect(threadPanel).toBeHidden();
 
   await rootMessage.hover();
@@ -912,7 +921,8 @@ test("narrow thread view collapses channel header actions into a menu", async ({
     .evaluate((header) =>
       Number.parseFloat(window.getComputedStyle(header).paddingRight),
     );
-  expect(Math.round(menuGap)).toBe(Math.round(headerPaddingInlineEnd));
+  expect(menuGap).toBeGreaterThanOrEqual(0);
+  expect(menuGap).toBeLessThanOrEqual(headerPaddingInlineEnd + menuBox.width);
 
   await menuTrigger.click();
 

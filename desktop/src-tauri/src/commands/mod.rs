@@ -1,3 +1,4 @@
+mod agent_config;
 mod agent_discovery;
 mod agent_models;
 mod agent_settings;
@@ -12,12 +13,14 @@ mod identity;
 mod identity_archive;
 mod klaim_gifts;
 mod legacy_storage;
+mod link_preview;
 mod media;
 mod media_download;
 mod media_transcode;
 #[cfg(feature = "mesh-llm")]
 mod mesh_llm;
 mod messages;
+mod notifications;
 pub mod pairing;
 mod personas;
 mod prevent_sleep;
@@ -29,6 +32,7 @@ mod teams;
 mod workflows;
 mod workspace;
 
+pub use agent_config::*;
 pub use agent_discovery::*;
 pub use agent_models::*;
 pub use agent_settings::*;
@@ -42,11 +46,13 @@ pub use identity::*;
 pub use identity_archive::*;
 pub use klaim_gifts::*;
 pub use legacy_storage::*;
+pub use link_preview::*;
 pub use media::*;
 pub use media_download::*;
 #[cfg(feature = "mesh-llm")]
 pub use mesh_llm::*;
 pub use messages::*;
+pub use notifications::*;
 pub use pairing::*;
 pub use personas::*;
 pub use prevent_sleep::*;

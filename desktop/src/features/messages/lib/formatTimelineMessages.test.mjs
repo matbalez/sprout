@@ -11,6 +11,8 @@ import {
   CHANNEL_AUX_EVENT_KINDS,
   CHANNEL_TIMELINE_CONTENT_KINDS,
   KIND_STREAM_MESSAGE,
+  KIND_HUDDLE_ENDED,
+  KIND_HUDDLE_STARTED,
 } from "@/shared/constants/kinds";
 
 const HEX64_A =
@@ -86,6 +88,21 @@ function streamEdit(targetId, content, overrides = {}) {
       ["h", CHANNEL_ID],
       ["e", targetId],
     ],
+    sig: "sig",
+    ...overrides,
+  };
+}
+
+function huddleStarted(overrides = {}) {
+  return {
+    id: HEX64_B,
+    pubkey: PUBKEY_A,
+    kind: KIND_HUDDLE_STARTED,
+    created_at: 1_700_000_001,
+    content: JSON.stringify({
+      ephemeral_channel_id: "8d764100-fd8f-44cf-9c98-6d8fbd739b8c",
+    }),
+    tags: [["h", CHANNEL_ID]],
     sig: "sig",
     ...overrides,
   };
@@ -171,7 +188,13 @@ test("non-deletion event kinds do NOT hide the target message", () => {
   assert.equal(out.length, 1, "the kind:9 message should still be visible");
 });
 
-test("deletion target with non-hex e tag value is ignored", () => {
+test("huddle start renders as a timeline row", () => {
+  const out = formatTimelineMessages([huddleStarted()], null, undefined, null);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].kind, KIND_HUDDLE_STARTED);
+});
+
+test("deletion target with non-hex `e` tag value is ignored", () => {
   const bogusDeletion = deletionEvent(9005, HEX64_A, {
     tags: [
       ["h", CHANNEL_ID],
@@ -329,6 +352,14 @@ test("countTopLevelTimelineRows ignores non-content kinds (reactions)", () => {
     sig: "sig",
   };
   assert.equal(countTopLevelTimelineRows([message(hex64("1")), reaction]), 1);
+});
+
+test("countTopLevelTimelineRows counts huddle start rows", () => {
+  assert.equal(countTopLevelTimelineRows([huddleStarted()]), 1);
+});
+
+test("huddle ended stays lifecycle-only, not a timeline row", () => {
+  assert.equal(isTimelineContentEvent({ kind: KIND_HUDDLE_ENDED }), false);
 });
 
 // Guardrail: the history fetch requests exactly CHANNEL_TIMELINE_CONTENT_KINDS,

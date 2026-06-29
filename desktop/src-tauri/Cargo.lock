@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "buzz-desktop"
-version = "0.3.34"
+version = "0.3.37"
 dependencies = [
  "anyhow",
  "atomic-write-file",
@@ -1050,6 +1050,7 @@ dependencies = [
  "mesh-llm-sdk",
  "neteq",
  "nostr",
+ "notify-rust",
  "objc2-app-kit",
  "opus",
  "png 0.18.1",
@@ -1084,6 +1085,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.29.0",
  "tokio-util",
+ "toml 0.8.2",
  "url",
  "uuid",
  "windows-sys 0.61.2",
