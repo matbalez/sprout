@@ -87,15 +87,15 @@ fn buzz_agent_has_mcp_hooks() {
 }
 
 #[test]
-fn databricks_defaults_empty_in_oss_build() {
-    // OSS (and normal test) builds set neither BUZZ_BUILD_DATABRICKS_*,
-    // so nothing is baked in and no DATABRICKS_* is injected on spawn.
-    assert!(super::build_databricks_defaults().is_empty());
+fn buzz_agent_resolved_via_path() {
+    assert!(known_acp_runtime("/usr/local/bin/buzz-agent").is_some_and(|p| p.mcp_hooks));
 }
 
 #[test]
-fn buzz_agent_resolved_via_path() {
-    assert!(known_acp_runtime("/usr/local/bin/buzz-agent").is_some_and(|p| p.mcp_hooks));
+fn codex_has_mcp_command() {
+    let p = known_acp_runtime("codex-acp").expect("should resolve");
+    assert!(!p.mcp_hooks, "codex-acp does not handle MCP_HOOK_SERVERS");
+    assert_eq!(p.mcp_command, Some("buzz-dev-mcp"));
 }
 
 #[test]

@@ -78,14 +78,6 @@ const overrides = new Map([
   // PGID resolution helper + PID-recycling safety guard added for orphan sweep.
   // Mainline restore/watchdog handling adds the latest overage.
   ["src-tauri/src/managed_agents/runtime.rs", 2183],
-  // Phase-2 inbound reconcile + review-fix cycle: reconcile_inbound_persona_event
-  // dispatches 30175/30176/30177 inbound plus kind:5 tombstone consume
-  // (reconcile_inbound_tombstone), the two apply_inbound_* fns, the
-  // event_d_tag/parse_deletion_coordinate helpers, and the preserve/overwrite +
-  // secret-injection + tombstone test coverage. Load-bearing feature growth,
-  // queued to split with the list. The two `agents-data-changed` emits (live
-  // UI refresh on inbound reconcile + tombstone) add the latest growth.
-  ["src-tauri/src/commands/personas.rs", 1279],
   // Local wallet broker bridge remains branch-local for bitcoin dev work.
   // Queued to split with the rest of this list.
   ["src-tauri/src/wallet/broker.rs", 1482],
@@ -169,6 +161,11 @@ const overrides = new Map([
   ["src/shared/ui/markdown.tsx", 2082],
   ["src/shared/ui/VideoPlayer.tsx", 2199],
   ["src/shared/ui/sidebar.tsx", 1042],
+  // Option C databricks-model-discovery: parse/HTTP logic moved to buzz-agent
+  // catalog module; agent_models.rs retains the thin wrapper (~50 lines).
+  // File still exceeds 1000 due to OpenAI/Anthropic discovery + subprocess
+  // fallback. Queued to split into dedicated discovery modules.
+  ["src-tauri/src/commands/agent_models.rs", 1066],
 ]);
 
 await runFileSizeCheck({
