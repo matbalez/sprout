@@ -691,9 +691,7 @@ export function ChannelHiveWalletSection({
               variant="outline"
             >
               <Send className="h-4 w-4" />
-              {sendHiveWalletPaymentMutation.isPending
-                ? "Sending..."
-                : "Send"}
+              {sendHiveWalletPaymentMutation.isPending ? "Sending..." : "Send"}
             </Button>
             {sendHiveWalletPaymentMutation.error instanceof Error ? (
               <p className="text-sm text-destructive">

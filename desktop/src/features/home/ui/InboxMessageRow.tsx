@@ -188,7 +188,7 @@ export function InboxMessageRow({
               <div className="mb-1.5">
                 <span
                   className={cn(
-                    "inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-bold uppercase shadow-sm",
+                    "inline-flex items-center rounded-full border px-2 py-0.5 text-2xs font-bold uppercase shadow-sm",
                     message.bounty.paid
                       ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-200"
                       : "border-emerald-500/60 bg-emerald-300 text-emerald-950 dark:bg-emerald-400/90",

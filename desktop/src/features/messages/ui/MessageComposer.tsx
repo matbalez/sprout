@@ -674,6 +674,7 @@ function MessageComposerImpl({
     setComposerContent,
     spoileredAttachmentUrls,
     syncComposerContentFromEditor,
+    contentRef,
   ]);
   submitMessageRef.current = submitMessage;
 

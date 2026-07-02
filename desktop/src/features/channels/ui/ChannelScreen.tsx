@@ -328,8 +328,6 @@ export function ChannelScreen({
         : [],
     [activeChannel],
   );
-  const channelMembersQuery = useChannelMembersQuery(activeChannel?.id ?? null);
-  const channelMembers = channelMembersQuery.data;
   const knownAgentPubkeys = React.useMemo(() => {
     const pubkeys = new Set<string>();
     for (const member of channelMembers ?? []) {

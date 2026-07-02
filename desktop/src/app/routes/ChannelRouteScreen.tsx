@@ -150,8 +150,7 @@ export function ChannelRouteScreen({
                 paymentPolicy: detail.paymentPolicy ?? channel.paymentPolicy,
                 hiveChannel: channel.hiveChannel || detail.hiveChannel,
                 hiveWalletBolt12Offer:
-                  detail.hiveWalletBolt12Offer ??
-                  channel.hiveWalletBolt12Offer,
+                  detail.hiveWalletBolt12Offer ?? channel.hiveWalletBolt12Offer,
               }
             : channel,
         ),

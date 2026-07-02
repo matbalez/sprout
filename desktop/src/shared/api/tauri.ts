@@ -19,7 +19,6 @@ import type {
   ChannelMember,
   ChannelMessagesPageResponse,
   ChannelPageCursor,
-  ChannelType,
   CreateChannelInput,
   GetHomeFeedInput,
   HomeFeedResponse,

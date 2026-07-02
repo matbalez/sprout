@@ -274,11 +274,11 @@ export function useChannelsQuery(options?: { enabled?: boolean }) {
     // revalidate. initialDataUpdatedAt:0 marks the seed as already-stale so the
     // background refetch still fires immediately.
     initialData: relayUrl
-        ? () => {
-            const snapshot = readChannelSnapshot(relayUrl);
+      ? () => {
+          const snapshot = readChannelSnapshot(relayUrl);
           return snapshot ? sortChannelsWithLocalChannels(snapshot) : undefined;
-          }
-        : undefined,
+        }
+      : undefined,
     initialDataUpdatedAt: 0,
     staleTime: 60_000,
     refetchInterval: 60_000,

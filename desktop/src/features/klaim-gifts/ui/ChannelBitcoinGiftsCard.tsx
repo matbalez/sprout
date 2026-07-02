@@ -141,7 +141,7 @@ export function ChannelBitcoinGiftsCard({
           </p>
         </div>
         <div
-          className="rounded-full border border-border/80 bg-background px-2.5 py-1 text-[11px] font-medium text-muted-foreground"
+          className="rounded-full border border-border/80 bg-background px-2.5 py-1 text-2xs font-medium text-muted-foreground"
           data-testid="channel-bitcoin-gifts-status"
         >
           {isEnabled ? "Enabled" : "Off"}

@@ -637,7 +637,7 @@ export function MessageActionBar({
               <TooltipTrigger asChild>
                 <Button
                   aria-label="Pay out bounty"
-                  className="h-6 gap-1 rounded-full px-2 text-[11px] font-semibold"
+                  className="h-6 gap-1 rounded-full px-2 text-2xs font-semibold"
                   data-testid={`pay-bounty-${message.id}`}
                   disabled={bountyPaymentMutation.isPending}
                   onClick={() => {

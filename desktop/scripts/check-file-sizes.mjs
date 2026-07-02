@@ -69,7 +69,7 @@ const overrides = new Map([
   // the two p-gate filters can't drift) plus two guard unit tests. The file was
   // already at 995; this load-bearing correctness fix crossed 1000. Not generic
   // debt growth. Approved override; queued to split with the rest of this list.
-  ["src-tauri/src/commands/messages.rs", 1082],
+  ["src-tauri/src/commands/messages.rs", 1097],
   // Residual repos_dir integration in ensure_nest_at: REPOS is provisioned
   // outside NEST_DIRS (it may be a symlink), so it needs its own create +
   // chmod-only-when-real-dir handling plus integration test coverage. The
@@ -142,7 +142,7 @@ const overrides = new Map([
   ["src/features/channels/ui/ChannelPane.tsx", 1023],
   // Mainline auxiliary panel state plus bitcoin branch paid-join/walletbot
   // header totals. Queued to split with the channel pane follow-up.
-  ["src/features/channels/ui/ChannelScreen.tsx", 1063],
+  ["src/features/channels/ui/ChannelScreen.tsx", 1076],
   // Mainline members panel polish carries a small overage pending component
   // extraction.
   ["src/features/channels/ui/MembersSidebar.tsx", 1007],

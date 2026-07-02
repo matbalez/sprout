@@ -99,7 +99,7 @@ export function MessageTipAction({
           {tipMutation.isPending ? (
             <Spinner className="h-3 w-3" />
           ) : (
-            <span className="text-[13px] font-semibold leading-none">₿</span>
+            <span className="text-xs font-semibold leading-none">₿</span>
           )}
         </Button>
       </TooltipTrigger>
