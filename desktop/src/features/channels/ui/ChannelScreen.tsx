@@ -51,6 +51,7 @@ import {
 } from "@/features/messages/lib/timelineLoadingState";
 import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages";
 import { useLoadMissingAncestors } from "@/features/messages/useLoadMissingAncestors";
+import { useThreadReplies } from "@/features/messages/useThreadReplies";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
@@ -327,6 +328,23 @@ export function ChannelScreen({
         : [],
     [activeChannel],
   );
+  const channelMembersQuery = useChannelMembersQuery(activeChannel?.id ?? null);
+  const channelMembers = channelMembersQuery.data;
+  const knownAgentPubkeys = React.useMemo(() => {
+    const pubkeys = new Set<string>();
+    for (const member of channelMembers ?? []) {
+      if (member.role === "bot" || member.isAgent) {
+        pubkeys.add(normalizePubkey(member.pubkey));
+      }
+    }
+    for (const agent of managedAgents) {
+      pubkeys.add(normalizePubkey(agent.pubkey));
+    }
+    for (const agent of relayAgents) {
+      pubkeys.add(normalizePubkey(agent.pubkey));
+    }
+    return pubkeys;
+  }, [channelMembers, managedAgents, relayAgents]);
   const sharedAgentOwnerPubkeys = React.useMemo(
     () =>
       relayAgents
@@ -341,12 +359,14 @@ export function ChannelScreen({
           ...messageAuthorPubkeys,
           ...messageMentionPubkeys,
           ...activeDmParticipantPubkeys,
+          ...knownAgentPubkeys,
           ...typingEntries.map((entry) => entry.pubkey),
           ...sharedAgentOwnerPubkeys,
         ]),
       ].filter((pubkey) => pubkey.toLowerCase() !== WALLETBOT_PUBKEY),
     [
       activeDmParticipantPubkeys,
+      knownAgentPubkeys,
       messageAuthorPubkeys,
       messageMentionPubkeys,
       sharedAgentOwnerPubkeys,
@@ -357,18 +377,7 @@ export function ChannelScreen({
     enabled: messageProfilePubkeys.length > 0,
   });
   const agentPubkeys = React.useMemo(() => {
-    const pubkeys = new Set<string>();
-    for (const member of channelMembers ?? []) {
-      if (member.role === "bot" || member.isAgent) {
-        pubkeys.add(normalizePubkey(member.pubkey));
-      }
-    }
-    for (const agent of managedAgents) {
-      pubkeys.add(normalizePubkey(agent.pubkey));
-    }
-    for (const agent of relayAgents) {
-      pubkeys.add(normalizePubkey(agent.pubkey));
-    }
+    const pubkeys = new Set(knownAgentPubkeys);
     for (const [pubkey, profile] of Object.entries(
       messageProfilesQuery.data?.profiles ?? {},
     )) {
@@ -377,7 +386,7 @@ export function ChannelScreen({
       }
     }
     return pubkeys;
-  }, [channelMembers, managedAgents, messageProfilesQuery.data, relayAgents]);
+  }, [knownAgentPubkeys, messageProfilesQuery.data]);
   const agentPubkeysPending =
     activeChannel?.channelType === "dm" &&
     (channelMembersQuery.isPending ||
@@ -433,6 +442,7 @@ export function ChannelScreen({
       base,
       managedAgents,
       relayAgents,
+      currentPubkey,
     );
     if (!isWalletBotActive) {
       return merged;
@@ -449,6 +459,7 @@ export function ChannelScreen({
     };
   }, [
     currentProfile,
+    currentPubkey,
     isWalletBotActive,
     managedAgents,
     messageProfilesQuery.data?.profiles,
@@ -776,6 +787,10 @@ export function ChannelScreen({
   ]);
 
   useLoadMissingAncestors(activeChannel, resolvedMessages);
+  // Fetch the full reply subtree server-side when a thread is open, closing the
+  // descendant gap that useLoadMissingAncestors (ancestors-only) leaves. The
+  // open thread head is the top-level message, i.e. the thread root.
+  useThreadReplies(activeChannel, effectiveOpenThreadHeadId);
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
       openAgentSessionPubkey ||

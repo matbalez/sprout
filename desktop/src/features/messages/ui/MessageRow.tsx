@@ -120,6 +120,7 @@ export const MessageRow = React.memo(
     actionBarPlacement = "floating",
     collapseDescendantsLabel,
     isFollowingThread,
+    isContinuation = false,
     isUnread,
     layoutVariant = "default",
     message,
@@ -157,6 +158,7 @@ export const MessageRow = React.memo(
     actionBarPlacement?: "floating" | "inside";
     collapseDescendantsLabel?: string;
     isFollowingThread?: boolean;
+    isContinuation?: boolean;
     isUnread?: boolean;
     layoutVariant?: "default" | "thread-reply";
     message: TimelineMessage;
@@ -427,6 +429,45 @@ export const MessageRow = React.memo(
       </div>
     );
 
+    const continuationTimestampGutter = (
+      <div
+        aria-hidden="true"
+        className={cn(
+          "flex w-9 shrink-0 items-start justify-end pt-0.5",
+          isThreadReplyLayout ? "min-h-9 self-start" : "self-stretch",
+        )}
+      >
+        <MessageTimestamp
+          className="opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100"
+          createdAt={message.createdAt}
+          hideDayPeriod
+          time={message.time}
+        />
+      </div>
+    );
+
+    const avatarGutterNode = isContinuation ? (
+      continuationTimestampGutter
+    ) : message.pubkey ? (
+      <UserProfilePopover
+        pubkey={message.pubkey}
+        role={profilePopoverRole}
+        botIdenticonValue={message.author}
+      >
+        <button
+          className={cn(
+            "flex shrink-0 items-start focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+            avatarButtonRadiusClass,
+          )}
+          type="button"
+        >
+          {avatarNode}
+        </button>
+      </UserProfilePopover>
+    ) : (
+      <div className="flex shrink-0 items-start">{avatarNode}</div>
+    );
+
     const authorNode = message.pubkey ? (
       <MessageAuthorText hoverUnderline>{message.author}</MessageAuthorText>
     ) : (
@@ -436,7 +477,7 @@ export const MessageRow = React.memo(
     const actionBarNode = (
       <div
         className={cn(
-          "absolute right-2 top-1 z-10",
+          "absolute right-2 top-1 z-10 sm:pointer-events-none",
           actionBarPlacement === "floating"
             ? "sm:top-0 sm:-translate-y-1/2"
             : "sm:top-1 sm:translate-y-0",
@@ -475,25 +516,67 @@ export const MessageRow = React.memo(
       </div>
     );
 
+    const statusMetadataNode =
+      message.pending || message.edited ? (
+        <>
+          {message.pending ? (
+            <p className="font-medium uppercase tracking-[0.14em] text-primary/80">
+              Sending
+            </p>
+          ) : null}
+          {message.edited ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <p className="text-muted-foreground/70">(edited)</p>
+              </TooltipTrigger>
+              <TooltipContent>This message has been edited</TooltipContent>
+            </Tooltip>
+          ) : null}
+        </>
+      ) : null;
+
     const inlineMetadataNode = (
       <div className="flex shrink-0 items-baseline gap-2 text-xs">
         <MessageTimestamp createdAt={message.createdAt} time={message.time} />
-        {message.pending ? (
-          <p className="font-medium uppercase tracking-[0.14em] text-primary/80">
-            Sending
-          </p>
-        ) : null}
-        {message.edited ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <p className="text-muted-foreground/70">(edited)</p>
-            </TooltipTrigger>
-            <TooltipContent>This message has been edited</TooltipContent>
-          </Tooltip>
-        ) : null}
+        {statusMetadataNode}
       </div>
     );
 
+    const continuationMetadataNode =
+      isContinuation && statusMetadataNode ? (
+        <div className="mt-0.5 flex items-baseline gap-2 text-xs">
+          {statusMetadataNode}
+        </div>
+      ) : null;
+
+    const headerNode = isContinuation ? null : (
+      <MessageHeaderRow>
+        {message.pubkey ? (
+          <UserProfilePopover
+            pubkey={message.pubkey}
+            role={profilePopoverRole}
+            botIdenticonValue={message.author}
+          >
+            <button
+              className="truncate rounded leading-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+              type="button"
+            >
+              {authorNode}
+            </button>
+          </UserProfilePopover>
+        ) : (
+          authorNode
+        )}
+        {inlineMetadataNode}
+        {message.personaDisplayName &&
+        message.personaDisplayName !== message.author ? (
+          <span className="text-xs text-muted-foreground">
+            {message.personaDisplayName}
+          </span>
+        ) : null}
+      </MessageHeaderRow>
+    );
+    const bodyContainerClass = isContinuation ? "mt-0" : bodyOffsetClass;
     const messageChips = (
       <>
         {message.kudos ? <KudosMessageChip /> : null}
@@ -517,6 +600,7 @@ export const MessageRow = React.memo(
         ) : (
           renderBody()
         )}
+        {continuationMetadataNode}
         {message.tipSummary || reactions.length > 0 ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pt-1">
             <MessageTips summary={message.tipSummary} />
@@ -727,13 +811,14 @@ export const MessageRow = React.memo(
         <article
           className={cn(
             "group/message relative z-10 rounded-2xl transition-colors",
-            isThreadReplyLayout ? "py-1.5" : "py-2",
+            "py-1",
             hoverBackground
               ? "mx-1 px-2 hover:bg-muted/50 focus-within:bg-muted/50"
               : isThreadReplyLayout
                 ? "mx-1 px-2"
                 : "px-2",
-            "flex items-start gap-2.5",
+            "flex gap-2.5",
+            isContinuation ? "items-center" : "items-start",
             message.bounty?.recipientIsCurrentUser
               ? "border border-emerald-500/25 bg-emerald-500/5"
               : "",
@@ -749,102 +834,18 @@ export const MessageRow = React.memo(
         >
           {isThreadReplyLayout ? (
             <>
-              {message.pubkey ? (
-                <UserProfilePopover
-                  pubkey={message.pubkey}
-                  role={profilePopoverRole}
-                  botIdenticonValue={message.author}
-                >
-                  <button
-                    className={cn(
-                      "flex shrink-0 items-start focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-                      avatarButtonRadiusClass,
-                    )}
-                    type="button"
-                  >
-                    {avatarNode}
-                  </button>
-                </UserProfilePopover>
-              ) : (
-                <div className="flex shrink-0 items-start">{avatarNode}</div>
-              )}
+              {avatarGutterNode}
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <MessageHeaderRow>
-                  {message.pubkey ? (
-                    <UserProfilePopover
-                      pubkey={message.pubkey}
-                      role={profilePopoverRole}
-                      botIdenticonValue={message.author}
-                    >
-                      <button
-                        className="truncate rounded leading-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                        type="button"
-                      >
-                        {authorNode}
-                      </button>
-                    </UserProfilePopover>
-                  ) : (
-                    authorNode
-                  )}
-                  {inlineMetadataNode}
-                  {message.personaDisplayName &&
-                  message.personaDisplayName !== message.author ? (
-                    <span className="text-xs text-muted-foreground">
-                      {message.personaDisplayName}
-                    </span>
-                  ) : null}
-                </MessageHeaderRow>
-                <div className={bodyOffsetClass}>{messageBodyNode}</div>
+                {headerNode}
+                <div className={bodyContainerClass}>{messageBodyNode}</div>
               </div>
             </>
           ) : (
             <>
-              {message.pubkey ? (
-                <UserProfilePopover
-                  pubkey={message.pubkey}
-                  role={profilePopoverRole}
-                  botIdenticonValue={message.author}
-                >
-                  <button
-                    className={cn(
-                      "flex shrink-0 items-start focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
-                      avatarButtonRadiusClass,
-                    )}
-                    type="button"
-                  >
-                    {avatarNode}
-                  </button>
-                </UserProfilePopover>
-              ) : (
-                <div className="flex shrink-0 items-start">{avatarNode}</div>
-              )}
+              {avatarGutterNode}
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <MessageHeaderRow>
-                  {message.pubkey ? (
-                    <UserProfilePopover
-                      pubkey={message.pubkey}
-                      role={profilePopoverRole}
-                      botIdenticonValue={message.author}
-                    >
-                      <button
-                        className="truncate rounded leading-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                        type="button"
-                      >
-                        {authorNode}
-                      </button>
-                    </UserProfilePopover>
-                  ) : (
-                    authorNode
-                  )}
-                  {inlineMetadataNode}
-                  {message.personaDisplayName &&
-                  message.personaDisplayName !== message.author ? (
-                    <span className="text-xs text-muted-foreground">
-                      {message.personaDisplayName}
-                    </span>
-                  ) : null}
-                </MessageHeaderRow>
-                <div className={bodyOffsetClass}>{messageBodyNode}</div>
+                {headerNode}
+                <div className={bodyContainerClass}>{messageBodyNode}</div>
               </div>
             </>
           )}
@@ -888,6 +889,7 @@ export const MessageRow = React.memo(
     prev.hoverBackground === next.hoverBackground &&
     prev.huddleMemberPubkeys === next.huddleMemberPubkeys &&
     prev.huddleMemberPubkeysPending === next.huddleMemberPubkeysPending &&
+    prev.isContinuation === next.isContinuation &&
     prev.isFollowingThread === next.isFollowingThread &&
     prev.isUnread === next.isUnread &&
     prev.layoutVariant === next.layoutVariant &&

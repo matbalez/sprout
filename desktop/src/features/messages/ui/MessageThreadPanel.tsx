@@ -6,7 +6,9 @@ import {
   hasNestedThreadBranches,
   type MainTimelineEntry,
 } from "@/features/messages/lib/threadPanel";
+import { hasSameMessageAuthor } from "@/features/messages/lib/messageGrouping";
 import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
+import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import type { Channel } from "@/shared/api/types";
@@ -96,7 +98,7 @@ type MessageThreadPanelProps = {
 const EMPTY_THREAD_REPLIES: MainTimelineEntry[] = [];
 const THREAD_PANEL_MESSAGE_GUTTER_CLASS = "px-2";
 const THREAD_PANEL_COMPOSER_GUTTER_CLASS = "px-5";
-const THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM = -0.125;
+const THREAD_PANEL_SUMMARY_INDENT_OFFSET_REM = 0;
 type MessageThreadPanelSkeletonProps = {
   isSinglePanelView?: boolean;
   layout?: "standalone" | "split";
@@ -104,17 +106,6 @@ type MessageThreadPanelSkeletonProps = {
   widthPx: number;
   transparentChrome?: boolean;
 };
-
-function canManageMessage(
-  message: TimelineMessage,
-  currentPubkey: string | undefined,
-): boolean {
-  return Boolean(
-    currentPubkey &&
-      message.pubkey &&
-      currentPubkey.toLowerCase() === message.pubkey.toLowerCase(),
-  );
-}
 
 function hasLaterVisibleSibling(
   entries: readonly MainTimelineEntry[],
@@ -494,6 +485,7 @@ export function MessageThreadPanel({
     const ancestorStack: { index: number; message: TimelineMessage }[] = [
       { index: -1, message: threadHead },
     ];
+    let previousGroupMessage: TimelineMessage | null = threadHead;
 
     return deferredThreadReplies.map((entry, index) => {
       while (
@@ -531,10 +523,18 @@ export function MessageThreadPanel({
       const nextEntry = deferredThreadReplies[index + 1];
       const connectsToVisibleChild =
         nextEntry != null && nextEntry.message.depth > entry.message.depth;
+      const startsUnreadSection =
+        index > 0 && entry.message.id === firstUnreadReplyId;
+      const isContinuation =
+        !startsUnreadSection &&
+        entry.summary === null &&
+        hasSameMessageAuthor(previousGroupMessage, entry.message);
 
       if (connectsToVisibleChild && !entry.summary) {
         ancestorStack.push({ index, message: entry.message });
       }
+
+      previousGroupMessage = entry.summary !== null ? null : entry.message;
 
       return {
         collapseDepthGuideActions,
@@ -542,9 +542,15 @@ export function MessageThreadPanel({
         continuationDepths,
         entry,
         index,
+        isContinuation,
       };
     });
-  }, [deferredThreadReplies, hoveredCollapseBranchId, threadHead]);
+  }, [
+    deferredThreadReplies,
+    firstUnreadReplyId,
+    hoveredCollapseBranchId,
+    threadHead,
+  ]);
 
   const { isAtBottom, newMessageCount, onScroll, scrollToBottom } =
     useAnchoredScroll({
@@ -586,12 +592,22 @@ export function MessageThreadPanel({
               layoutVariant="thread-reply"
               message={threadHead}
               onDelete={
-                onDelete && canManageMessage(threadHead, currentPubkey)
+                onDelete &&
+                canManageMessageForCurrentUser(
+                  threadHead,
+                  currentPubkey,
+                  profiles,
+                )
                   ? onDelete
                   : undefined
               }
               onEdit={
-                onEdit && canManageMessage(threadHead, currentPubkey)
+                onEdit &&
+                canManageMessageForCurrentUser(
+                  threadHead,
+                  currentPubkey,
+                  profiles,
+                )
                   ? onEdit
                   : undefined
               }
@@ -644,6 +660,7 @@ export function MessageThreadPanel({
                     continuationDepths,
                     entry,
                     index,
+                    isContinuation,
                   } = item;
                   const showUnreadDivider =
                     index > 0 && entry.message.id === firstUnreadReplyId;
@@ -701,6 +718,7 @@ export function MessageThreadPanel({
                         hoverBackground={!entry.summary}
                         huddleMemberPubkeys={huddleMemberPubkeys}
                         huddleMemberPubkeysPending={huddleMemberPubkeysPending}
+                        isContinuation={isContinuation}
                         isUnread={isMessageUnreadById?.(entry.message.id)}
                         layoutVariant="thread-reply"
                         message={entry.message}
@@ -720,13 +738,21 @@ export function MessageThreadPanel({
                         }
                         onDelete={
                           onDelete &&
-                          canManageMessage(entry.message, currentPubkey)
+                          canManageMessageForCurrentUser(
+                            entry.message,
+                            currentPubkey,
+                            profiles,
+                          )
                             ? onDelete
                             : undefined
                         }
                         onEdit={
                           onEdit &&
-                          canManageMessage(entry.message, currentPubkey)
+                          canManageMessageForCurrentUser(
+                            entry.message,
+                            currentPubkey,
+                            profiles,
+                          )
                             ? onEdit
                             : undefined
                         }
@@ -792,7 +818,7 @@ export function MessageThreadPanel({
   const threadFooter = (
     <>
       {!isAtBottom ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-36 z-20 flex justify-center px-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-36 z-50 flex justify-center px-4">
           <Button
             className="pointer-events-auto h-7 min-h-7 gap-1.5 rounded-full border-border/50 bg-background/85 px-2.5 text-2xs font-medium text-muted-foreground shadow-xs backdrop-blur-sm hover:bg-muted/70 hover:text-foreground [&_svg]:size-4"
             data-testid="thread-scroll-to-latest"
@@ -810,7 +836,8 @@ export function MessageThreadPanel({
       ) : null}
 
       <div
-        className="pointer-events-none absolute inset-x-0 bottom-0 z-10"
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-40"
+        data-testid="thread-composer-overlay"
         ref={threadComposerWrapperRef}
       >
         <div className="pointer-events-auto">

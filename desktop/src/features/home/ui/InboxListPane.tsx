@@ -171,7 +171,16 @@ export function InboxListPane({
       : isSelected
         ? "color-mix(in srgb, hsl(var(--background)) 70%, hsl(var(--muted)) 30%)"
         : "color-mix(in srgb, hsl(var(--background)) 75%, hsl(var(--muted)) 25%)";
-
+    const handleRowContentClick = (event: React.MouseEvent<HTMLElement>) => {
+      const target = event.target;
+      if (
+        target instanceof Element &&
+        target.closest("[data-inbox-profile-trigger]")
+      ) {
+        return;
+      }
+      onSelect(item.id);
+    };
     const row = (
       <div
         className="group/inbox-item relative"
@@ -183,13 +192,12 @@ export function InboxListPane({
         }
       >
         <button
+          aria-label={`Open inbox item from ${item.senderLabel}`}
           className={cn(
-            "relative block w-full border-l px-3 py-4 text-left transition-colors after:pointer-events-none after:absolute after:bottom-0 after:left-[3.625rem] after:right-3 after:h-px after:bg-border/45 after:content-['']",
+            "absolute inset-0 z-0 block w-full border-l text-left after:pointer-events-none after:absolute after:bottom-0 after:left-[3.625rem] after:right-3 after:h-px after:bg-border/45 after:content-['']",
             shouldHighlightBounty
-              ? "border-l-emerald-500 bg-[var(--inbox-row-highlight-bg)] group-hover/inbox-item:bg-[var(--inbox-row-highlight-bg)] group-focus-within/inbox-item:bg-[var(--inbox-row-highlight-bg)]"
-              : isSelected
-                ? "border-l-transparent bg-[var(--inbox-row-highlight-bg)]"
-                : "border-l-transparent group-hover/inbox-item:bg-[var(--inbox-row-highlight-bg)] group-focus-within/inbox-item:bg-[var(--inbox-row-highlight-bg)] active:bg-muted/40",
+              ? "border-l-emerald-500"
+              : "border-l-transparent",
             shouldHighlightBounty &&
               isSelected &&
               "ring-1 ring-inset ring-emerald-500/30",
@@ -207,11 +215,20 @@ export function InboxListPane({
                 : "group-hover/inbox-item:bg-[var(--inbox-row-highlight-bg)] group-focus-within/inbox-item:bg-[var(--inbox-row-highlight-bg)] group-active/inbox-item:bg-muted/40",
             )}
           />
-          <div className="relative flex min-w-0 items-start gap-2.5">
-            <div className="relative shrink-0">
+        </button>
+
+        {/* biome-ignore lint/a11y: The sibling full-row button provides keyboard/screen-reader row activation; this wrapper delegates pointer selection while allowing nested profile triggers. */}
+        <div
+          className="relative z-10 block w-full cursor-pointer px-3 py-4 text-left"
+          onClick={handleRowContentClick}
+        >
+          <div className="flex min-w-0 items-start gap-2.5">
+            <div
+              className="relative shrink-0"
+              data-inbox-profile-trigger="true"
+            >
               <UserProfilePopover
                 botIdenticonValue={item.senderLabel}
-                enableProfilePanel={false}
                 pubkey={item.item.pubkey}
                 role={profileRole}
                 triggerElement="span"
@@ -232,10 +249,12 @@ export function InboxListPane({
 
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-start gap-2">
-                <span className="min-w-0 flex-1">
+                <span
+                  className="flex min-w-0 flex-1 items-start leading-4"
+                  data-inbox-profile-trigger="true"
+                >
                   <UserProfilePopover
                     botIdenticonValue={item.senderLabel}
-                    enableProfilePanel={false}
                     pubkey={item.item.pubkey}
                     role={profileRole}
                     triggerElement="span"
@@ -288,7 +307,7 @@ export function InboxListPane({
               </div>
             </div>
           </div>
-        </button>
+        </div>
 
         <div className="pointer-events-none absolute right-3 top-2 z-10 flex items-center gap-0.5 rounded-full bg-[var(--inbox-row-highlight-bg)] p-1 opacity-0 transition-opacity duration-150 ease-out group-hover/inbox-item:pointer-events-auto group-hover/inbox-item:opacity-100 group-focus-within/inbox-item:pointer-events-auto group-focus-within/inbox-item:opacity-100">
           {isDone ? (

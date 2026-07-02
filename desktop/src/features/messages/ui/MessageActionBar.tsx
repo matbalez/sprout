@@ -43,6 +43,7 @@ import {
 import { reactionEmojiUrl } from "@/shared/api/customEmoji";
 import { sendChannelMessage } from "@/shared/api/tauri";
 import { cn } from "@/shared/lib/cn";
+import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
@@ -72,21 +73,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 const ACTION_BUTTON_CLASS = "h-8 w-8 rounded-full p-0";
 const ACTION_ICON_CLASS = "!h-4 !w-4";
 
-function copyToClipboard(text: string, successMessage: string) {
-  void navigator.clipboard
-    .writeText(text)
-    .then(() => {
-      toast.success(successMessage);
-    })
-    .catch(() => {
-      toast.error("Failed to copy to clipboard");
-    });
-}
-
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
-
 function MoreActionsMenu({
   channelId,
   message,
@@ -218,7 +207,10 @@ function MoreActionsMenu({
           {hasCopyActions ? (
             <DropdownMenuItem
               onClick={() => {
-                copyToClipboard(message.body, "Message copied to clipboard");
+                copyTextToClipboard(
+                  message.body,
+                  "Message copied to clipboard",
+                );
               }}
             >
               <Copy className="h-4 w-4" />
@@ -247,7 +239,7 @@ function MoreActionsMenu({
                   messageId: message.id,
                   threadRootId: rootId,
                 });
-                copyToClipboard(link, "Link copied to clipboard");
+                copyTextToClipboard(link, "Link copied to clipboard");
               }}
             >
               <Link2 className="h-4 w-4" />

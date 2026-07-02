@@ -2,6 +2,7 @@ import * as React from "react";
 
 import type { InboxContextMessage } from "@/features/home/lib/inbox";
 import { formatBountyAmount } from "@/features/messages/lib/messageBounties";
+import { formatTimeWithoutDayPeriod } from "@/features/messages/lib/dateFormatters";
 import type { TimelineMessage } from "@/features/messages/types";
 import { MessageActionBar } from "@/features/messages/ui/MessageActionBar";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
@@ -29,7 +30,7 @@ function toTimelineMessage(message: InboxDisplayMessage): TimelineMessage {
     pubkey: message.authorPubkey,
     reactions: message.reactions ?? [],
     tags: message.tags,
-    time: message.fullTimestampLabel,
+    time: message.timeLabel ?? message.fullTimestampLabel,
   };
 }
 
@@ -38,6 +39,7 @@ type InboxMessageRowProps = {
   canReply: boolean;
   /** Channel UUID for "Copy link" — passed straight through to MessageActionBar. */
   channelId?: string | null;
+  isContinuation?: boolean;
   isFocusHighlightVisible: boolean;
   message: InboxDisplayMessage;
   onSelectReplyTarget: (message: InboxDisplayMessage) => void;
@@ -52,6 +54,7 @@ export function InboxMessageRow({
   agentPubkeys,
   canReply,
   channelId = null,
+  isContinuation = false,
   isFocusHighlightVisible,
   message,
   onSelectReplyTarget,
@@ -78,14 +81,17 @@ export function InboxMessageRow({
   const isAuthorAgent =
     agentPubkeys?.has(normalizePubkey(message.authorPubkey)) === true;
   const profileRole = isAuthorAgent ? "bot" : undefined;
+  const hoverTimestampLabel = formatTimeWithoutDayPeriod(
+    message.timeLabel ?? message.fullTimestampLabel,
+  );
 
   return (
-    <div className="relative px-5 py-2">
+    <div className="relative px-2">
       {message.isSelected ? (
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute inset-x-0 inset-y-1 transition-opacity duration-1000",
+            "pointer-events-none absolute inset-x-3 inset-y-1 rounded-2xl transition-opacity duration-1000",
             isFocusHighlightVisible
               ? "bg-primary/[0.07] opacity-100"
               : "bg-primary/[0.07] opacity-0",
@@ -94,12 +100,13 @@ export function InboxMessageRow({
       ) : null}
       <article
         className={cn(
-          "group/message relative flex items-start gap-2.5 px-0 py-0",
+          "group/message relative z-10 mx-1 flex gap-2.5 rounded-2xl px-2 py-1 transition-colors hover:bg-muted/50 focus-within:bg-muted/50",
+          isContinuation ? "items-center" : "items-start",
           message.bounty?.recipientIsCurrentUser && !message.bounty.paid
-            ? "rounded-2xl border border-emerald-500/35 bg-emerald-500/10 dark:bg-emerald-500/10"
+            ? "border border-emerald-500/35 bg-emerald-500/10 dark:bg-emerald-500/10"
             : message.bounty?.recipientIsCurrentUser && message.bounty.paid
-              ? "rounded-2xl border border-emerald-500/25 bg-emerald-500/5"
-              : !message.isSelected && "hover:bg-muted/20",
+              ? "border border-emerald-500/25 bg-emerald-500/5"
+              : null,
         )}
         data-testid={
           message.isSelected
@@ -127,42 +134,56 @@ export function InboxMessageRow({
           </div>
         ) : null}
 
-        <div className="relative shrink-0">
-          <UserProfilePopover
-            botIdenticonValue={message.authorLabel}
-            pubkey={message.authorPubkey}
-            role={profileRole}
-            triggerElement="span"
+        {isContinuation ? (
+          <div
+            aria-hidden="true"
+            className="flex w-9 shrink-0 self-stretch items-start justify-end pt-0.5"
+            title={message.fullTimestampLabel}
           >
-            <span className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
-              <UserAvatar
-                avatarUrl={message.avatarUrl}
-                className="h-9 w-9 shrink-0"
-                displayName={message.authorLabel}
-                size="md"
-              />
-            </span>
-          </UserProfilePopover>
-        </div>
-
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0">
+            <p className="shrink-0 cursor-default whitespace-nowrap text-xs font-normal leading-4 tabular-nums text-muted-foreground/55 opacity-0 transition-opacity group-hover/message:opacity-100 group-focus-within/message:opacity-100">
+              {hoverTimestampLabel}
+            </p>
+          </div>
+        ) : (
+          <div className="relative shrink-0">
             <UserProfilePopover
               botIdenticonValue={message.authorLabel}
               pubkey={message.authorPubkey}
               role={profileRole}
               triggerElement="span"
             >
-              <span className="block max-w-full truncate rounded text-sm font-semibold text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
-                {message.authorLabel}
+              <span className="inline-flex shrink-0 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+                <UserAvatar
+                  avatarUrl={message.avatarUrl}
+                  className="h-9 w-9 shrink-0"
+                  displayName={message.authorLabel}
+                  size="md"
+                />
               </span>
             </UserProfilePopover>
-            <p className="shrink-0 text-xs font-normal tabular-nums text-muted-foreground/55">
-              {message.fullTimestampLabel}
-            </p>
           </div>
+        )}
 
-          <div className="mt-0.5">
+        <div className="min-w-0 flex-1">
+          {isContinuation ? null : (
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0">
+              <UserProfilePopover
+                botIdenticonValue={message.authorLabel}
+                pubkey={message.authorPubkey}
+                role={profileRole}
+                triggerElement="span"
+              >
+                <span className="block max-w-full truncate rounded text-sm font-semibold text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring">
+                  {message.authorLabel}
+                </span>
+              </UserProfilePopover>
+              <p className="shrink-0 text-xs font-normal tabular-nums text-muted-foreground/55">
+                {message.fullTimestampLabel}
+              </p>
+            </div>
+          )}
+
+          <div className={isContinuation ? "mt-0" : "mt-0.5"}>
             {message.bounty ? (
               <div className="mb-1.5">
                 <span

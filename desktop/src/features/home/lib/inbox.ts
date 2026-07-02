@@ -69,6 +69,7 @@ export type InboxReply = {
   rootId?: string | null;
   bounty?: InboxBounty | null;
   tags?: string[][];
+  timeLabel?: string;
 };
 
 export type InboxBounty = MessageBounty & {
