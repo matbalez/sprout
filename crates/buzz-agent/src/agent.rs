@@ -23,6 +23,9 @@ const ERROR_REFLECTION_SUFFIX: &str =
 
 pub struct RunCtx<'a> {
     pub cfg: &'a Config,
+    /// Effective model for this session. Usually equals `cfg.model`; overridden
+    /// per-session by `session/set_model`. All LLM calls use this value.
+    pub effective_model: &'a str,
     pub session_id: &'a str,
     pub system_prompt: &'a str,
     pub llm: &'a Llm,
@@ -39,11 +42,6 @@ pub struct RunCtx<'a> {
     pub history: &'a mut Vec<HistoryItem>,
     pub original_task: &'a mut Option<String>,
     pub handoff_count: &'a mut usize,
-    /// Cumulative `_Stop` objection count for this session (persists
-    /// across `session/prompt` calls). Once it hits
-    /// `cfg.stop_max_rejections` we stop calling `_Stop` for that
-    /// session — a runaway hook can't burn rejections on every prompt.
-    pub stop_rejections: &'a mut u32,
     /// Cache-summed input tokens reported by the provider on this session's
     /// most recent request (persists across `session/prompt` calls), or `None`
     /// before the first response and immediately after a handoff resets the
@@ -56,6 +54,12 @@ pub struct RunCtx<'a> {
     /// which the exact-but-stale token count would otherwise miss. Cleared and
     /// preserved in lockstep with `last_request_input_tokens`.
     pub last_request_history_bytes: &'a mut Option<usize>,
+    /// Accumulated input tokens across all LLM rounds in this turn, for
+    /// NIP-AM metric publishing. Reset to `None` at turn start in `run()`.
+    pub turn_input_tokens: &'a mut Option<u64>,
+    /// Accumulated output tokens across all LLM rounds in this turn, for
+    /// NIP-AM metric publishing. Reset to `None` at turn start in `run()`.
+    pub turn_output_tokens: &'a mut Option<u64>,
 }
 
 impl RunCtx<'_> {
@@ -71,11 +75,15 @@ impl RunCtx<'_> {
         }
         self.history.push(HistoryItem::User(user_text));
 
+        // Reset per-turn token accumulators for this prompt.
+        *self.turn_input_tokens = None;
+        *self.turn_output_tokens = None;
+
         let mut round = 0u32;
-        // Per-prompt latch: only used to detect "LLM said end_turn twice
-        // in a row with no tool calls between" within this single prompt.
-        // The cumulative rejection budget lives on the session.
-        let mut last_was_end_turn = false;
+        // Per-prompt `_Stop` objection count. Bounded per prompt (not per
+        // session) so a stubborn exchange can't permanently disable the stop
+        // guard for a long-lived session; `max_rounds` still caps the loop.
+        let mut stop_rejections = 0u32;
         loop {
             if self.cfg.max_rounds > 0 && round >= self.cfg.max_rounds {
                 return Ok(StopReason::MaxTurnRequests);
@@ -113,7 +121,7 @@ impl RunCtx<'_> {
             let response = tokio::select! {
                 biased;
                 _ = self.cancel.changed() => return Ok(StopReason::Cancelled),
-                r = self.llm.complete(self.cfg, self.system_prompt, self.history, &tools) => r?,
+                r = self.llm.complete(self.cfg, self.system_prompt, self.history, &tools, self.effective_model) => r?,
                 _ = async {
                     // Keepalive ticker: emit a lightweight session update every 30s
                     // while waiting on the LLM provider. This resets the ACP harness
@@ -158,6 +166,14 @@ impl RunCtx<'_> {
                         .map(HistoryItem::context_pressure_bytes)
                         .sum(),
                 );
+                // Accumulate per-turn input tokens for NIP-AM metric publishing.
+                *self.turn_input_tokens =
+                    Some(self.turn_input_tokens.unwrap_or(0).saturating_add(tokens));
+            }
+            // Accumulate per-turn output tokens for NIP-AM metric publishing.
+            if let Some(out) = response.output_tokens {
+                *self.turn_output_tokens =
+                    Some(self.turn_output_tokens.unwrap_or(0).saturating_add(out));
             }
 
             if !response.reasoning.is_empty() {
@@ -201,13 +217,7 @@ impl RunCtx<'_> {
                 let stop = map_stop(response.stop);
                 // Only gate genuine end_turn — don't override max_tokens/refusal.
                 if stop == StopReason::EndTurn {
-                    // Consecutive-rejection rule: LLM responded to our last
-                    // objection with no tool calls — accept the end and
-                    // move on rather than loop forever.
-                    if last_was_end_turn {
-                        return Ok(stop);
-                    }
-                    if *self.stop_rejections >= self.cfg.stop_max_rejections {
+                    if stop_rejections >= self.cfg.stop_max_rejections {
                         return Ok(stop);
                     }
                     let objections = self
@@ -220,8 +230,7 @@ impl RunCtx<'_> {
                         )
                         .await;
                     if !objections.is_empty() {
-                        *self.stop_rejections = self.stop_rejections.saturating_add(1);
-                        last_was_end_turn = true;
+                        stop_rejections = stop_rejections.saturating_add(1);
                         push_hook_outputs_as_tool_results(self.history, "_Stop", &objections);
                         continue;
                     }
@@ -241,9 +250,6 @@ impl RunCtx<'_> {
                 text: response.text,
                 tool_calls: calls.clone(),
             });
-
-            // Tool calls executed → reset the consecutive-rejection latch.
-            last_was_end_turn = false;
 
             if let Some(stop) = self.execute_calls(&calls).await {
                 return Ok(stop);

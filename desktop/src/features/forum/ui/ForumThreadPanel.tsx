@@ -12,7 +12,7 @@ import { channelChrome } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
 import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext";
 import { parseImetaTags } from "@/features/messages/lib/parseImeta";
-import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
+import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 import { Button } from "@/shared/ui/button";
 import { Markdown } from "@/shared/ui/markdown";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -73,7 +73,10 @@ function ReplyRow({
   const replyAvatarUrl =
     profiles?.[reply.pubkey.toLowerCase()]?.avatarUrl ?? null;
   const showDelete = onDelete && canDeleteReply(reply, currentPubkey);
-  const replyMentionNames = resolveMentionNames(reply.tags, profiles);
+  const {
+    mentionNames: replyMentionNames,
+    mentionPubkeysByName: replyMentionPubkeysByName,
+  } = resolveMentionProps(reply.tags, profiles);
 
   return (
     <div
@@ -115,6 +118,7 @@ function ReplyRow({
           content={reply.content}
           imetaByUrl={parseImetaTags(reply.tags)}
           mentionNames={replyMentionNames}
+          mentionPubkeysByName={replyMentionPubkeysByName}
         />
       </div>
     </div>
@@ -186,7 +190,10 @@ export function ForumThreadPanel({
   }
 
   const { post, replies } = thread;
-  const postMentionNames = resolveMentionNames(post.tags, profiles);
+  const {
+    mentionNames: postMentionNames,
+    mentionPubkeysByName: postMentionPubkeysByName,
+  } = resolveMentionProps(post.tags, profiles);
   const postAuthorLabel = resolveUserLabel({
     pubkey: post.pubkey,
     currentPubkey,
@@ -255,6 +262,7 @@ export function ForumThreadPanel({
               content={post.content}
               imetaByUrl={parseImetaTags(post.tags)}
               mentionNames={postMentionNames}
+              mentionPubkeysByName={postMentionPubkeysByName}
             />
           </div>
         </div>

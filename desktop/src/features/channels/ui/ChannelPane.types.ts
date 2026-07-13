@@ -3,6 +3,7 @@ import type { BotActivityAgent } from "@/features/channels/ui/BotActivityBar";
 import type { ChannelAgentSessionAgent } from "@/features/channels/ui/useChannelAgentSessions";
 import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
 import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
+import type { ChannelWindowThreadSummary } from "@/features/messages/lib/channelWindowStore";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { TypingIndicatorEntry } from "@/features/messages/useChannelTyping";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
@@ -18,6 +19,20 @@ export type ChannelPaneProps = {
   agentPubkeys?: ReadonlySet<string>;
   agentPubkeysPending?: boolean;
   agentSessionAgents: ChannelAgentSessionAgent[];
+  /**
+   * When non-null, the main composer fires `submitMessage` once after loading
+   * the draft identified by this key — i.e. the user clicked "Send message"
+   * in the Drafts panel and confirmed. Cleared by the composer after firing so
+   * back-navigation cannot re-trigger.
+   */
+  autoSendDraftKey?: string | null;
+  /**
+   * Called after the auto-submit guard fires to surgically clear `?autoSend`
+   * from the URL while preserving `?thread` and all other panel search state.
+   * If omitted, ChannelPane falls back to a full goChannel() re-navigation
+   * (safe for the main-composer path, which carries no URL-backed thread).
+   */
+  onAutoSendComplete?: (() => void) | null;
   botTypingEntries: TypingIndicatorEntry[];
   channelFind: ReturnType<typeof useChannelFind>;
   channelManagementOpen?: boolean;
@@ -31,17 +46,26 @@ export type ChannelPaneProps = {
   fetchOlder?: () => Promise<void>;
   header?: React.ReactNode;
   hasOlderMessages?: boolean;
+  /** True when the loaded window provably starts at the channel's beginning. */
+  historyExhausted?: boolean;
   isFetchingOlder?: boolean;
   isJoining?: boolean;
   isSinglePanelView?: boolean;
   isSending: boolean;
   isTimelineLoading: boolean;
   messages: TimelineMessage[];
+  threadSummaries?: ReadonlyMap<string, ChannelWindowThreadSummary>;
   firstUnreadMessageId?: string | null;
   unreadCount?: number;
   canResetThreadPanelWidth: boolean;
   onCancelEdit?: () => void;
   onCancelThreadReply: () => void;
+  /**
+   * Fired by the header back arrow when Activity has a captured pane to
+   * return to. Absent (arrow hidden) for composer/no-pane opens and
+   * direct/restored Activity URLs — the close affordance is the fallback.
+   */
+  onBackFromAgentSession?: () => void;
   onCloseAgentSession: () => void;
   onCloseChannelManagement?: () => void;
   onChannelManagementDeleted?: () => void;
@@ -56,7 +80,7 @@ export type ChannelPaneProps = {
   onMarkRead?: (message: TimelineMessage) => void;
   onExpandThreadReplies: (message: TimelineMessage) => void;
   onJoinChannel?: () => Promise<void>;
-  onOpenAgentSession: (pubkey: string) => void;
+  onOpenAgentSession: (pubkey: string, channelId?: string | null) => void;
   onOpenDm?: (pubkeys: string[]) => Promise<void> | void;
   onOpenMembers?: () => void;
   onOpenProfilePanel: (pubkey: string) => void;
@@ -67,6 +91,8 @@ export type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    channelId?: string | null,
   ) => Promise<void>;
   onSendVideoReviewComment?: (
     message: TimelineMessage,
@@ -79,6 +105,12 @@ export type ChannelPaneProps = {
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
+    options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    channelId?: string | null,
+    threadContext?: {
+      parentEventId: string | null;
+      threadHeadId: string | null;
+    } | null,
   ) => Promise<void>;
   onTargetReached?: (messageId: string) => void;
   onToggleReaction?: (
@@ -95,6 +127,7 @@ export type ChannelPaneProps = {
   profiles?: UserProfileLookup;
   openThreadHeadId: string | null;
   shouldShowThreadSkeleton: boolean;
+  openAgentSessionChannelId: string | null;
   openAgentSessionPubkey: string | null;
   onProfilePanelViewChange: (
     view: ProfilePanelView,
@@ -109,6 +142,7 @@ export type ChannelPaneProps = {
   profilePanelView: ProfilePanelView;
   threadHeadMessage: TimelineMessage | null;
   threadMessages: MainTimelineEntry[];
+  threadMessagesPending?: boolean;
   threadPanelWidthPx: number;
   threadTypingPubkeys: string[];
   threadReplyTargetMessage: TimelineMessage | null;

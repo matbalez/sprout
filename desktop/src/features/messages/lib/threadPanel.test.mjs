@@ -604,3 +604,100 @@ test("buildThreadPanelDataFromIndex matches direct panel data", () => {
 
   assert.deepEqual(indexed, direct);
 });
+
+test("buildMainTimelineEntries renders a relay-only thread summary", () => {
+  const root = message({ id: "root", createdAt: 1 });
+  const summaries = new Map([
+    [
+      "root",
+      {
+        replyCount: 2,
+        descendantCount: 4,
+        lastReplyAt: 9,
+        participantPubkeys: ["alice", "bob"],
+      },
+    ],
+  ]);
+  const profiles = { alice: { displayName: "Alice", avatarUrl: "alice.png" } };
+
+  const [entry] = buildMainTimelineEntries(
+    [root],
+    new Set(),
+    summaries,
+    profiles,
+  );
+
+  assert.deepEqual(entry.summary, {
+    threadHeadId: "root",
+    replyCount: 4,
+    lastReplyAt: 9,
+    // Relay returns participants most-recent-first (["alice", "bob"]); the
+    // facepile renders them oldest-first so the last replier lands rightmost.
+    participants: [
+      { id: "bob", author: "bob", avatarUrl: null },
+      { id: "alice", author: "Alice", avatarUrl: "alice.png" },
+    ],
+  });
+});
+
+test("buildMainTimelineEntries keeps the 3 most-recent relay participants oldest-first", () => {
+  const root = message({ id: "root", createdAt: 1 });
+  const summaries = new Map([
+    [
+      "root",
+      {
+        replyCount: 4,
+        descendantCount: 4,
+        lastReplyAt: 9,
+        // Relay order is most-recent-first; only the top 3 are displayed.
+        participantPubkeys: ["newest", "middle", "oldest-shown", "dropped"],
+      },
+    ],
+  ]);
+
+  const [entry] = buildMainTimelineEntries([root], new Set(), summaries);
+
+  // Top-3 taken (drops "dropped"), then reversed to oldest-first so the last
+  // replier ("newest") renders rightmost.
+  assert.deepEqual(
+    entry.summary?.participants.map((participant) => participant.id),
+    ["oldest-shown", "middle", "newest"],
+  );
+});
+
+test("buildMainTimelineEntries merges local knowledge over the relay floor", () => {
+  const root = message({ id: "root", createdAt: 1 });
+  const localReply = message({
+    id: "reply",
+    createdAt: 12,
+    parentId: "root",
+    rootId: "root",
+    depth: 1,
+    pubkey: "local",
+    author: "Local",
+  });
+  const summaries = new Map([
+    [
+      "root",
+      {
+        replyCount: 2,
+        descendantCount: 5,
+        lastReplyAt: 10,
+        participantPubkeys: ["relay"],
+      },
+    ],
+  ]);
+
+  const [entry] = buildMainTimelineEntries(
+    [root, localReply],
+    new Set(),
+    summaries,
+  );
+
+  assert.equal(entry.summary?.replyCount, 5);
+  assert.equal(entry.summary?.lastReplyAt, 12);
+  assert.deepEqual(
+    entry.summary?.participants.map((participant) => participant.id),
+    ["relay", "local"],
+  );
+});

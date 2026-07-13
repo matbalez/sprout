@@ -18,6 +18,8 @@ import {
   readStoredReadState,
   writeStoredReadState,
 } from "@/features/channels/readState/readStateStorage";
+import { setLocalStorageItemWithRecovery } from "@/shared/lib/localStorageQuota";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 
 const CLIENT_ID_KEY_PREFIX = "buzz.nip-rs.client-id";
 const SLOT_ID_KEY_PREFIX = "buzz.nip-rs.slot-id";
@@ -33,7 +35,7 @@ function getOrCreatePersisted(key: string, generator: () => string): string {
   let value = localStorage.getItem(key);
   if (!value) {
     value = generator();
-    localStorage.setItem(key, value);
+    setLocalStorageItemWithRecovery(key, value);
   }
   return value;
 }
@@ -61,7 +63,10 @@ function loadExtraSlotIds(pubkey: string): string[] {
 }
 
 function saveExtraSlotIds(pubkey: string, ids: string[]): void {
-  localStorage.setItem(localExtraSlotIdsKey(pubkey), JSON.stringify(ids));
+  setLocalStorageItemWithRecovery(
+    localExtraSlotIdsKey(pubkey),
+    JSON.stringify(ids),
+  );
 }
 
 export type ApplyRemoteContextResult = "unchanged" | "advanced";
@@ -331,7 +336,7 @@ export class ReadStateManager {
   async initialize(): Promise<void> {
     if (this.initialized || this.destroyed) return;
     console.debug(
-      `[ReadStateManager] initialize pubkey=${this.pubkey.substring(0, 8)}… clientId=${this.clientId.substring(0, 8)}… slotId=${this.slotId}`,
+      `[ReadStateManager] initialize pubkey=${truncatePubkey(this.pubkey)} clientId=${this.clientId.substring(0, 8)}… slotId=${this.slotId}`,
     );
 
     this.hydrateFromLocalStorage();
@@ -518,7 +523,7 @@ export class ReadStateManager {
       if (!parsed || parsed.dTag !== `read-state:${this.slotId}`) continue;
       if (parsed.blob.client_id !== this.clientId) {
         this.slotId = generateHex(16);
-        localStorage.setItem(slotIdKey(this.pubkey), this.slotId);
+        setLocalStorageItemWithRecovery(slotIdKey(this.pubkey), this.slotId);
         break;
       }
     }

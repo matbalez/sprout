@@ -18,11 +18,14 @@ import type {
   ChannelSectionStore,
 } from "./channelSectionsStorage";
 
-export function useChannelSections(pubkey: string | undefined): {
+export function useChannelSections(
+  pubkey: string | undefined,
+  relayUrl?: string,
+): {
   sections: ChannelSection[];
   assignments: Record<string, string>;
-  createSection: (name: string) => ChannelSection | null;
-  renameSection: (sectionId: string, newName: string) => void;
+  createSection: (name: string, icon?: string) => ChannelSection | null;
+  renameSection: (sectionId: string, newName: string, icon?: string) => void;
   deleteSection: (sectionId: string) => void;
   moveSectionUp: (sectionId: string) => void;
   moveSectionDown: (sectionId: string) => void;
@@ -34,7 +37,7 @@ export function useChannelSections(pubkey: string | undefined): {
     if (!pubkey) {
       return DEFAULT_STORE;
     }
-    return readChannelSectionsStore(pubkey);
+    return readChannelSectionsStore(pubkey, relayUrl);
   });
 
   const managerRef = React.useRef<ChannelSectionSyncManager | null>(null);
@@ -48,7 +51,7 @@ export function useChannelSections(pubkey: string | undefined): {
       lastAppliedEventId.current = "";
       return;
     }
-    setStore(readChannelSectionsStore(pubkey));
+    setStore(readChannelSectionsStore(pubkey, relayUrl));
     lastAppliedRemoteTs.current = 0;
     lastAppliedEventId.current = "";
     managerRef.current = new ChannelSectionSyncManager(pubkey);
@@ -56,24 +59,24 @@ export function useChannelSections(pubkey: string | undefined): {
       managerRef.current?.destroy();
       managerRef.current = null;
     };
-  }, [pubkey]);
+  }, [pubkey, relayUrl]);
 
   React.useEffect(() => {
     if (!pubkey) {
       return;
     }
-    const key = storageKey(pubkey);
+    const key = storageKey(pubkey, relayUrl);
     const handler = (e: StorageEvent) => {
       if (e.key !== key) {
         return;
       }
-      setStore(readChannelSectionsStore(pubkey));
+      setStore(readChannelSectionsStore(pubkey, relayUrl));
     };
     window.addEventListener("storage", handler);
     return () => {
       window.removeEventListener("storage", handler);
     };
-  }, [pubkey]);
+  }, [pubkey, relayUrl]);
 
   const applyRemote = React.useCallback(
     (
@@ -90,11 +93,12 @@ export function useChannelSections(pubkey: string | undefined): {
         lastAppliedRemoteTs.current = remote.createdAt;
         lastAppliedEventId.current = remote.eventId;
         managerRef.current?.cancelPendingPublish();
-        if (!writeChannelSectionsStore(pubkey, remote.store)) return prev;
+        if (!writeChannelSectionsStore(pubkey, remote.store, relayUrl))
+          return prev;
         return remote.store;
       };
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   React.useEffect(() => {
@@ -105,7 +109,7 @@ export function useChannelSections(pubkey: string | undefined): {
       if (remote) {
         setStore(applyRemote(remote));
       } else {
-        const local = readChannelSectionsStore(pubkey);
+        const local = readChannelSectionsStore(pubkey, relayUrl);
         if (local.sections.length > 0) {
           managerRef.current?.publishSections(local);
         }
@@ -114,7 +118,7 @@ export function useChannelSections(pubkey: string | undefined): {
     return () => {
       cancelled = true;
     };
-  }, [pubkey, applyRemote]);
+  }, [pubkey, relayUrl, applyRemote]);
 
   React.useEffect(() => {
     if (!pubkey) return;
@@ -165,9 +169,9 @@ export function useChannelSections(pubkey: string | undefined): {
   );
 
   const createSection = React.useCallback(
-    (name: string): ChannelSection | null => {
+    (name: string, icon?: string): ChannelSection | null => {
       if (!pubkey) return null;
-      const prev = readChannelSectionsStore(pubkey);
+      const prev = readChannelSectionsStore(pubkey, relayUrl);
       const maxOrder =
         prev.sections.length > 0
           ? Math.max(...prev.sections.map((s) => s.order))
@@ -175,6 +179,7 @@ export function useChannelSections(pubkey: string | undefined): {
       const section: ChannelSection = {
         id: crypto.randomUUID(),
         name,
+        ...(icon ? { icon } : {}),
         order: maxOrder + 1,
       };
       setStore((current) => {
@@ -182,17 +187,17 @@ export function useChannelSections(pubkey: string | undefined): {
           ...current,
           sections: [...current.sections, section],
         };
-        if (!writeChannelSectionsStore(pubkey, next)) return current;
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) return current;
         managerRef.current?.publishSections(next);
         return next;
       });
       return section;
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const renameSection = React.useCallback(
-    (sectionId: string, newName: string) => {
+    (sectionId: string, newName: string, icon?: string) => {
       if (!pubkey) {
         return;
       }
@@ -200,17 +205,24 @@ export function useChannelSections(pubkey: string | undefined): {
         const next: ChannelSectionStore = {
           ...prev,
           sections: prev.sections.map((s) =>
-            s.id === sectionId ? { ...s, name: newName } : s,
+            s.id === sectionId
+              ? {
+                  id: s.id,
+                  name: newName,
+                  ...(icon ? { icon } : {}),
+                  order: s.order,
+                }
+              : s,
           ),
         };
-        if (!writeChannelSectionsStore(pubkey, next)) {
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const deleteSection = React.useCallback(
@@ -230,14 +242,14 @@ export function useChannelSections(pubkey: string | undefined): {
           sections: prev.sections.filter((s) => s.id !== sectionId),
           assignments,
         };
-        if (!writeChannelSectionsStore(pubkey, next)) {
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const moveSectionUp = React.useCallback(
@@ -245,12 +257,13 @@ export function useChannelSections(pubkey: string | undefined): {
       if (!pubkey) return;
       setStore((prev) => {
         const next = swapSectionOrder(prev, sectionId, "up");
-        if (!next || !writeChannelSectionsStore(pubkey, next)) return prev;
+        if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
+          return prev;
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const moveSectionDown = React.useCallback(
@@ -258,12 +271,13 @@ export function useChannelSections(pubkey: string | undefined): {
       if (!pubkey) return;
       setStore((prev) => {
         const next = swapSectionOrder(prev, sectionId, "down");
-        if (!next || !writeChannelSectionsStore(pubkey, next)) return prev;
+        if (!next || !writeChannelSectionsStore(pubkey, next, relayUrl))
+          return prev;
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const reorderSections = React.useCallback(
@@ -275,12 +289,12 @@ export function useChannelSections(pubkey: string | undefined): {
           return newOrder === -1 ? s : { ...s, order: newOrder };
         });
         const next: ChannelSectionStore = { ...prev, sections };
-        if (!writeChannelSectionsStore(pubkey, next)) return prev;
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) return prev;
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const assignChannel = React.useCallback(
@@ -293,14 +307,14 @@ export function useChannelSections(pubkey: string | undefined): {
           ...prev,
           assignments: { ...prev.assignments, [channelId]: sectionId },
         };
-        if (!writeChannelSectionsStore(pubkey, next)) {
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   const unassignChannel = React.useCallback(
@@ -312,14 +326,14 @@ export function useChannelSections(pubkey: string | undefined): {
         const assignments = { ...prev.assignments };
         delete assignments[channelId];
         const next: ChannelSectionStore = { ...prev, assignments };
-        if (!writeChannelSectionsStore(pubkey, next)) {
+        if (!writeChannelSectionsStore(pubkey, next, relayUrl)) {
           return prev;
         }
         managerRef.current?.publishSections(next);
         return next;
       });
     },
-    [pubkey],
+    [pubkey, relayUrl],
   );
 
   return {

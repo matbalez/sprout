@@ -1,109 +1,124 @@
-import * as React from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { channelMessagesKey } from "@/features/messages/lib/messageQueryKeys";
-import { mergeMessages } from "@/features/messages/hooks";
+import {
+  collectMessageIdsForAuxBackfill,
+  fetchStructuralAuxForMessages,
+} from "@/features/messages/lib/auxBackfill";
+import {
+  threadRepliesKey,
+  sortMessages,
+} from "@/features/messages/lib/messageQueryKeys";
+import { relayClient } from "@/shared/api/relayClient";
+import { buildChannelReactionAuxFilter } from "@/shared/api/relayChannelFilters";
 import { getThreadReplies } from "@/shared/api/tauri";
 import type { Channel, RelayEvent, ThreadCursor } from "@/shared/api/types";
 
-// Bounded per-page fetch; the hook pages to the floor so this is a page size,
-// not a terminal cap. Matches the desktop command's own 500 max.
 const THREAD_PAGE_LIMIT = 200;
-// A hard stop so a pathological/looping cursor can never spin forever. At 200
-// replies per page this covers a 100k-reply thread — far past any real one.
 const MAX_THREAD_PAGES = 500;
 
 /**
- * When a thread is open, fetch its full reply subtree server-side and merge the
- * events into the channel cache.
- *
- * The thread panel derives its replies from the channel cache
- * (`channelMessagesKey`); `useLoadMissingAncestors` only backfills *ancestors*
- * (walking `e`-tags upward), so replies that fell outside the channel
- * cold-load window were never fetched — the thread rendered silently
- * incomplete. This closes that descendant gap using the same cache seam: page
- * `get_thread_replies` to the floor (gap-free `(created_at, event_id)` keyset)
- * and merge each event in. All downstream grouping/ordering/unread derivation
- * keeps working unchanged; the thread simply becomes complete.
- *
- * Idempotent per (channel, root): `mergeMessages` dedupes by id, so replies
- * already in the cache from the live subscription or cold load are no-ops.
+ * Append the structural aux closure (edits/deletions) for the fetched replies.
+ * The server thread-subtree query resolves deletions itself but omits
+ * kind:40003 edits, so a bare refetch would render every edited reply with its
+ * original text. Best-effort: an aux failure logs and returns the replies
+ * unadorned rather than failing the whole thread load.
  */
+async function fetchThreadAuxBestEffort(
+  label: string,
+  channelId: string,
+  fetchAux: () => Promise<RelayEvent[]>,
+): Promise<RelayEvent[]> {
+  try {
+    return await fetchAux();
+  } catch (error) {
+    console.error(
+      `Failed to backfill thread reply ${label} for channel`,
+      channelId,
+      error,
+    );
+    return [];
+  }
+}
+
+export function collectThreadAuxMessageIds(
+  threadRootId: string,
+  replies: RelayEvent[],
+): string[] {
+  return [
+    ...new Set([threadRootId, ...collectMessageIdsForAuxBackfill(replies)]),
+  ];
+}
+
+async function withThreadAux(
+  channelId: string,
+  threadRootId: string,
+  replies: RelayEvent[],
+): Promise<RelayEvent[]> {
+  const messageIds = collectThreadAuxMessageIds(threadRootId, replies);
+  const [structuralAux, reactions] = await Promise.all([
+    fetchThreadAuxBestEffort("structural aux", channelId, () =>
+      fetchStructuralAuxForMessages(channelId, messageIds),
+    ),
+    fetchThreadAuxBestEffort("reactions", channelId, () =>
+      relayClient.fetchAuxEventsByReference(
+        channelId,
+        messageIds,
+        buildChannelReactionAuxFilter,
+      ),
+    ),
+  ]);
+  return sortMessages([...replies, ...structuralAux, ...reactions]);
+}
+
+/** Fetch a thread subtree into a cache independent from channel window pages. */
 export function useThreadReplies(
   activeChannel: Channel | null,
   openThreadRootId: string | null,
 ) {
+  const channelId = activeChannel?.id ?? "none";
+  const rootId = openThreadRootId ?? "none";
   const queryClient = useQueryClient();
-  const activeChannelId = activeChannel?.id ?? null;
-  const activeChannelType = activeChannel?.channelType ?? null;
-  // Track which roots we've already fetched per channel so re-opening a thread
-  // (or a re-render) doesn't re-page the whole subtree every time.
-  const fetchedRootsRef = React.useRef<Set<string>>(new Set());
-  const previousChannelIdRef = React.useRef<string | null>(null);
-
-  React.useEffect(() => {
-    if (previousChannelIdRef.current === activeChannelId) {
-      return;
-    }
-    previousChannelIdRef.current = activeChannelId;
-    fetchedRootsRef.current.clear();
-  }, [activeChannelId]);
-
-  React.useEffect(() => {
-    if (
-      !activeChannelId ||
-      activeChannelType === "forum" ||
-      !openThreadRootId
-    ) {
-      return;
-    }
-    if (fetchedRootsRef.current.has(openThreadRootId)) {
-      return;
-    }
-    fetchedRootsRef.current.add(openThreadRootId);
-
-    const channelId = activeChannelId;
-    const rootId = openThreadRootId;
-    let isCancelled = false;
-    let completed = false;
-
-    void (async () => {
+  const queryKey = threadRepliesKey(channelId, rootId);
+  return useQuery({
+    queryKey,
+    enabled:
+      activeChannel !== null &&
+      activeChannel.channelType !== "forum" &&
+      openThreadRootId !== null,
+    queryFn: async (): Promise<RelayEvent[]> => {
+      if (!activeChannel || !openThreadRootId) return [];
+      const cacheAtStart =
+        queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
+      const idsAtStart = new Set(cacheAtStart.map((event) => event.id));
+      const replies: RelayEvent[] = [];
       let cursor: ThreadCursor | null = null;
-      try {
-        for (let page = 0; page < MAX_THREAD_PAGES; page++) {
-          const response = await getThreadReplies(rootId, channelId, {
-            limit: THREAD_PAGE_LIMIT,
-            cursor,
-          });
-          if (isCancelled) {
-            return;
-          }
-
-          if (response.events.length > 0) {
-            queryClient.setQueryData<RelayEvent[]>(
-              channelMessagesKey(channelId),
-              (current = []) => response.events.reduce(mergeMessages, current),
-            );
-          }
-
-          if (!response.nextCursor) {
-            completed = true;
-            break;
-          }
-          cursor = response.nextCursor;
+      for (let page = 0; page < MAX_THREAD_PAGES; page += 1) {
+        const response = await getThreadReplies(
+          openThreadRootId,
+          activeChannel.id,
+          { limit: THREAD_PAGE_LIMIT, cursor },
+        );
+        replies.push(...response.events);
+        if (!response.nextCursor) {
+          const fetched = await withThreadAux(
+            activeChannel.id,
+            openThreadRootId,
+            replies,
+          );
+          const current =
+            queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
+          const receivedInFlight = current.filter(
+            (event) => !idsAtStart.has(event.id),
+          );
+          return sortMessages([...fetched, ...receivedInFlight]);
         }
-      } catch (error) {
-        // Let a later re-open retry rather than caching a partial subtree.
-        fetchedRootsRef.current.delete(rootId);
-        console.error("Failed to load thread replies", rootId, error);
+        cursor = response.nextCursor;
       }
-    })();
-
-    return () => {
-      isCancelled = true;
-      if (!completed) {
-        fetchedRootsRef.current.delete(rootId);
-      }
-    };
-  }, [activeChannelId, activeChannelType, openThreadRootId, queryClient]);
+      throw new Error(
+        `Thread ${openThreadRootId} exceeded the page safety limit.`,
+      );
+    },
+    staleTime: 0,
+    gcTime: 60 * 60 * 1_000,
+  });
 }

@@ -55,6 +55,7 @@ const settingsNavGroups: Array<{
       "lightning-wallet",
       "shortcuts",
       "custom-emoji",
+      "local-archive",
     ],
   },
   {

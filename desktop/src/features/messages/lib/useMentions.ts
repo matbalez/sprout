@@ -16,6 +16,7 @@ import {
   coalesceAutocompleteCandidatesByKey,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
+  shouldHideAgentFromMentions,
 } from "@/features/agents/lib/agentAutocompleteEligibility";
 import {
   useInfiniteUserSearchQuery,
@@ -32,11 +33,13 @@ import type {
 } from "@/shared/api/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { detectPrefixQuery } from "@/shared/lib/detectPrefixQuery";
-import { normalizePubkey } from "@/shared/lib/pubkey";
+import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { trimMapToSize } from "@/shared/lib/trimMapToSize";
+import { flushMentionDebounce } from "./flushMentionDebounce";
 import { hasMention } from "./hasMention";
 import { extractMentionPubkeysFromText } from "./mentionPubkeys";
 import { rankMentionCandidates } from "./mentionRanking";
+import { mapMentionCandidateToSuggestion } from "./mentionSuggestionMapping";
 
 const MENTION_DEBOUNCE_MS = 120;
 const MENTION_SUGGESTION_LIMIT = 50;
@@ -58,7 +61,10 @@ type MentionCandidate = {
 };
 
 function mentionCandidateLabel(candidate: MentionCandidate) {
-  return candidate.displayName ?? candidate.pubkey?.slice(0, 8) ?? "persona";
+  return (
+    candidate.displayName ??
+    (candidate.pubkey ? truncatePubkey(candidate.pubkey) : "agent")
+  );
 }
 
 function globalSearchIdentityKey(candidate: MentionCandidate) {
@@ -101,31 +107,6 @@ function formatSearchUserSecondaryLabel(user: UserSearchResult) {
   }
 
   return null;
-}
-
-function formatOwnerLabel(
-  ownerPubkey: string | null | undefined,
-  currentPubkey: string | null | undefined,
-  ownerProfiles?: UserProfileLookup,
-) {
-  if (!ownerPubkey) {
-    return null;
-  }
-
-  const normalizedOwnerPubkey = normalizePubkey(ownerPubkey);
-  if (
-    currentPubkey &&
-    normalizedOwnerPubkey === normalizePubkey(currentPubkey)
-  ) {
-    return "you";
-  }
-
-  const owner = ownerProfiles?.[normalizedOwnerPubkey];
-  return (
-    owner?.displayName?.trim() ||
-    owner?.nip05Handle?.trim() ||
-    `${ownerPubkey.slice(0, 8)}…`
-  );
 }
 
 export function useMentions(
@@ -231,6 +212,15 @@ export function useMentions(
       ),
     [relayAgentsQuery.data],
   );
+  const directoryAgentPubkeys = React.useMemo(
+    () =>
+      new Set(
+        (relayAgentsQuery.data ?? []).map((agent) =>
+          normalizePubkey(agent.pubkey),
+        ),
+      ),
+    [relayAgentsQuery.data],
+  );
   const sharedChannelIds = React.useMemo(
     () => getSharedChannelIds(channelsQuery.data),
     [channelsQuery.data],
@@ -291,9 +281,13 @@ export function useMentions(
         return;
       }
       if (
-        candidate.isAgent &&
-        !candidate.isMember &&
-        !mentionableAgentPubkeys.has(pubkey)
+        shouldHideAgentFromMentions({
+          isAgent: candidate.isAgent === true,
+          isMember: candidate.isMember === true,
+          pubkey,
+          mentionableAgentPubkeys,
+          directoryAgentPubkeys,
+        })
       ) {
         return;
       }
@@ -447,6 +441,7 @@ export function useMentions(
     userSearchResults,
     canSearchGlobalUsers,
     currentPubkey,
+    directoryAgentPubkeys,
     isArchivedDiscovery,
     managedAgentNamesByPubkey,
     managedAgentPersonaIds,
@@ -538,6 +533,7 @@ export function useMentions(
   );
   const latestValueRef = React.useRef<string>("");
   const latestCursorRef = React.useRef<number>(0);
+  const flushedMentionStartIndexRef = React.useRef<number | null>(null);
   const searchableNamesLowerRef = React.useRef<string[]>(searchableNamesLower);
 
   // Keep the known-names ref in sync so the debounced callback never reads stale data.
@@ -565,35 +561,16 @@ export function useMentions(
       activePersonaIds,
     )
       .slice(0, Math.max(MENTION_SUGGESTION_LIMIT, mentionCandidates.length))
-      .map(({ candidate, label }) => {
-        const ownerLabel = candidate.isAgent
-          ? formatOwnerLabel(
-              candidate.ownerPubkey,
-              currentPubkey,
-              ownerProfilesQuery.data?.profiles,
-            )
-          : null;
-        const notInChannel =
-          options?.channelType !== "dm" && candidate.isMember === false;
-
-        return {
-          pubkey: candidate.pubkey,
-          personaId: candidate.personaId,
-          kind: candidate.kind,
-          displayName: label,
-          avatarUrl:
-            candidate.avatarUrl ??
-            (candidate.pubkey
-              ? profiles?.[normalizePubkey(candidate.pubkey)]?.avatarUrl
-              : null) ??
-            null,
-          isAgent: candidate.isAgent,
-          notInChannel,
-          ownerLabel,
-          role:
-            !candidate.isAgent && candidate.role === "admin" ? "admin" : null,
-        };
-      });
+      .map(({ candidate, label }) =>
+        mapMentionCandidateToSuggestion({
+          candidate,
+          label,
+          channelType: options?.channelType,
+          currentPubkey,
+          ownerProfiles: ownerProfilesQuery.data?.profiles,
+          profiles,
+        }),
+      );
   }, [
     activePersonaIds,
     currentPubkey,
@@ -702,8 +679,11 @@ export function useMentions(
       setMentionQuery(null);
       setMentionSelectedIndex(0);
 
+      const startIndex =
+        flushedMentionStartIndexRef.current ?? mentionStartIndex;
+      flushedMentionStartIndexRef.current = null;
       return {
-        replaceFromOffset: mentionStartIndex,
+        replaceFromOffset: startIndex,
         replaceToOffset: selectionEnd,
         insertText,
       };
@@ -897,6 +877,34 @@ export function useMentions(
           !event.shiftKey)
       ) {
         event.preventDefault();
+
+        // If a debounce is pending, the suggestions array reflects a stale query.
+        // Flush: re-detect synchronously and re-derive the correct suggestion.
+        if (debounceTimerRef.current !== null) {
+          const flushed = flushMentionDebounce({
+            debounceTimerRef,
+            latestValueRef,
+            latestCursorRef,
+            searchableNamesLowerRef,
+            candidates: mentionCandidates,
+            activePersonaIds,
+            channelType: options?.channelType,
+            currentPubkey,
+            ownerProfiles: ownerProfilesQuery.data?.profiles,
+            profiles,
+          });
+          if (flushed?.type === "match") {
+            flushedMentionStartIndexRef.current = flushed.startIndex;
+            setMentionQuery(null); // reset so dropdown closes
+            return { handled: true, suggestion: flushed.suggestion };
+          }
+          if (flushed?.type === "no-match") {
+            setMentionQuery(null);
+            return { handled: true };
+          }
+          // Plain `@` after flush intentionally falls through to existing suggestions.
+        }
+
         return { handled: true, suggestion: suggestions[mentionSelectedIndex] };
       }
 
@@ -908,7 +916,17 @@ export function useMentions(
 
       return { handled: false };
     },
-    [isMentionOpen, mentionSelectedIndex, suggestions],
+    [
+      activePersonaIds,
+      currentPubkey,
+      isMentionOpen,
+      mentionCandidates,
+      mentionSelectedIndex,
+      options?.channelType,
+      ownerProfilesQuery.data?.profiles,
+      profiles,
+      suggestions,
+    ],
   );
 
   return {

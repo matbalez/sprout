@@ -6,6 +6,7 @@ import type {
   useSendMessageMutation,
   useToggleReactionMutation,
 } from "@/features/messages/hooks";
+import { resolveThreadReplyTarget } from "@/features/messages/hooks";
 
 /**
  * Stable callback references for ChannelPane so that keystroke-driven
@@ -79,6 +80,23 @@ export function useChannelPaneHandlers({
   const toggleMutateRef = React.useRef(toggleReactionMutation.mutateAsync);
   toggleMutateRef.current = toggleReactionMutation.mutateAsync;
 
+  // These three recompute whenever timelineMessages changes (every ingest).
+  // Read them through refs so handleExpandThreadReplies keeps a stable
+  // identity — it feeds MessageThreadPanel's per-row onCollapseDepthGuide,
+  // and an identity change there re-renders every thread row. With agents
+  // streaming into an open long thread that meant all rows re-rendered
+  // several times per second (see typing-latency.perf.ts "thread68+").
+  const getFirstReplyIdRef = React.useRef(getFirstReplyIdForMessage);
+  getFirstReplyIdRef.current = getFirstReplyIdForMessage;
+
+  const getReplyDescendantIdsRef = React.useRef(
+    getReplyDescendantIdsForMessage,
+  );
+  getReplyDescendantIdsRef.current = getReplyDescendantIdsForMessage;
+
+  const markRevealedRepliesReadRef = React.useRef(markRevealedRepliesRead);
+  markRevealedRepliesReadRef.current = markRevealedRepliesRead;
+
   const deferPanelState = React.useCallback((update: () => void) => {
     window.setTimeout(() => {
       React.startTransition(update);
@@ -111,7 +129,8 @@ export function useChannelPaneHandlers({
   }, [setEditTargetId]);
 
   const handleDelete = React.useCallback(async (message: { id: string }) => {
-    await deleteMutateRef.current({ eventId: message.id });
+    // Failure is surfaced via the mutation's onError toast.
+    await deleteMutateRef.current({ eventId: message.id }).catch(() => {});
   }, []);
 
   const handleEdit = React.useCallback(
@@ -186,7 +205,7 @@ export function useChannelPaneHandlers({
   const handleExpandThreadReplies = React.useCallback(
     (message: { id: string }) => {
       if (expandedThreadReplyIdsRef.current.has(message.id)) {
-        const descendantIds = getReplyDescendantIdsForMessage(message.id);
+        const descendantIds = getReplyDescendantIdsRef.current(message.id);
         setExpandedThreadReplyIds((current) => {
           const next = new Set(current);
           next.delete(message.id);
@@ -198,7 +217,7 @@ export function useChannelPaneHandlers({
         return;
       }
 
-      const firstReplyId = getFirstReplyIdForMessage(message.id);
+      const firstReplyId = getFirstReplyIdRef.current(message.id);
       setExpandedThreadReplyIds((current) => {
         const next = new Set(current);
         next.add(message.id);
@@ -210,19 +229,13 @@ export function useChannelPaneHandlers({
       // reply still nested in a collapsed grandchild branch keeps its badge
       // until it too is revealed — the deliberate reversal of #1118's
       // whole-subtree-on-open collapse.
-      markRevealedRepliesRead(message.id);
+      markRevealedRepliesReadRef.current(message.id);
 
       if (firstReplyId) {
         setThreadScrollTargetId(firstReplyId);
       }
     },
-    [
-      getFirstReplyIdForMessage,
-      getReplyDescendantIdsForMessage,
-      markRevealedRepliesRead,
-      setExpandedThreadReplyIds,
-      setThreadScrollTargetId,
-    ],
+    [setExpandedThreadReplyIds, setThreadScrollTargetId],
   );
 
   const handleSendMessage = React.useCallback(
@@ -231,6 +244,7 @@ export function useChannelPaneHandlers({
       mentionPubkeys: string[],
       mediaTags?: string[][],
       options?: { bountyAmountSats?: number | null; kudos?: boolean },
+      channelId?: string | null,
     ) => {
       await sendMutateRef.current({
         content,
@@ -238,6 +252,7 @@ export function useChannelPaneHandlers({
         mediaTags,
         bountyAmountSats: options?.bountyAmountSats,
         kudos: options?.kudos,
+        channelId: channelId ?? undefined,
       });
     },
     [],
@@ -249,13 +264,24 @@ export function useChannelPaneHandlers({
       mentionPubkeys: string[],
       mediaTags?: string[][],
       options?: { bountyAmountSats?: number | null; kudos?: boolean },
+      channelId?: string | null,
+      threadContext?: {
+        parentEventId: string | null;
+        threadHeadId: string | null;
+      } | null,
     ) => {
-      const activeThreadHeadId = openThreadHeadIdRef.current;
-      const parentEventId =
-        threadReplyTargetIdRef.current ?? activeThreadHeadId;
-      if (!parentEventId) {
+      // Resolve target using captured submit-time context (race-free) or live
+      // refs (legacy path). When threadContext is supplied, no live-ref reads
+      // occur after the mention-flow awaits; the resolution is purely data.
+      const target = resolveThreadReplyTarget(
+        threadContext,
+        threadReplyTargetIdRef.current,
+        openThreadHeadIdRef.current,
+      );
+      if (!target) {
         return;
       }
+      const { parentEventId, threadHeadId: activeThreadHeadId } = target;
 
       if (
         activeThreadHeadId &&
@@ -276,10 +302,17 @@ export function useChannelPaneHandlers({
         mediaTags,
         bountyAmountSats: options?.bountyAmountSats,
         kudos: options?.kudos,
+        channelId: channelId ?? undefined,
       });
-      setThreadReplyTargetId(activeThreadHeadId);
-      if (activeThreadHeadId && parentEventId !== activeThreadHeadId) {
-        setThreadScrollTargetId(sentMessage.id);
+
+      // Only update thread UI state if the user is still viewing the same
+      // thread. If they navigated away during the async send, don't disrupt
+      // the thread they are currently viewing.
+      if (openThreadHeadIdRef.current === activeThreadHeadId) {
+        setThreadReplyTargetId(activeThreadHeadId);
+        if (activeThreadHeadId && parentEventId !== activeThreadHeadId) {
+          setThreadScrollTargetId(sentMessage.id);
+        }
       }
     },
     [

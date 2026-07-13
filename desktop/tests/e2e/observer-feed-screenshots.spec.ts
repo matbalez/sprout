@@ -91,8 +91,18 @@ async function seedObserverEvents(
 }
 
 async function settleAnimations(panel: import("@playwright/test").Locator) {
+  // Only await finite animations — live surfaces (e.g. the turn liveness
+  // indicator) run infinite loops whose `finished` promise never resolves.
   await panel.evaluate((el) =>
-    Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
+    Promise.all(
+      el
+        .getAnimations({ subtree: true })
+        .filter((a) => {
+          const timing = a.effect?.getTiming();
+          return timing?.iterations !== Number.POSITIVE_INFINITY;
+        })
+        .map((a) => a.finished),
+    ),
   );
 }
 
@@ -114,15 +124,14 @@ test.describe("observer feed screenshots", () => {
     });
   });
 
-  test("01 — prompt context inline (collapsed-but-labeled)", async ({
-    page,
-  }) => {
+  test("01 — prompt context dialog (via Checks ingress)", async ({ page }) => {
     await installMockBridge(page, { managedAgents: MANAGED_AGENTS });
     const feedPanel = await openObserverFeedPanel(page, OBSERVER_AGENT_PUBKEY);
 
-    // session/prompt event: the per-turn prompt context that #1381 stopped
-    // rendering inline. The payload contains sections that parsePromptText
-    // extracts and the transcript renders as a collapsed PromptContextInline.
+    // session/prompt event: per-turn prompt context. The payload contains
+    // sections that parsePromptText extracts; the transcript keeps them out
+    // of the feed until the CheckCheck footer toggle opens the
+    // PromptContextDialog modal.
     await seedObserverEvents(page, OBSERVER_AGENT_PUBKEY, [
       {
         seq: 1,
@@ -156,13 +165,22 @@ test.describe("observer feed screenshots", () => {
       },
     ]);
 
-    // The inline context element should be visible with collapsed sections.
+    // The context stays out of the feed until the CheckCheck ingress opens
+    // the dialog.
+    await expect(feedPanel.getByText("Prompt context")).toHaveCount(0);
+    const contextToggle = feedPanel.getByTestId(
+      "transcript-prompt-context-toggle",
+    );
+    await expect(contextToggle).toBeVisible({ timeout: 5_000 });
+    await contextToggle.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
     await expect(
-      feedPanel.getByTestId("transcript-prompt-context-inline"),
+      dialog.getByTestId("transcript-prompt-context-sections"),
     ).toBeVisible({ timeout: 5_000 });
-    await settleAnimations(feedPanel);
-    await feedPanel.screenshot({
-      path: `${SHOTS}/01-prompt-context-inline.png`,
+    await settleAnimations(dialog);
+    await dialog.screenshot({
+      path: `${SHOTS}/01-prompt-context-dialog.png`,
     });
   });
 
@@ -323,7 +341,7 @@ test.describe("observer feed screenshots", () => {
     });
   });
 
-  test("05 — prompt context inline (sections expanded)", async ({ page }) => {
+  test("05 — prompt context dialog (sections expanded)", async ({ page }) => {
     await installMockBridge(page, { managedAgents: MANAGED_AGENTS });
     const feedPanel = await openObserverFeedPanel(page, OBSERVER_AGENT_PUBKEY);
 
@@ -360,19 +378,23 @@ test.describe("observer feed screenshots", () => {
       },
     ]);
 
-    await expect(
-      feedPanel.getByTestId("transcript-prompt-context-inline"),
-    ).toBeVisible({ timeout: 5_000 });
+    // Open the dialog via the CheckCheck ingress, then expand every section.
+    const contextToggle = feedPanel.getByTestId(
+      "transcript-prompt-context-toggle",
+    );
+    await expect(contextToggle).toBeVisible({ timeout: 5_000 });
+    await contextToggle.click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
 
-    // Click each section accordion button to expand it.
-    const sectionButtons = feedPanel
+    const sectionButtons = dialog
       .getByTestId("transcript-prompt-context-sections")
       .getByRole("button");
     for (const btn of await sectionButtons.all()) {
       await btn.click();
     }
-    await settleAnimations(feedPanel);
-    await feedPanel.screenshot({
+    await settleAnimations(dialog);
+    await dialog.screenshot({
       path: `${SHOTS}/05-prompt-context-expanded.png`,
     });
   });
@@ -396,13 +418,34 @@ test.describe("observer feed screenshots", () => {
           method: "session/new",
           params: {
             systemPrompt:
-              "[Base]\nYou are a helpful AI assistant running in Buzz.\n\n[System]\nYou are Observer Agent. You coordinate multi-agent workflows in the #agents channel.",
+              "[Base]\nYou are a helpful AI assistant running in Buzz.\n\n[System]\nYou are Observer Agent. You coordinate multi-agent workflows in the #agents channel.\n\n---\n# Team Instructions\nAlways tag on handoff.\n\n[Agent Memory — core]\nI am Observer Agent.\n## Lessons Learned\nAlways tag on handoff.\n\n[Channel Canvas]\nCanvas revision (event ID): a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\nLast modified: 2026-07-11T10:00:00Z\nFetch current content with: buzz canvas get --channel 94a444a4-c0a3-5966-ab05-530c6ddc2301",
           },
         },
       },
     ]);
 
     await expect(feedPanel.getByText("System prompt")).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // All five section headings must be present in the card — expand it first.
+    await feedPanel.getByTestId("transcript-metadata-item").evaluate((el) => {
+      if (el.tagName === "DETAILS") (el as HTMLDetailsElement).open = true;
+      for (const details of el.querySelectorAll("details")) {
+        details.open = true;
+      }
+    });
+    await expect(feedPanel.getByText("Base")).toBeVisible({ timeout: 5_000 });
+    await expect(feedPanel.getByText("System", { exact: true })).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(feedPanel.getByText("Team Instructions")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(feedPanel.getByText("Core Memory")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(feedPanel.getByText("Channel Canvas")).toBeVisible({
       timeout: 5_000,
     });
 
@@ -563,7 +606,7 @@ test.describe("observer feed screenshots", () => {
       },
     ]);
 
-    await expect(feedPanel.getByText("Commands")).toBeVisible({
+    await expect(feedPanel.getByText("Commands", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
     await settleAnimations(feedPanel);
@@ -618,16 +661,18 @@ test.describe("observer feed screenshots", () => {
     });
   });
 
-  test("11 — first-turn ordering: user bubble → System prompt → Prompt context", async ({
+  test("11 — first-turn bundle: standalone system-prompt card + Checks ingress (per-turn context only)", async ({
     page,
   }) => {
     await installMockBridge(page, { managedAgents: MANAGED_AGENTS });
     const feedPanel = await openObserverFeedPanel(page, OBSERVER_AGENT_PUBKEY);
 
-    // Full realistic pool.rs first-turn wire sequence:
+    // Full realistic pool.rs first-turn wire sequence for a team-pack agent:
     // turn_started → session/new → session_resolved → session/prompt
-    // Verifies the ordering fix: System prompt renders between the user message
-    // bubble and the Prompt context inline block (not after it).
+    // Verifies the consolidated presentation: session/new.systemPrompt always
+    // renders as a standalone top-level "System prompt" card (never injected into
+    // the CheckCheck bundle). The CheckCheck dialog contains only per-turn context
+    // (Buzz event / Thread context) — no Base/System/Team Instructions/Core Memory/Channel Canvas sections.
     await seedObserverEvents(page, OBSERVER_AGENT_PUBKEY, [
       {
         seq: 1,
@@ -653,7 +698,7 @@ test.describe("observer feed screenshots", () => {
           method: "session/new",
           params: {
             systemPrompt:
-              "[Base]\nYou are a helpful AI assistant running in Buzz.\n\n[System]\nYou are Observer Agent. You coordinate multi-agent workflows in the #agents channel.",
+              "[Base]\nYou are a helpful AI assistant running in Buzz.\n\n[System]\nYou are Observer Agent. You coordinate multi-agent workflows in the #agents channel.\n\n---\n# Team Instructions\nAlways tag on handoff.\n\n[Agent Memory — core]\nI am Observer Agent.\n## Lessons Learned\nAlways tag on handoff.\n\n[Channel Canvas]\nCanvas revision (event ID): a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2\nLast modified: 2026-07-11T10:00:00Z\nFetch current content with: buzz canvas get --channel 94a444a4-c0a3-5966-ab05-530c6ddc2301",
           },
         },
       },
@@ -699,15 +744,73 @@ test.describe("observer feed screenshots", () => {
     await expect(feedPanel.getByTestId("transcript-prompt-bundle")).toBeVisible(
       { timeout: 5_000 },
     );
-    // System prompt should appear inside the bundle, above prompt context.
+
+    // Scroll to the top of the feed to bring the standalone "System prompt"
+    // card (which precedes the user bubble) into view.
+    await feedPanel.evaluate((el) => el.scrollTo({ top: 0 }));
+
+    // Standalone "System prompt" card is visible as a top-level feed row —
+    // it must remain present even after the first prompt arrives.
     await expect(feedPanel.getByText("System prompt")).toBeVisible({
       timeout: 5_000,
     });
-    await expect(feedPanel.getByText("Prompt context")).toBeVisible({
+
+    // The standalone card shows "5 sections" collapsed — expand it to reveal
+    // the section headings, then assert all five are present.
+    await feedPanel.getByTestId("transcript-metadata-item").evaluate((el) => {
+      if (el.tagName === "DETAILS") (el as HTMLDetailsElement).open = true;
+      for (const details of el.querySelectorAll("details")) {
+        details.open = true;
+      }
+    });
+    await expect(feedPanel.getByText("Base")).toBeVisible({ timeout: 5_000 });
+    await expect(feedPanel.getByText("System", { exact: true })).toBeVisible({
       timeout: 5_000,
     });
-    await settleAnimations(feedPanel);
-    await feedPanel.screenshot({
+    await expect(feedPanel.getByText("Team Instructions")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(feedPanel.getByText("Core Memory")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(feedPanel.getByText("Channel Canvas")).toBeVisible({
+      timeout: 5_000,
+    });
+
+    // Per-turn prompt context (Buzz event / Thread context) does NOT appear
+    // as a standalone feed row — it lives behind the CheckCheck toggle.
+    await expect(feedPanel.getByText("Prompt context")).toHaveCount(0);
+
+    // Open the CheckCheck dialog: it contains ONLY per-turn context sections
+    // (Buzz event, Thread context). Base/System/Team Instructions/Core Memory/Channel Canvas must NOT appear.
+    await feedPanel.getByTestId("transcript-prompt-context-toggle").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible({ timeout: 5_000 });
+    const sectionArticles = dialog
+      .getByTestId("transcript-prompt-context-sections")
+      .locator("article");
+    const sectionTitles = await sectionArticles.allInnerTexts();
+    // Only per-turn context sections (Buzz event + Thread context) — no system-prompt sections.
+    expect(sectionTitles.length).toBe(2);
+    expect(sectionTitles[0]).toContain("Buzz event");
+    expect(sectionTitles[1]).toContain("Thread context");
+    // Collect all article heading text and assert none of the five
+    // system-prompt section labels appear — including exact "System" which
+    // would be ambiguous via substring search on the full dialog text.
+    const forbidden = [
+      "Base",
+      "System",
+      "Team Instructions",
+      "Core Memory",
+      "Channel Canvas",
+    ];
+    for (const title of sectionTitles) {
+      for (const label of forbidden) {
+        expect(title).not.toContain(label);
+      }
+    }
+    await settleAnimations(dialog);
+    await dialog.screenshot({
       path: `${SHOTS}/11-first-turn-ordering.png`,
     });
   });

@@ -1,9 +1,16 @@
 import * as React from "react";
 
+import {
+  depthGuideActionsEqual,
+  numberArrayEqual,
+  reactionsEqual,
+  tagsEqual,
+} from "@/features/messages/lib/messageRowEquality";
 import type {
   TimelineMessage,
   TimelineMessageBounty,
 } from "@/features/messages/types";
+import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import { HuddleAttachment } from "@/features/huddle/components/HuddleAttachment";
 import { MessageReactions } from "@/features/messages/ui/MessageReactions";
 import { MessageTips } from "@/features/messages/ui/MessageTips";
@@ -28,6 +35,7 @@ import {
   KIND_HUDDLE_STARTED,
   KIND_STREAM_MESSAGE_DIFF,
 } from "@/shared/constants/kinds";
+import { getConfigNudgeAuthorPubkey } from "@/features/messages/ui/configNudgeAuthPubkey";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
@@ -35,10 +43,7 @@ import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext"
 import { parseImetaTags } from "@/features/messages/lib/parseImeta";
 import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
-import {
-  resolveMentionNames,
-  resolveMentionPubkeysByName,
-} from "@/shared/lib/resolveMentionNames";
+import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 import { Markdown } from "@/shared/ui/markdown";
 import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
 import { MessageActionBar } from "./MessageActionBar";
@@ -139,7 +144,6 @@ export const MessageRow = React.memo(
     profiles,
     searchQuery,
     showDepthGuides = true,
-    agentPubkeys,
     videoReviewContext,
   }: {
     activeReplyTargetId?: string | null;
@@ -204,29 +208,39 @@ export const MessageRow = React.memo(
     } = useReactionHandler(message, onToggleReaction);
     const { openReminder, activeReminderEventIds } = useRemindLater();
     const hasActiveReminder = activeReminderEventIds.has(message.id);
-    const mentionNames = React.useMemo(
-      () => resolveMentionNames(message.tags, profiles),
+    const handleRemindLater = React.useCallback(
+      (msg: TimelineMessage) => {
+        openReminder({
+          eventId: msg.id,
+          channelId: channelId ?? "",
+          preview: msg.body.slice(0, 100),
+          authorPubkey: msg.pubkey ?? "",
+        });
+      },
+      [channelId, openReminder],
+    );
+    const { mentionNames, mentionPubkeysByName } = React.useMemo(
+      () => resolveMentionProps(message.tags, profiles),
       [profiles, message.tags],
     );
-    const mentionPubkeysByName = React.useMemo(
-      () => resolveMentionPubkeysByName(message.tags, profiles),
-      [profiles, message.tags],
+    // "Is this pubkey an agent" = the workspace-scoped baseline every surface
+    // shares (managed ∪ relay) plus the pubkey's own profile `isAgent` flag from this surface's lookup. Both are per-pubkey
+    // O(1) checks — no per-row rescan of `profiles` (that duplicated parent
+    // work in every mounted row and re-ran on each profile-lookup change).
+    const knownAgentPubkeys = useKnownAgentPubkeys();
+    const isKnownAgentPubkey = React.useCallback(
+      (pubkey: string) => {
+        const normalized = normalizePubkey(pubkey);
+        return (
+          knownAgentPubkeys.has(normalized) ||
+          profiles?.[normalized]?.isAgent === true
+        );
+      },
+      [knownAgentPubkeys, profiles],
     );
-    const resolvedAgentPubkeys = React.useMemo(() => {
-      const pubkeys = new Set(agentPubkeys ?? []);
-
-      for (const [pubkey, profile] of Object.entries(profiles ?? {})) {
-        if (profile.isAgent) {
-          pubkeys.add(normalizePubkey(pubkey));
-        }
-      }
-
-      return pubkeys;
-    }, [agentPubkeys, profiles]);
     const profilePopoverRole =
       message.role === "bot" ||
-      (message.pubkey &&
-        resolvedAgentPubkeys.has(normalizePubkey(message.pubkey)))
+      (message.pubkey && isKnownAgentPubkey(message.pubkey))
         ? "bot"
         : message.role;
     const agentMentionPubkeysByName = React.useMemo(() => {
@@ -236,13 +250,13 @@ export const MessageRow = React.memo(
 
       const values: Record<string, string> = {};
       for (const [name, pubkey] of Object.entries(mentionPubkeysByName)) {
-        if (resolvedAgentPubkeys.has(normalizePubkey(pubkey))) {
+        if (isKnownAgentPubkey(pubkey)) {
           values[name] = pubkey;
         }
       }
 
       return Object.keys(values).length > 0 ? values : undefined;
-    }, [resolvedAgentPubkeys, mentionPubkeysByName]);
+    }, [isKnownAgentPubkey, mentionPubkeysByName]);
 
     const imetaByUrl = React.useMemo(
       () => (message.tags ? parseImetaTags(message.tags) : undefined),
@@ -255,11 +269,7 @@ export const MessageRow = React.memo(
     );
     const bodyOffsetClass = emojiOnly ? "mt-1" : "-mt-0.5";
 
-    const { channels } = useChannelNavigation();
-    const channelNames = React.useMemo(
-      () => channels.filter((c) => c.channelType !== "dm").map((c) => c.name),
-      [channels],
-    );
+    const { nonDmChannelNames: channelNames } = useChannelNavigation();
 
     const indentRem = getThreadReplyIndentRem(message.depth);
     const descendantGuideOffsetRem = connectDescendants
@@ -378,6 +388,14 @@ export const MessageRow = React.memo(
                 "max-w-full text-sm",
                 emojiOnly &&
                   "text-4xl leading-tight [&_p]:leading-tight [&_img[data-custom-emoji]]:h-[1.45em] [&_img[data-custom-emoji]]:align-middle [&_button:has(img[data-custom-emoji])]:align-middle",
+              )}
+              // Only pass the author pubkey for agent-authored messages so
+              // config-nudge cards can authenticate the sender. Uses the
+              // raw event signer (signerPubkey) — not the tag-attributed
+              // display author — to prevent actor/p-tag spoofing.
+              configNudgeAuthorPubkey={getConfigNudgeAuthorPubkey(
+                message,
+                isKnownAgentPubkey,
               )}
               content={message.body}
               customEmoji={customEmoji}
@@ -500,14 +518,7 @@ export const MessageRow = React.memo(
           onReactionSelect={
             canToggleReactions ? handleReactionSelect : undefined
           }
-          onRemindLater={(msg) => {
-            openReminder({
-              eventId: msg.id,
-              channelId: channelId ?? "",
-              preview: msg.body.slice(0, 100),
-              authorPubkey: msg.pubkey ?? "",
-            });
-          }}
+          onRemindLater={handleRemindLater}
           onReply={onReply}
           onUnfollowThread={onUnfollowThread}
           reactionErrorMessage={reactionErrorMessage}
@@ -871,21 +882,30 @@ export const MessageRow = React.memo(
     prev.message.kudos === next.message.kudos &&
     prev.message.bounty === next.message.bounty &&
     prev.message.bountyPayment === next.message.bountyPayment &&
-    prev.message.reactions === next.message.reactions &&
     prev.message.tipSummary === next.message.tipSummary &&
-    prev.message.tags === next.message.tags &&
+    // Value comparisons, not identity: these arrays are rebuilt with fresh
+    // identities on every ingest/refetch even when unchanged — identity
+    // checks made every row re-render on every streamed event in an open
+    // thread (see messageRowEquality.ts).
+    reactionsEqual(prev.message.reactions, next.message.reactions) &&
+    tagsEqual(prev.message.tags, next.message.tags) &&
     prev.message.role === next.message.role &&
     prev.message.personaDisplayName === next.message.personaDisplayName &&
-    prev.agentPubkeys === next.agentPubkeys &&
-    prev.collapseDepthGuideActions === next.collapseDepthGuideActions &&
+    depthGuideActionsEqual(
+      prev.collapseDepthGuideActions,
+      next.collapseDepthGuideActions,
+    ) &&
     prev.collapseDescendantsLabel === next.collapseDescendantsLabel &&
     prev.connectDescendants === next.connectDescendants &&
-    prev.depthGuideDepths === next.depthGuideDepths &&
+    numberArrayEqual(prev.depthGuideDepths, next.depthGuideDepths) &&
     prev.highlightDescendantRail === next.highlightDescendantRail &&
     prev.highlighted === next.highlighted &&
     prev.activeReplyTargetId === next.activeReplyTargetId &&
     prev.highlightReplyConnector === next.highlightReplyConnector &&
-    prev.highlightThreadLineDepths === next.highlightThreadLineDepths &&
+    numberArrayEqual(
+      prev.highlightThreadLineDepths,
+      next.highlightThreadLineDepths,
+    ) &&
     prev.hoverBackground === next.hoverBackground &&
     prev.huddleMemberPubkeys === next.huddleMemberPubkeys &&
     prev.huddleMemberPubkeysPending === next.huddleMemberPubkeysPending &&

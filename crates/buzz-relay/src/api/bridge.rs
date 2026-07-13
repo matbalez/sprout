@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, RawQuery, State},
     http::{HeaderMap, StatusCode},
     response::Json,
 };
@@ -25,12 +25,23 @@ use super::{api_error, internal_error, not_found};
 ///
 /// Returns the authenticated public key and an event ID for replay detection.
 /// For X-Pubkey dev mode, the event ID is a zero hash (no replay concern).
-fn verify_bridge_auth(
+pub(crate) fn verify_bridge_auth(
     headers: &HeaderMap,
     method: &str,
     url: &str,
     body: Option<&[u8]>,
     require_auth_token: bool,
+) -> Result<(nostr::PublicKey, [u8; 32]), (StatusCode, Json<Value>)> {
+    verify_bridge_auth_with_options(headers, method, url, body, require_auth_token, false)
+}
+
+pub(crate) fn verify_bridge_auth_with_options(
+    headers: &HeaderMap,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    require_auth_token: bool,
+    require_payload: bool,
 ) -> Result<(nostr::PublicKey, [u8; 32]), (StatusCode, Json<Value>)> {
     // Try NIP-98 first (Authorization: Nostr <base64>)
     if let Some(auth_str) = headers
@@ -50,6 +61,18 @@ fn verify_bridge_auth(
         let event: nostr::Event = serde_json::from_str(&event_json)
             .map_err(|_| api_error(StatusCode::UNAUTHORIZED, "invalid NIP-98 event JSON"))?;
         let event_id_bytes = event.id.to_bytes();
+
+        if require_payload
+            && !event
+                .tags
+                .iter()
+                .any(|tag| tag.kind() == nostr::TagKind::Payload)
+        {
+            return Err(api_error(
+                StatusCode::UNAUTHORIZED,
+                "NIP-98: missing payload tag",
+            ));
+        }
 
         let pubkey = buzz_auth::verify_nip98_event(&event_json, url, method, body)
             .map_err(|e| api_error(StatusCode::UNAUTHORIZED, &format!("NIP-98: {e}")))?;
@@ -76,7 +99,7 @@ fn verify_bridge_auth(
 /// `AppState`, not process-local memory. Any Redis/guard error fails closed:
 /// without the shared `SET NX EX` proof, a stateless worker cannot admit the
 /// NIP-98 request safely.
-async fn check_nip98_replay(
+pub(crate) async fn check_nip98_replay(
     state: &AppState,
     tenant: &TenantContext,
     event_id_bytes: [u8; 32],
@@ -135,7 +158,11 @@ async fn check_nip98_replay_with_guard(
 /// pass and the relay would proceed against the wrong tenant's auth context),
 /// and (b) reject every legitimate request whose community host isn't the
 /// single configured one. Substituting `tenant.host()` closes both directions.
-fn nip98_expected_url(config_relay_url: &str, tenant: &TenantContext, path: &str) -> String {
+pub(crate) fn nip98_expected_url(
+    config_relay_url: &str,
+    tenant: &TenantContext,
+    path: &str,
+) -> String {
     let scheme = if config_relay_url.trim_start().starts_with("wss://") {
         "https"
     } else {
@@ -190,13 +217,33 @@ fn extract_channel_from_filter(filter: &nostr::Filter) -> Option<uuid::Uuid> {
 const BRIDGE_FEED_MAX_LIMIT: i64 = 100;
 const BRIDGE_THREAD_MAX_LIMIT: u32 = 500;
 
-fn extract_before_id(raw: &Value) -> Option<Vec<u8>> {
-    let hex_str = raw.get("before_id")?.as_str()?;
-    if hex_str.len() == 64 {
-        hex::decode(hex_str).ok()
-    } else {
-        None
+/// The `before_id` extension field, with "present but malformed" kept distinct
+/// from "absent": NIP-CW's cursor grammar says a malformed value MUST reject
+/// the request, never silently demote it to a half cursor or a head request.
+enum BeforeId {
+    Absent,
+    Valid(Vec<u8>),
+    Malformed,
+}
+
+fn extract_before_id(raw: &Value) -> BeforeId {
+    let Some(value) = raw.get("before_id") else {
+        return BeforeId::Absent;
+    };
+    match value
+        .as_str()
+        .filter(|hex_str| hex_str.len() == 64)
+        .and_then(|hex_str| hex::decode(hex_str).ok())
+    {
+        Some(id) => BeforeId::Valid(id),
+        None => BeforeId::Malformed,
     }
+}
+
+/// True when the raw filter opts into a bridge extension flag (`top_level`,
+/// `include_summaries`, `include_aux`). Absent or non-boolean = false.
+fn extension_flag(raw: &Value, key: &str) -> bool {
+    raw.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn extract_depth_limit(raw: &Value) -> Option<u32> {
@@ -293,6 +340,212 @@ fn extract_page_offset(raw: &Value, limit: Option<i64>) -> Option<i64> {
     page.checked_sub(1)?.checked_mul(per_page)
 }
 
+/// Default and maximum row budget for a channel-window request. The budget
+/// counts row events only; summary/bounds overlays and the aux closure never
+/// consume it (docs/bridge-channel-window.md).
+const BRIDGE_WINDOW_DEFAULT_LIMIT: u32 = 50;
+const BRIDGE_WINDOW_MAX_LIMIT: u32 = 200;
+
+/// Aux closure kinds: reactions, deletions (NIP-09 + NIP-29), edits.
+const WINDOW_AUX_KINDS: [u32; 4] = [
+    buzz_core::kind::KIND_DELETION,
+    buzz_core::kind::KIND_REACTION,
+    buzz_core::kind::KIND_NIP29_DELETE_EVENT,
+    buzz_core::kind::KIND_STREAM_MESSAGE_EDIT,
+];
+/// Second-hop kinds: deletions targeting aux events (delete-of-a-reaction).
+const WINDOW_AUX_DELETE_KINDS: [u32; 2] = [
+    buzz_core::kind::KIND_DELETION,
+    buzz_core::kind::KIND_NIP29_DELETE_EVENT,
+];
+
+/// Serve one `top_level: true` channel-window filter on the bridge `/query`
+/// path (docs/bridge-channel-window.md). Appends, in order: row events, the
+/// aux closure (`include_aux`), `39005` thread-summary overlays
+/// (`include_summaries`), and exactly one `39006` window-bounds overlay.
+///
+/// Validation errors (missing `#h`, half a cursor) are deterministic client
+/// mistakes and return `400`; an inaccessible channel is an access-scope skip
+/// that still emits nothing, matching every other read path here.
+async fn handle_channel_window_filter(
+    state: &AppState,
+    tenant: &buzz_core::TenantContext,
+    raw: &Value,
+    filter: &nostr::Filter,
+    accessible_channels: &[uuid::Uuid],
+    events: &mut Vec<Value>,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    use buzz_core::kind::{KIND_THREAD_SUMMARY, KIND_WINDOW_BOUNDS};
+
+    let Some(ch_id) = extract_channel_from_filter(filter) else {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "top_level requires exactly one #h channel",
+        ));
+    };
+    if !accessible_channels.contains(&ch_id) {
+        return Ok(());
+    }
+
+    // Composite request cursor: `until` + `before_id`, both or neither. The
+    // window path has no timestamp-only fallback — that ambiguity is the
+    // dense-second dup/loss bug this surface exists to kill. A malformed
+    // `before_id` is likewise rejected outright (NIP-CW cursor grammar),
+    // never demoted to a half cursor or a head request.
+    let before_id = match extract_before_id(raw) {
+        BeforeId::Malformed => {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "top_level: before_id must be a 64-hex event id",
+            ));
+        }
+        BeforeId::Valid(id) => Some(id),
+        BeforeId::Absent => None,
+    };
+    let cursor = match (filter.until, before_id) {
+        (Some(ts), Some(id)) => {
+            let ts = chrono::DateTime::from_timestamp(ts.as_secs() as i64, 0).ok_or_else(|| {
+                api_error(StatusCode::BAD_REQUEST, "top_level: until is out of range")
+            })?;
+            Some((ts, id))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(api_error(
+                StatusCode::BAD_REQUEST,
+                "top_level cursor requires both until and before_id, or neither",
+            ));
+        }
+    };
+
+    let limit = filter
+        .limit
+        .map(|l| (l as u32).min(BRIDGE_WINDOW_MAX_LIMIT))
+        .unwrap_or(BRIDGE_WINDOW_DEFAULT_LIMIT)
+        .max(1);
+    let kind_filter: Option<Vec<u32>> = filter
+        .kinds
+        .as_ref()
+        .map(|ks| ks.iter().map(|k| k.as_u16() as u32).collect());
+
+    let window = state
+        .db
+        .get_channel_window(
+            tenant.community(),
+            ch_id,
+            limit,
+            cursor.clone(),
+            kind_filter.as_deref(),
+        )
+        .await
+        .map_err(|e| internal_error(&format!("channel window error: {e}")))?;
+
+    // 1. Rows, in keyset order.
+    let mut row_ids_hex = Vec::with_capacity(window.rows.len());
+    for row in &window.rows {
+        row_ids_hex.push(row.stored_event.event.id.to_hex());
+        let v = serde_json::to_value(&row.stored_event.event)
+            .map_err(|e| internal_error(&format!("window row serialize: {e}")))?;
+        events.push(v);
+    }
+
+    // 2. Aux closure: reactions/deletions/edits targeting retained rows, plus
+    //    deletions targeting those aux events (the transitive second hop).
+    //    One round trip for the client instead of an #e fan-out.
+    if extension_flag(raw, "include_aux") && !row_ids_hex.is_empty() {
+        let mut seen_aux: std::collections::HashSet<nostr::EventId> =
+            std::collections::HashSet::new();
+        let mut hop_ids = row_ids_hex.clone();
+        for hop_kinds in [&WINDOW_AUX_KINDS[..], &WINDOW_AUX_DELETE_KINDS[..]] {
+            let mut aux_query = buzz_db::EventQuery::for_community(tenant.community());
+            aux_query.kinds = Some(hop_kinds.iter().map(|k| *k as i32).collect());
+            aux_query.e_tags = Some(std::mem::take(&mut hop_ids));
+            aux_query.limit = Some(1000);
+            let aux_events = state
+                .db
+                .query_events(&aux_query)
+                .await
+                .map_err(|e| internal_error(&format!("window aux error: {e}")))?;
+            for se in aux_events {
+                if !seen_aux.insert(se.event.id) {
+                    continue;
+                }
+                // Deletions can be stored channel-less; access-check instead
+                // of channel-constraining so they aren't silently dropped.
+                if !event_in_accessible_channel(&se, accessible_channels) {
+                    continue;
+                }
+                hop_ids.push(se.event.id.to_hex());
+                let v = serde_json::to_value(&se.event)
+                    .map_err(|e| internal_error(&format!("window aux serialize: {e}")))?;
+                events.push(v);
+            }
+            if hop_ids.is_empty() {
+                break;
+            }
+        }
+    }
+
+    let sign_overlay = |kind: u32, tags: Vec<nostr::Tag>, content: String| {
+        nostr::EventBuilder::new(nostr::Kind::Custom(kind as u16), content)
+            .tags(tags)
+            .sign_with_keys(&state.relay_keypair)
+            .map_err(|e| internal_error(&format!("window overlay sign: {e}")))
+    };
+    let parse_tag = |parts: [&str; 2]| {
+        nostr::Tag::parse(parts).map_err(|e| internal_error(&format!("window overlay tag: {e}")))
+    };
+    let ch_hex = ch_id.to_string();
+
+    // 3. Thread-summary overlays: one relay-signed 39005 per row with replies.
+    if extension_flag(raw, "include_summaries") {
+        for row in &window.rows {
+            let Some(summary) = &row.thread_summary else {
+                continue;
+            };
+            let root_hex = row.stored_event.event.id.to_hex();
+            let content = serde_json::json!({
+                "reply_count": summary.reply_count,
+                "descendant_count": summary.descendant_count,
+                "last_reply_at": summary.last_reply_at.map(|t| t.timestamp()),
+                "participants": summary.participants.iter().map(hex::encode).collect::<Vec<_>>(),
+            });
+            let tags = vec![
+                parse_tag(["e", &root_hex])?,
+                parse_tag(["d", &root_hex])?,
+                parse_tag(["h", &ch_hex])?,
+            ];
+            let overlay = sign_overlay(KIND_THREAD_SUMMARY, tags, content.to_string())?;
+            let v = serde_json::to_value(&overlay)
+                .map_err(|e| internal_error(&format!("window overlay serialize: {e}")))?;
+            events.push(v);
+        }
+    }
+
+    // 4. Window bounds: exactly one 39006 per window response — the only
+    //    authority on exhaustion. `rows < limit` proves nothing on an
+    //    exact-multiple final page.
+    let cursor_suffix = match &cursor {
+        Some((ts, id)) => format!("{}:{}", ts.timestamp(), hex::encode(id)),
+        None => "head".to_owned(),
+    };
+    let d_val = format!("{ch_hex}:{cursor_suffix}");
+    let content = serde_json::json!({
+        "has_more": window.has_more,
+        "next_cursor": window.next_cursor.as_ref().map(|(ts, id)| serde_json::json!({
+            "created_at": ts.timestamp(),
+            "id": hex::encode(id),
+        })),
+    });
+    let tags = vec![parse_tag(["d", &d_val])?, parse_tag(["h", &ch_hex])?];
+    let overlay = sign_overlay(KIND_WINDOW_BOUNDS, tags, content.to_string())?;
+    let v = serde_json::to_value(&overlay)
+        .map_err(|e| internal_error(&format!("window overlay serialize: {e}")))?;
+    events.push(v);
+
+    Ok(())
+}
+
 fn event_in_accessible_channel(se: &buzz_core::StoredEvent, accessible: &[uuid::Uuid]) -> bool {
     match se.channel_id {
         Some(ch_id) => accessible.contains(&ch_id),
@@ -334,6 +587,10 @@ pub async fn submit_event(
     check_nip98_replay(&state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
+    let event: nostr::Event = serde_json::from_slice(&body)
+        .map_err(|e| api_error(StatusCode::BAD_REQUEST, &format!("invalid event JSON: {e}")))?;
+    let kind_u32 = buzz_core::kind::event_kind_u32(&event);
+
     // Enforce relay membership (with NIP-OA fallback via x-auth-tag header).
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
     super::relay_members::enforce_relay_membership(
@@ -344,16 +601,12 @@ pub async fn submit_event(
     )
     .await?;
 
-    let event: nostr::Event = serde_json::from_slice(&body)
-        .map_err(|e| api_error(StatusCode::BAD_REQUEST, &format!("invalid event JSON: {e}")))?;
-
     // Mesh signaling kinds (24620 status report, 24621 connect request) are
     // ephemeral and deliberately absent from ingest_event's per-kind allowlist.
     // The desktop's Rust coordinator publishes them via this bridge, so route
     // them to the mesh handlers — the HTTP twin of the WS door's special-casing
     // in handlers::event. Membership was enforced above; the handlers re-check
     // it fail-closed.
-    let kind_u32 = buzz_core::kind::event_kind_u32(&event);
     if kind_u32 == buzz_core::kind::KIND_MESH_STATUS_REPORT
         || kind_u32 == buzz_core::kind::KIND_MESH_CONNECT_REQUEST
     {
@@ -502,7 +755,28 @@ pub async fn query_events(
     let mut events: Vec<Value> = Vec::new();
     let mut handled: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
+    // Channel-window filters (`top_level: true`) — the GUI read-model surface.
+    // Dispatched first: a window filter is never a feed/thread/catchall query.
     for (idx, (raw, filter)) in raw_filters.iter().zip(filters.iter()).enumerate() {
+        if !extension_flag(raw, "top_level") {
+            continue;
+        }
+        handle_channel_window_filter(
+            &state,
+            &tenant,
+            raw,
+            filter,
+            &accessible_channels,
+            &mut events,
+        )
+        .await?;
+        handled.insert(idx);
+    }
+
+    for (idx, (raw, filter)) in raw_filters.iter().zip(filters.iter()).enumerate() {
+        if handled.contains(&idx) {
+            continue;
+        }
         let feed_types = match extract_feed_types(raw) {
             Some(t) => t,
             None => continue,
@@ -569,6 +843,12 @@ pub async fn query_events(
                 if !event_in_accessible_channel(&se, &accessible_channels) {
                     continue;
                 }
+                // Defense-in-depth: never deliver a result-gated event (e.g. kind:44200
+                // or kind:30622) to a non-owner via the feed path, even though feed SQL
+                // kind allowlists already exclude these kinds.
+                if !buzz_core::filter::reader_authorized_for_event(&se.event, &authed_pubkey_hex) {
+                    continue;
+                }
                 if let Ok(v) = serde_json::to_value(&se.event) {
                     events.push(v);
                     feed_count += 1;
@@ -629,6 +909,12 @@ pub async fn query_events(
             if !event_in_accessible_channel(&se, &accessible_channels) {
                 continue;
             }
+            // Defense-in-depth: never deliver a result-gated event (e.g. kind:44200
+            // or kind:30622) to a non-owner via the thread path, even though
+            // requires_h_channel_scope already excludes these kinds from thread metadata.
+            if !buzz_core::filter::reader_authorized_for_event(&se.event, &authed_pubkey_hex) {
+                continue;
+            }
             if let Ok(v) = serde_json::to_value(&se.event) {
                 events.push(v);
             }
@@ -660,14 +946,23 @@ pub async fn query_events(
         )
         .await;
 
-        if let Some(bid) = extract_before_id(raw) {
-            if query.until.is_none() {
+        match extract_before_id(raw) {
+            BeforeId::Malformed => {
                 return Err(api_error(
                     StatusCode::BAD_REQUEST,
-                    "before_id requires until to be set",
+                    "before_id must be a 64-char hex event id",
                 ));
             }
-            query.before_id = Some(bid);
+            BeforeId::Valid(bid) => {
+                if query.until.is_none() {
+                    return Err(api_error(
+                        StatusCode::BAD_REQUEST,
+                        "before_id requires until to be set",
+                    ));
+                }
+                query.before_id = Some(bid);
+            }
+            BeforeId::Absent => {}
         }
 
         // Honor `page` on non-search general queries so offset paging works for
@@ -813,6 +1108,15 @@ pub async fn count_events(
     for filter in &filters {
         let needs_author_only_filtering =
             crate::handlers::req::filter_can_match_author_only_kinds(filter);
+        // Same result-gated guard as the WS COUNT handler: force the per-event
+        // fallback for filters that can match 44200 or 30622 unless #p=[self]
+        // is safely pushed down (existence leak otherwise).
+        let needs_result_gated_filtering =
+            crate::handlers::req::filter_can_match_result_gated_kinds(filter)
+                && !crate::handlers::req::result_gated_count_safe_for_pushdown(
+                    filter,
+                    &authed_pubkey_hex,
+                );
 
         // If filter targets a specific channel, verify access.
         if let Some(ch_id) = extract_channel_from_filter(filter) {
@@ -835,6 +1139,7 @@ pub async fn count_events(
             });
             if crate::handlers::req::filter_fully_pushable(filter)
                 && (!needs_author_only_filtering || author_is_self)
+                && !needs_result_gated_filtering
             {
                 match state.db.count_events(&query).await {
                     Ok(n) => total += n as u64,
@@ -862,6 +1167,12 @@ pub async fn count_events(
                             }
                             if crate::handlers::req::is_author_only_event(&se.event, &pubkey_bytes)
                             {
+                                continue;
+                            }
+                            if !buzz_core::filter::reader_authorized_for_event(
+                                &se.event,
+                                &authed_pubkey_hex,
+                            ) {
                                 continue;
                             }
                             total += 1;
@@ -892,6 +1203,7 @@ pub async fn count_events(
             });
             if crate::handlers::req::filter_fully_pushable(filter)
                 && (!needs_author_only_filtering || author_is_self)
+                && !needs_result_gated_filtering
             {
                 query.limit = None;
                 match state.db.count_events(&query).await {
@@ -919,6 +1231,12 @@ pub async fn count_events(
                             }
                             if crate::handlers::req::is_author_only_event(&se.event, &pubkey_bytes)
                             {
+                                continue;
+                            }
+                            if !buzz_core::filter::reader_authorized_for_event(
+                                &se.event,
+                                &authed_pubkey_hex,
+                            ) {
                                 continue;
                             }
                             total += 1;
@@ -1344,6 +1662,203 @@ async fn synthesize_presence(
     Some(events)
 }
 
+// ── Moderation queue reads (L6 — Quinn) ───────────────────────────────────────
+//
+// Mod-only structured rows (`moderation_reports`/`moderation_actions`/
+// `community_bans`) are not nostr events, so they are served over dedicated
+// NIP-98-authed GET endpoints rather than the REQ/`/query` path (which would
+// force a synthetic event shape and thread a privileged branch onto the shared
+// read hot path). Gated on `ModerationAction::ViewQueue` via the one capability
+// helper — never an inline role check. Host-scoped: community from the request
+// host, no channel context (queue reads are community-wide).
+
+/// Shared prelude for a moderation read: bind tenant, verify NIP-98 GET auth,
+/// replay-check, and confirm the caller may view the queue.
+///
+/// `raw_query` is the request's raw query string (from [`axum::extract::RawQuery`]),
+/// e.g. `Some("limit=20&status=open")`. NIP-98 signs the *full* request URL, so the
+/// client's `u` tag includes any query string; the expected URL reconstructed here
+/// must therefore append the same query verbatim or query-bearing reads
+/// (`reports?limit=…`, `audit?limit=…`) 401 on a URL mismatch. Query-less reads
+/// (`restricted`) pass `None` and keep the bare-path expectation. The verbatim
+/// request query is used (not a re-serialized parse) so the match stays byte-exact
+/// with what the client signed regardless of param order or encoding.
+async fn authorize_moderation_read(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    path: &str,
+    raw_query: Option<&str>,
+) -> Result<TenantContext, (StatusCode, Json<Value>)> {
+    let raw_host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let tenant = crate::tenant::bind_community(&state.db, raw_host)
+        .await
+        .map_err(|_| {
+            api_error(
+                StatusCode::NOT_FOUND,
+                "relay: no community is configured for this host",
+            )
+        })?;
+
+    let path_with_query = match raw_query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.to_string(),
+    };
+    let url = nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
+    let (pubkey, event_id_bytes) =
+        verify_bridge_auth(headers, "GET", &url, None, state.config.require_auth_token)?;
+    check_nip98_replay(state, &tenant, event_id_bytes).await?;
+    let pubkey_bytes = pubkey.to_bytes().to_vec();
+
+    crate::handlers::moderation_authz::authorize_moderation_action(
+        &tenant,
+        state,
+        &pubkey_bytes,
+        None,
+        crate::handlers::moderation_authz::ModerationTarget::None,
+        crate::handlers::moderation_authz::ModerationAction::ViewQueue,
+    )
+    .await
+    .map_err(|_| {
+        api_error(
+            StatusCode::FORBIDDEN,
+            "restricted: moderator access required",
+        )
+    })?;
+
+    Ok(tenant)
+}
+
+/// Cap on rows returned by a single moderation read.
+const MODERATION_READ_LIMIT: i64 = 500;
+
+/// Optional `?status=` and `?limit=` query for moderation reads.
+#[derive(serde::Deserialize, Default)]
+pub struct ModerationReadQuery {
+    status: Option<String>,
+    limit: Option<i64>,
+}
+
+fn clamp_limit(requested: Option<i64>) -> i64 {
+    requested
+        .filter(|n| *n > 0)
+        .map(|n| n.min(MODERATION_READ_LIMIT))
+        .unwrap_or(MODERATION_READ_LIMIT)
+}
+
+/// `GET /moderation/reports` — the moderation queue (NIP-98 + mod-authz).
+pub async fn moderation_reports(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
+    Query(q): Query<ModerationReadQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tenant = authorize_moderation_read(
+        &state,
+        &headers,
+        "/moderation/reports",
+        raw_query.as_deref(),
+    )
+    .await?;
+    let rows = state
+        .db
+        .list_moderation_reports(
+            tenant.community(),
+            q.status.as_deref(),
+            clamp_limit(q.limit),
+        )
+        .await
+        .map_err(|e| internal_error(&format!("list reports: {e}")))?;
+    Ok(Json(Value::Array(rows.iter().map(report_json).collect())))
+}
+
+/// `GET /moderation/audit` — the moderation audit log (NIP-98 + mod-authz).
+pub async fn moderation_audit(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    RawQuery(raw_query): RawQuery,
+    Query(q): Query<ModerationReadQuery>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tenant =
+        authorize_moderation_read(&state, &headers, "/moderation/audit", raw_query.as_deref())
+            .await?;
+    let rows = state
+        .db
+        .list_moderation_actions(tenant.community(), clamp_limit(q.limit))
+        .await
+        .map_err(|e| internal_error(&format!("list actions: {e}")))?;
+    Ok(Json(Value::Array(rows.iter().map(action_json).collect())))
+}
+
+/// `GET /moderation/restricted` — currently banned/timed-out members.
+pub async fn moderation_restricted(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let tenant =
+        authorize_moderation_read(&state, &headers, "/moderation/restricted", None).await?;
+    let rows = state
+        .db
+        .list_community_restrictions(tenant.community())
+        .await
+        .map_err(|e| internal_error(&format!("list restrictions: {e}")))?;
+    Ok(Json(Value::Array(rows.iter().map(ban_json).collect())))
+}
+
+fn report_json(r: &buzz_db::moderation::ReportRecord) -> Value {
+    let (target_kind, target) = match &r.target {
+        buzz_db::moderation::ReportTarget::Event(id) => ("event", hex::encode(id)),
+        buzz_db::moderation::ReportTarget::Pubkey(pk) => ("pubkey", hex::encode(pk)),
+        buzz_db::moderation::ReportTarget::Blob(sha) => ("blob", hex::encode(sha)),
+    };
+    serde_json::json!({
+        "id": r.id,
+        "report_event_id": hex::encode(&r.report_event_id),
+        "reporter_pubkey": hex::encode(&r.reporter_pubkey),
+        "target_kind": target_kind,
+        "target": target,
+        "channel_id": r.channel_id,
+        "report_type": r.report_type,
+        "note": r.note,
+        "status": r.status,
+        "resolved_by": r.resolved_by.as_ref().map(hex::encode),
+        "resolved_at": r.resolved_at,
+        "action_id": r.action_id,
+        "created_at": r.created_at,
+    })
+}
+
+fn action_json(a: &buzz_db::moderation::ActionRecord) -> Value {
+    serde_json::json!({
+        "id": a.id,
+        "actor_pubkey": hex::encode(&a.actor_pubkey),
+        "action": a.action,
+        "target_pubkey": a.target_pubkey.as_ref().map(hex::encode),
+        "target_event_id": a.target_event_id.as_ref().map(hex::encode),
+        "channel_id": a.channel_id,
+        "reason_code": a.reason_code,
+        "public_reason": a.public_reason,
+        "private_reason": a.private_reason,
+        "matched_principal": a.matched_principal,
+        "created_at": a.created_at,
+    })
+}
+
+fn ban_json(b: &buzz_db::moderation::BanRecord) -> Value {
+    serde_json::json!({
+        "pubkey": hex::encode(&b.pubkey),
+        "banned": b.banned,
+        "ban_expires_at": b.ban_expires_at,
+        "ban_reason": b.ban_reason,
+        "muted_until": b.muted_until,
+        "mute_reason": b.mute_reason,
+        "actor_pubkey": hex::encode(&b.actor_pubkey),
+        "updated_at": b.updated_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1496,9 +2011,9 @@ mod tests {
 
         struct AlwaysErrGuard;
         impl Nip98ReplayGuard for AlwaysErrGuard {
-            fn try_mark<'a>(
+            fn try_mark_in_scope<'a>(
                 &'a self,
-                _ctx: &'a buzz_core::TenantContext,
+                _scope: &'a str,
                 _event_id: &'a EventId,
                 _ttl_secs: u64,
             ) -> Pin<Box<dyn Future<Output = Result<bool, AuthError>> + Send + 'a>> {
@@ -1609,6 +2124,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn verify_bridge_auth_can_require_payload_tag_for_json_body_endpoints() {
+        let keys = Keys::generate();
+        let signed_url = "https://host-a.example/operator/communities";
+        let event_json = build_nip98_event_json(&keys, signed_url, "POST");
+        let headers = nip98_auth_headers(&event_json);
+
+        let (status, body) = verify_bridge_auth_with_options(
+            &headers,
+            "POST",
+            signed_url,
+            Some(br#"{"host":"created.example"}"#),
+            true,
+            true,
+        )
+        .expect_err("body-bearing operator requests must require a payload tag");
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let msg = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("missing payload tag"),
+            "rejection should explain the payload binding failure; got body = {body:?}"
+        );
+    }
+
     /// Positive control for the cross-host test: a NIP-98 event signed for
     /// host A MUST be accepted at a request whose tenant resolved to host A.
     /// Without this, the cross-host test could be passing vacuously (e.g. if
@@ -1634,6 +2177,133 @@ mod tests {
             keys.public_key(),
             "returned pubkey must be the signer's"
         );
+    }
+
+    /// Mirror of the query-reconstruction `authorize_moderation_read` performs
+    /// before calling [`nip98_expected_url`], so the tests below pin the exact
+    /// seam without a DB harness. Kept in lockstep with the production match arm.
+    fn moderation_read_expected_url(
+        config_relay_url: &str,
+        tenant: &TenantContext,
+        path: &str,
+        raw_query: Option<&str>,
+    ) -> String {
+        let path_with_query = match raw_query {
+            Some(q) if !q.is_empty() => format!("{path}?{q}"),
+            _ => path.to_string(),
+        };
+        nip98_expected_url(config_relay_url, tenant, &path_with_query)
+    }
+
+    /// L7 read-auth blocker (Wren, #1591 sweep): the CLI signs the *full*
+    /// request URL — including `?limit=…&status=…` — but the relay used to
+    /// reconstruct the expected URL from the bare path only, so
+    /// `buzz moderation reports` / `audit` 401'd on a NIP-98 URL mismatch in
+    /// normal use. This pins that a query-bearing GET verifies iff the expected
+    /// URL carries the same query verbatim. Bites if the query is ever dropped
+    /// from `authorize_moderation_read`'s expected-URL reconstruction.
+    #[test]
+    fn moderation_read_query_bearing_nip98_event_verifies_with_matching_query() {
+        let keys = Keys::generate();
+        // CLI signs the URL it actually requests, query and all.
+        let signed_url = "https://host-a.example/moderation/reports?limit=20&status=open";
+        let event_json = build_nip98_event_json(&keys, signed_url, "GET");
+        let headers = nip98_auth_headers(&event_json);
+
+        let tenant_a = fresh_tenant("host-a.example");
+        let expected_url = moderation_read_expected_url(
+            "wss://config-host.example",
+            &tenant_a,
+            "/moderation/reports",
+            Some("limit=20&status=open"),
+        );
+
+        let (pubkey, _event_id_bytes) =
+            verify_bridge_auth(&headers, "GET", &expected_url, None, true)
+                .expect("query-bearing moderation read must verify against the same query");
+        assert_eq!(pubkey, keys.public_key());
+    }
+
+    /// Anti-regression control proving the fix is load-bearing: the same
+    /// query-bearing event MUST be rejected when the expected URL omits the
+    /// query — the pre-fix behavior. If this ever passes, the relay has
+    /// silently reverted to bare-path reconstruction.
+    #[test]
+    fn moderation_read_query_bearing_nip98_event_rejected_against_bare_path() {
+        let keys = Keys::generate();
+        let signed_url = "https://host-a.example/moderation/reports?limit=20&status=open";
+        let event_json = build_nip98_event_json(&keys, signed_url, "GET");
+        let headers = nip98_auth_headers(&event_json);
+
+        let tenant_a = fresh_tenant("host-a.example");
+        // No query — the broken pre-fix reconstruction.
+        let bare_url = moderation_read_expected_url(
+            "wss://config-host.example",
+            &tenant_a,
+            "/moderation/reports",
+            None,
+        );
+
+        let (status, body) = verify_bridge_auth(&headers, "GET", &bare_url, None, true)
+            .expect_err("query-signed event MUST NOT match a bare-path expected URL");
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let msg = body
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("URL mismatch"),
+            "rejection must be a URL mismatch; got body = {body:?}"
+        );
+    }
+
+    /// `audit?limit=20` — the second query-bearing read path — verifies the
+    /// same way. Pins that the reconstruction is generic over the path, not
+    /// special-cased to `reports`.
+    #[test]
+    fn moderation_read_audit_query_bearing_nip98_event_verifies() {
+        let keys = Keys::generate();
+        let signed_url = "https://host-a.example/moderation/audit?limit=20";
+        let event_json = build_nip98_event_json(&keys, signed_url, "GET");
+        let headers = nip98_auth_headers(&event_json);
+
+        let tenant_a = fresh_tenant("host-a.example");
+        let expected_url = moderation_read_expected_url(
+            "wss://config-host.example",
+            &tenant_a,
+            "/moderation/audit",
+            Some("limit=20"),
+        );
+
+        let (pubkey, _event_id_bytes) =
+            verify_bridge_auth(&headers, "GET", &expected_url, None, true)
+                .expect("audit query-bearing read must verify");
+        assert_eq!(pubkey, keys.public_key());
+    }
+
+    /// `restricted` has no query and passes `None`, so its expected URL stays
+    /// the bare path — a query-less signed event verifies. Pins Wren's
+    /// "preserve restricted no-query behavior" checklist item.
+    #[test]
+    fn moderation_read_restricted_no_query_still_verifies() {
+        let keys = Keys::generate();
+        let signed_url = "https://host-a.example/moderation/restricted";
+        let event_json = build_nip98_event_json(&keys, signed_url, "GET");
+        let headers = nip98_auth_headers(&event_json);
+
+        let tenant_a = fresh_tenant("host-a.example");
+        let expected_url = moderation_read_expected_url(
+            "wss://config-host.example",
+            &tenant_a,
+            "/moderation/restricted",
+            None,
+        );
+        assert_eq!(expected_url, "https://host-a.example/moderation/restricted");
+
+        let (pubkey, _event_id_bytes) =
+            verify_bridge_auth(&headers, "GET", &expected_url, None, true)
+                .expect("query-less restricted read must verify against the bare path");
+        assert_eq!(pubkey, keys.public_key());
     }
 
     /// `nip98_expected_url` derives host from `tenant`, not from
@@ -1903,39 +2573,64 @@ mod tests {
     fn extract_before_id_valid_hex() {
         let hex = "a".repeat(64);
         let raw = serde_json::json!({ "before_id": hex });
-        let result = extract_before_id(&raw);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().len(), 32);
+        match extract_before_id(&raw) {
+            BeforeId::Valid(id) => assert_eq!(id.len(), 32),
+            _ => panic!("64-char hex must parse as Valid"),
+        }
     }
 
     #[test]
     fn extract_before_id_short_hex() {
         let raw = serde_json::json!({ "before_id": "a".repeat(63) });
-        assert!(extract_before_id(&raw).is_none());
+        assert!(matches!(extract_before_id(&raw), BeforeId::Malformed));
     }
 
     #[test]
     fn extract_before_id_long_hex() {
         let raw = serde_json::json!({ "before_id": "a".repeat(65) });
-        assert!(extract_before_id(&raw).is_none());
+        assert!(matches!(extract_before_id(&raw), BeforeId::Malformed));
     }
 
     #[test]
     fn extract_before_id_invalid_hex_chars() {
         let raw = serde_json::json!({ "before_id": "z".repeat(64) });
-        assert!(extract_before_id(&raw).is_none());
+        assert!(matches!(extract_before_id(&raw), BeforeId::Malformed));
     }
 
     #[test]
     fn extract_before_id_absent() {
         let raw = serde_json::json!({});
-        assert!(extract_before_id(&raw).is_none());
+        assert!(matches!(extract_before_id(&raw), BeforeId::Absent));
     }
 
     #[test]
     fn extract_before_id_non_string() {
         let raw = serde_json::json!({ "before_id": 12345 });
-        assert!(extract_before_id(&raw).is_none());
+        assert!(matches!(extract_before_id(&raw), BeforeId::Malformed));
+    }
+
+    /// Extension flags opt in only on a literal JSON `true` — absent,
+    /// non-boolean, and truthy-but-not-bool values all read as false, so a
+    /// malformed filter degrades to a normal query instead of a wrong window.
+    #[test]
+    fn extension_flag_only_true_on_literal_bool() {
+        assert!(extension_flag(
+            &serde_json::json!({ "top_level": true }),
+            "top_level"
+        ));
+        assert!(!extension_flag(
+            &serde_json::json!({ "top_level": false }),
+            "top_level"
+        ));
+        assert!(!extension_flag(&serde_json::json!({}), "top_level"));
+        assert!(!extension_flag(
+            &serde_json::json!({ "top_level": "true" }),
+            "top_level"
+        ));
+        assert!(!extension_flag(
+            &serde_json::json!({ "top_level": 1 }),
+            "top_level"
+        ));
     }
 
     #[test]

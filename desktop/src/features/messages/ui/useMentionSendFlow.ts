@@ -22,11 +22,17 @@ import type { UseRichTextEditorResult } from "@/features/messages/lib/useRichTex
 import type { UseDraftsResult } from "@/features/messages/lib/useDrafts";
 import type { CustomEmoji } from "@/shared/lib/remarkCustomEmoji";
 import type { AcpRuntime, ChannelType, ManagedAgent } from "@/shared/api/types";
-import { normalizePubkey } from "@/shared/lib/pubkey";
+import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { MENTION_REFERENCE_TAG } from "@/shared/lib/resolveMentionNames";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 
 type PendingNonMemberMentionSend = {
+  capturedChannelId: string | null;
+  /** Thread context captured at submit time — null for main-timeline sends. */
+  capturedThreadContext: {
+    parentEventId: string | null;
+    threadHeadId: string | null;
+  } | null;
   finalContent: string;
   mentionPubkeys: string[];
   nonMemberPubkeys: string[];
@@ -49,6 +55,12 @@ type SendMessageOptions = {
 type SendMessageWithMentionFlowInput = {
   onClearExtras?: () => void;
   onRestoreExtras?: (error: unknown) => void;
+  capturedChannelId: string | null;
+  /** Thread context captured at submit time — null for main-timeline sends. */
+  capturedThreadContext?: {
+    parentEventId: string | null;
+    threadHeadId: string | null;
+  } | null;
   pendingImeta: ImetaMedia[];
   sendOptions?: SendMessageOptions;
   sentDraftKey: string | null | undefined;
@@ -62,7 +74,7 @@ type UseMentionSendFlowOptions = {
   channelType: ChannelType | null;
   contentRef: React.MutableRefObject<string>;
   customEmoji: CustomEmoji[];
-  drafts: Pick<UseDraftsResult, "clearDraft">;
+  drafts: Pick<UseDraftsResult, "markDraftSent">;
   emojiAutocomplete: Pick<UseEmojiAutocompleteResult, "clearEmojis">;
   mentions: UseMentionsResult;
   onSendRef: React.MutableRefObject<
@@ -71,6 +83,11 @@ type UseMentionSendFlowOptions = {
       mentionPubkeys: string[],
       mediaTags?: string[][],
       options?: SendMessageOptions,
+      channelId?: string | null,
+      threadContext?: {
+        parentEventId: string | null;
+        threadHeadId: string | null;
+      } | null,
     ) => Promise<void>
   >;
   richText: Pick<UseRichTextEditorResult, "clearContent" | "setContent">;
@@ -140,6 +157,10 @@ export function useMentionSendFlow({
   const isMentionSendPendingRef = React.useRef(false);
   const isCompleteSendPendingRef = React.useRef(false);
   const previousChannelIdRef = React.useRef(channelId);
+  // Tracks the live channel so completeSend can ask "is the user still here?"
+  // without being frozen to the compose-time closure.
+  const channelIdRef = React.useRef(channelId);
+  channelIdRef.current = channelId;
 
   const addMembersMutation = useAddChannelMembersMutation(channelId);
   const attachAgentMutation = useAttachManagedAgentToChannelMutation(channelId);
@@ -182,8 +203,8 @@ export function useMentionSendFlow({
   ]);
 
   const ensureManagedAgentMentionsReady = React.useCallback(
-    async (mentionPubkeys: string[]) => {
-      if (!channelId || mentionPubkeys.length === 0) {
+    async (mentionPubkeys: string[], capturedChannelId: string) => {
+      if (!capturedChannelId || mentionPubkeys.length === 0) {
         return [];
       }
 
@@ -207,6 +228,7 @@ export function useMentionSendFlow({
             }
           } else {
             await attachAgentMutation.mutateAsync({
+              channelId: capturedChannelId,
               agent,
               role: "bot",
             });
@@ -225,7 +247,6 @@ export function useMentionSendFlow({
     },
     [
       attachAgentMutation,
-      channelId,
       getManagedAgentsByPubkey,
       mentions.memberPubkeys,
       startAgentMutation,
@@ -233,9 +254,9 @@ export function useMentionSendFlow({
   );
 
   const createMentionedPersonaAgents = React.useCallback(
-    async (trimmed: string) => {
+    async (trimmed: string, capturedChannelId: string) => {
       const personaMentions = mentions.extractMentionPersonas(trimmed);
-      if (!channelId || personaMentions.length === 0) {
+      if (!capturedChannelId || personaMentions.length === 0) {
         return {
           errors: [] as string[],
           pubkeys: [] as string[],
@@ -266,6 +287,7 @@ export function useMentionSendFlow({
 
         try {
           const result = await createPersonaAgentMutation.mutateAsync({
+            channelId: capturedChannelId,
             runtime,
             name: persona.displayName,
             personaId: persona.id,
@@ -296,7 +318,6 @@ export function useMentionSendFlow({
       };
     },
     [
-      channelId,
       createPersonaAgentMutation,
       getAvailableRuntimes,
       mentions.extractMentionPersonas,
@@ -358,6 +379,7 @@ export function useMentionSendFlow({
           mentionPubkeys.filter(
             (pubkey) => !readyAgentPubkeys.has(normalizePubkey(pubkey)),
           ),
+          draft.capturedChannelId ?? "",
         );
         if (agentReadinessErrors.length > 0) {
           const message =
@@ -371,8 +393,13 @@ export function useMentionSendFlow({
           return;
         }
 
-        clearComposer();
-        draft.onClearExtras?.();
+        // Only clear the composer if the user has not switched channels since
+        // submit. If they have, the composer they see belongs to the new channel
+        // and we must not wipe it.
+        if (draft.capturedChannelId === channelIdRef.current) {
+          clearComposer();
+          draft.onClearExtras?.();
+        }
 
         try {
           await onSendRef.current(
@@ -380,19 +407,31 @@ export function useMentionSendFlow({
             mentionPubkeys,
             outgoingTags,
             draft.sendOptions,
+            draft.capturedChannelId,
+            draft.capturedThreadContext,
           );
           if (draft.sentDraftKey) {
-            drafts.clearDraft(draft.sentDraftKey);
+            drafts.markDraftSent(
+              draft.sentDraftKey,
+              draft.savedContent,
+              draft.capturedChannelId ?? draft.sentDraftKey,
+              draft.savedImeta,
+              [...draft.savedSpoileredAttachmentUrls],
+            );
           }
         } catch (error) {
-          setContent(draft.savedContent);
-          contentRef.current = draft.savedContent;
-          richText.setContent(draft.savedContent);
-          setPendingImeta(draft.savedImeta);
-          setSpoileredAttachmentUrls?.(
-            new Set(draft.savedSpoileredAttachmentUrls),
-          );
-          draft.onRestoreExtras?.(error);
+          // Only restore the composer content if the user is still on the
+          // channel that originated the send.
+          if (draft.capturedChannelId === channelIdRef.current) {
+            setContent(draft.savedContent);
+            contentRef.current = draft.savedContent;
+            richText.setContent(draft.savedContent);
+            setPendingImeta(draft.savedImeta);
+            setSpoileredAttachmentUrls?.(
+              new Set(draft.savedSpoileredAttachmentUrls),
+            );
+            draft.onRestoreExtras?.(error);
+          }
         }
       } finally {
         isCompleteSendPendingRef.current = false;
@@ -433,6 +472,8 @@ export function useMentionSendFlow({
     async ({
       onClearExtras,
       onRestoreExtras,
+      capturedChannelId,
+      capturedThreadContext = null,
       pendingImeta,
       sendOptions,
       sentDraftKey,
@@ -446,8 +487,10 @@ export function useMentionSendFlow({
       isMentionSendPendingRef.current = true;
       setIsMentionSendPending(true);
       try {
-        const personaMentionResult =
-          await createMentionedPersonaAgents(trimmed);
+        const personaMentionResult = await createMentionedPersonaAgents(
+          trimmed,
+          capturedChannelId ?? "",
+        );
         if (personaMentionResult.errors.length > 0) {
           const message =
             personaMentionResult.errors.length === 1
@@ -497,6 +540,8 @@ export function useMentionSendFlow({
         }
 
         const pendingDraft: PendingNonMemberMentionSend = {
+          capturedChannelId,
+          capturedThreadContext,
           finalContent,
           mentionPubkeys: pubkeys,
           nonMemberPubkeys: promptNonMemberPubkeys,
@@ -538,7 +583,8 @@ export function useMentionSendFlow({
     if (!pendingNonMemberSend) return [];
 
     return pendingNonMemberSend.nonMemberPubkeys.map(
-      (pubkey) => mentions.getMentionDisplayName(pubkey) ?? pubkey.slice(0, 8),
+      (pubkey) =>
+        mentions.getMentionDisplayName(pubkey) ?? truncatePubkey(pubkey),
     );
   }, [mentions.getMentionDisplayName, pendingNonMemberSend]);
 
@@ -599,6 +645,7 @@ export function useMentionSendFlow({
       const errors: string[] = [];
       if (peoplePubkeys.length > 0) {
         const result = await addMembersMutation.mutateAsync({
+          channelId: pendingNonMemberSend.capturedChannelId ?? undefined,
           pubkeys: peoplePubkeys,
           role: "member",
         });
@@ -607,6 +654,7 @@ export function useMentionSendFlow({
 
       if (relayAgentPubkeys.length > 0) {
         const result = await addMembersMutation.mutateAsync({
+          channelId: pendingNonMemberSend.capturedChannelId ?? undefined,
           pubkeys: relayAgentPubkeys,
           role: "bot",
         });

@@ -10,6 +10,8 @@ import {
   KIND_STREAM_MESSAGE,
   KIND_TYPING_INDICATOR,
   KIND_USER_STATUS,
+  CHANNEL_EVENT_KINDS,
+  KIND_CHANNEL_THREAD_SUMMARY,
 } from "@/shared/constants/kinds";
 import {
   getTextPayload,
@@ -27,6 +29,7 @@ import {
   buildChannelMentionFilter,
   buildGlobalStreamFilter,
 } from "@/shared/api/relayChannelFilters";
+import { collectWithConcurrency } from "@/shared/api/concurrency";
 import { replayLiveSubscriptions } from "@/shared/api/relayReconnectReplay";
 import { RelayConnectionStateEmitter } from "@/shared/api/relayConnectionStateEmitter";
 import {
@@ -34,11 +37,13 @@ import {
   shouldScheduleReconnect,
 } from "@/shared/api/relayReconnectPolicy";
 import { RelayStallWatchdog } from "@/shared/api/relayStallWatchdog";
+import { closeWebSocket } from "@/shared/api/relayWebSocketClose";
 import { buildThreadReferenceTags } from "@/features/messages/lib/threading";
 
 const RECONNECT_BASE_DELAY_MS = 1_000,
   RECONNECT_MAX_DELAY_MS = 30_000,
-  EVENT_BATCH_MS = 16;
+  EVENT_BATCH_MS = 16,
+  AUX_BACKFILL_CONCURRENCY = 4;
 
 /**
  * Passive liveness check. The relay sends heartbeat pings every 30s; if no
@@ -115,9 +120,7 @@ export class RelayClient {
     this.connectionStateEmitter.set("idle");
 
     if (this.wsId !== null) {
-      void invoke("plugin:websocket|disconnect", { id: this.wsId }).catch(
-        () => {},
-      );
+      void closeWebSocket(this.wsId, "workspace switch");
       this.wsId = null;
     }
 
@@ -217,10 +220,11 @@ export class RelayClient {
       chunks.push(eventIds.slice(i, i + AUX_BACKFILL_CHUNK_SIZE));
     }
 
-    const batches: RelayEvent[][] = [];
-    for (const ids of chunks) {
-      batches.push(await this.requestHistory(buildFilter(channelId, ids)));
-    }
+    const batches = await collectWithConcurrency(
+      chunks,
+      AUX_BACKFILL_CONCURRENCY,
+      (ids) => this.requestHistory(buildFilter(channelId, ids)),
+    );
 
     return batches.flat();
   }
@@ -348,19 +352,17 @@ export class RelayClient {
     return this.subscribe(buildChannelFilter(channelId, 50), onEvent);
   }
 
-  /**
-   * Subscribe to a channel starting from NOW — no history backfill.
-   * Used by huddle TTS where only live kind:9 messages should be spoken.
-   * The `since` filter ensures the relay never sends historical backlog.
-   * The high `limit` ensures reconnect replay can recover all missed events.
-   */
+  /** Subscribe to channel rows and aux starting now, with no history replay. */
   async subscribeToChannelLive(
     channelId: string,
     onEvent: (event: RelayEvent) => void,
   ) {
     return this.subscribe(
       {
-        kinds: [KIND_STREAM_MESSAGE],
+        // 39005 rides only this window-store subscription — not
+        // CHANNEL_EVENT_KINDS, whose other consumers (unread tracking,
+        // timeline-cache merges) must never see summary overlays.
+        kinds: [...CHANNEL_EVENT_KINDS, KIND_CHANNEL_THREAD_SUMMARY],
         "#h": [channelId],
         limit: 1000,
         since: Math.floor(Date.now() / 1_000),
@@ -996,11 +998,7 @@ export class RelayClient {
     }
 
     if (this.wsId !== null) {
-      void invoke("plugin:websocket|disconnect", { id: this.wsId }).catch(
-        (err) => {
-          console.warn("[RelayClientSession] disconnect failed:", err);
-        },
-      );
+      void closeWebSocket(this.wsId, "connection reset");
     }
 
     this.wsId = null;

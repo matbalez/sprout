@@ -1,3 +1,4 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useUpdaterContext } from "./hooks/UpdaterProvider";
 import { Button } from "@/shared/ui/button";
 import {
@@ -5,9 +6,8 @@ import {
   SettingsOptionRow,
 } from "./ui/SettingsOptionGroup";
 import { SettingsSectionHeader } from "./ui/SettingsSectionHeader";
-
 export function UpdateChecker() {
-  const { status, checkForUpdate, relaunch } = useUpdaterContext();
+  const { status, checkForUpdate, installAndRelaunch } = useUpdaterContext();
 
   return (
     <section className="min-w-0" data-testid="settings-updates">
@@ -71,6 +71,26 @@ export function UpdateChecker() {
           </SettingsOptionRow>
         )}
 
+        {status.state === "manual-required" && (
+          <SettingsOptionRow>
+            <div className="min-w-0">
+              <p className="text-sm font-medium">
+                Update available — v{status.version}
+              </p>
+              <p className="text-sm font-normal text-muted-foreground">
+                In-app updates aren't supported on this Linux package. Download
+                the new version from GitHub.{" "}
+                <span className="text-muted-foreground">
+                  Switch to the AppImage build for automatic updates.
+                </span>
+              </p>
+            </div>
+            <Button size="sm" onClick={() => void openUrl(status.releaseUrl)}>
+              Download Update
+            </Button>
+          </SettingsOptionRow>
+        )}
+
         {status.state === "available" && (
           <SettingsOptionRow>
             <div className="min-w-0">
@@ -109,11 +129,11 @@ export function UpdateChecker() {
             <div className="min-w-0">
               <p className="text-sm font-medium">Update status</p>
               <p className="text-sm font-normal text-muted-foreground">
-                Update installed. Restart to apply.
+                Update downloaded. Click to apply.
               </p>
             </div>
-            <Button size="sm" onClick={relaunch}>
-              Restart Now
+            <Button size="sm" onClick={installAndRelaunch}>
+              Update Now
             </Button>
           </SettingsOptionRow>
         )}

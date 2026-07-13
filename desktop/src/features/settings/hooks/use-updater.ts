@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { isAutoUpdateSupported } from "@/shared/api/tauri";
 
 export type UpdateStatus =
   | { state: "idle" }
@@ -11,7 +12,13 @@ export type UpdateStatus =
   | { state: "downloading" }
   | { state: "installing" }
   | { state: "ready" }
-  | { state: "error"; message: string };
+  | { state: "error"; message: string }
+  | {
+      state: "manual-required";
+      version: string;
+      /** GitHub releases page for the update. */
+      releaseUrl: string;
+    };
 
 const BACKGROUND_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const BACKGROUND_BLOCKED_STATES = new Set<UpdateStatus["state"]>([
@@ -20,7 +27,10 @@ const BACKGROUND_BLOCKED_STATES = new Set<UpdateStatus["state"]>([
   "downloading",
   "installing",
   "ready",
+  "manual-required",
 ]);
+
+const GITHUB_RELEASES_URL = "https://github.com/block/buzz/releases/latest";
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -47,6 +57,7 @@ export function useUpdater() {
   const updateRef = useRef<Update | null>(null);
   const checkInFlightRef = useRef(false);
   const downloadInFlightRef = useRef(false);
+  const installInFlightRef = useRef(false);
   const manualResultRequestedRef = useRef(false);
 
   const setStatus = useCallback((nextStatus: UpdateStatus) => {
@@ -55,7 +66,7 @@ export function useUpdater() {
   }, []);
 
   const closeUpdate = useCallback(async () => {
-    if (downloadInFlightRef.current) {
+    if (downloadInFlightRef.current || installInFlightRef.current) {
       return;
     }
     const current = updateRef.current;
@@ -65,7 +76,7 @@ export function useUpdater() {
     }
   }, []);
 
-  const downloadAndInstall = useCallback(async () => {
+  const downloadUpdate = useCallback(async () => {
     if (downloadInFlightRef.current) {
       return;
     }
@@ -78,19 +89,35 @@ export function useUpdater() {
       }
 
       setStatus({ state: "downloading" });
-
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Finished") {
-          setStatus({ state: "installing" });
-        }
-      });
-
-      updateRef.current = null;
+      await update.download();
       setStatus({ state: "ready" });
     } catch (err) {
       setStatus({ state: "error", message: toErrorMessage(err) });
     } finally {
       downloadInFlightRef.current = false;
+    }
+  }, [setStatus]);
+
+  const installAndRelaunch = useCallback(async () => {
+    if (installInFlightRef.current) {
+      return;
+    }
+
+    const update = updateRef.current;
+    if (!update) {
+      return;
+    }
+
+    installInFlightRef.current = true;
+    try {
+      setStatus({ state: "installing" });
+      await update.install();
+      updateRef.current = null;
+      await relaunch();
+    } catch (err) {
+      setStatus({ state: "error", message: toErrorMessage(err) });
+    } finally {
+      installInFlightRef.current = false;
     }
   }, [setStatus]);
 
@@ -125,10 +152,25 @@ export function useUpdater() {
           !background || manualResultRequestedRef.current;
 
         if (update) {
+          // Check support BEFORE exposing any actionable state — on a Linux
+          // .deb, the window between "available" and "manual-required" would
+          // let a click reach an un-updatable install.
+          const autoUpdateOk = await isAutoUpdateSupported();
           updateRef.current = update;
-          setStatus({ state: "available", version: update.version });
-          // Start download automatically — user sees "restart" when done
-          void downloadAndInstall();
+          if (autoUpdateOk) {
+            setStatus({ state: "available", version: update.version });
+            void downloadUpdate();
+          } else {
+            // .deb / non-AppImage: surface manual-download card instead.
+            // updateRef is intentionally NOT retained — no install handle
+            // should be kept when we will never install in-app.
+            updateRef.current = null;
+            setStatus({
+              state: "manual-required",
+              version: update.version,
+              releaseUrl: GITHUB_RELEASES_URL,
+            });
+          }
         } else if (shouldShowQuietResult) {
           setStatus({ state: "up-to-date" });
         }
@@ -156,7 +198,7 @@ export function useUpdater() {
         checkInFlightRef.current = false;
       }
     },
-    [closeUpdate, downloadAndInstall, setStatus],
+    [closeUpdate, downloadUpdate, setStatus],
   );
 
   const checkForUpdate = useCallback(async () => {
@@ -166,14 +208,6 @@ export function useUpdater() {
   const checkForUpdateInBackground = useCallback(async () => {
     await runUpdateCheck({ background: true });
   }, [runUpdateCheck]);
-
-  const handleRelaunch = useCallback(async () => {
-    try {
-      await relaunch();
-    } catch (err) {
-      setStatus({ state: "error", message: toErrorMessage(err) });
-    }
-  }, [setStatus]);
 
   useEffect(() => {
     void checkForUpdateInBackground();
@@ -191,7 +225,6 @@ export function useUpdater() {
   return {
     status,
     checkForUpdate,
-    downloadAndInstall,
-    relaunch: handleRelaunch,
+    installAndRelaunch,
   };
 }

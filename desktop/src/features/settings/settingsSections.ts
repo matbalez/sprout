@@ -9,7 +9,9 @@ export type SettingsSection =
   | "appearance"
   | "shortcuts"
   | "relay-members"
+  | "moderation"
   | "custom-emoji"
+  | "local-archive"
   | "mobile"
   | "updates"
   | "doctor";
@@ -27,7 +29,9 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "appearance",
   "shortcuts",
   "relay-members",
+  "moderation",
   "custom-emoji",
+  "local-archive",
   "mobile",
   "updates",
   "doctor",

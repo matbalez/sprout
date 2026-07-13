@@ -18,21 +18,20 @@ import {
 } from "@/features/channels/readState/readStateFormat";
 import { ChannelScreenEmptyState } from "@/features/channels/ui/ChannelScreenEmptyState";
 import { ChannelScreenHeader } from "@/features/channels/ui/ChannelScreenHeader";
-import {
-  ChannelPane,
-  ForumView,
-} from "@/features/channels/ui/ChannelScreenLazyViews";
+import { ChannelPane } from "@/features/channels/ui/ChannelScreenLazyViews";
+import { ForumChannelContent } from "@/features/channels/ui/ForumChannelContent";
 import { MembersSidebar } from "@/features/channels/ui/MembersSidebar";
 import {
   useManagedAgentsQuery,
   usePersonasQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
-import { useManagedAgentObserverBridge } from "@/features/agents/observerRelayStore";
+import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
 import {
   mergeMessages,
   useChannelMessagesQuery,
   useChannelSubscription,
+  useChannelWindowQuery,
   useDeleteMessageMutation,
   useEditMessageMutation,
   useSendMessageMutation,
@@ -41,8 +40,13 @@ import {
 import {
   collectMessageAuthorPubkeys,
   collectMessageMentionPubkeys,
+  collectReactionActorPubkeys,
   formatTimelineMessages,
 } from "@/features/messages/lib/formatTimelineMessages";
+import {
+  channelWindowThreadSummaries,
+  type ChannelWindowThreadSummary,
+} from "@/features/messages/lib/channelWindowStore";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import {
@@ -50,12 +54,11 @@ import {
   selectTimelineLoadingState,
 } from "@/features/messages/lib/timelineLoadingState";
 import { useFetchOlderMessages } from "@/features/messages/useFetchOlderMessages";
-import { useLoadMissingAncestors } from "@/features/messages/useLoadMissingAncestors";
+import { useIndependentThreadPanel } from "@/features/messages/useIndependentThreadPanel";
 import { useThreadReplies } from "@/features/messages/useThreadReplies";
 import { useChannelTyping } from "@/features/messages/useChannelTyping";
 import type { TimelineMessage } from "@/features/messages/types";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
-import { mergeCurrentProfileIntoLookup } from "@/features/profile/lib/identity";
 import {
   formatBitcoinAmount,
   isWalletBotChannel,
@@ -73,21 +76,19 @@ import { useElementWidth } from "@/shared/hooks/use-mobile";
 import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
 import { AUXILIARY_PANEL_SINGLE_COLUMN_BREAKPOINT_PX } from "@/shared/layout/AuxiliaryPanel";
 import { normalizePubkey } from "@/shared/lib/pubkey";
-import {
-  mergeAgentNamesIntoProfiles,
-  useChannelActivityTyping,
-} from "./useChannelActivityTyping";
+import { useChannelActivityTyping } from "./useChannelActivityTyping";
 import { useChannelAgentSessions } from "./useChannelAgentSessions";
+import { useMessageProfiles } from "./useMessageProfiles";
 import { useChannelPanelHistoryState } from "./useChannelPanelHistoryState";
 import { useChannelProfilePanel } from "./useChannelProfilePanel";
 import { useChannelRouteTarget } from "./useChannelRouteTarget";
 import { useChannelUnreadState } from "./useChannelUnreadState";
 import type { ChannelScreenProps } from "./ChannelScreen.types";
-
-const HEADER_ACTIONS_COMPACT_BREAKPOINT_PX = 760;
-
+const HEADER_ACTIONS_COMPACT_BREAKPOINT_PX = 760,
+  EMPTY_RELAY_EVENTS: RelayEvent[] = [];
 export function ChannelScreen({
   activeChannel,
+  autoSendDraftKey,
   currentIdentity,
   currentProfile,
   onCloseForumPost,
@@ -116,13 +117,16 @@ export function ChannelScreen({
   } = useAppShell();
   const {
     channelManagementOpen,
+    clearAutoSend,
     clearMessageRouteTarget,
+    openAgentSessionChannelId,
     openAgentSessionPubkey,
     openThreadHeadId,
     profilePanelPubkey,
     profilePanelTab,
     profilePanelView,
     setChannelManagementOpen,
+    setOpenAgentSessionChannelId,
     setOpenAgentSessionPubkey,
     setOpenThreadHeadId,
     setProfilePanelTab,
@@ -149,10 +153,9 @@ export function ChannelScreen({
     string | null
   >(null);
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
-  // Thread panel state is URL-backed, but router navigation is intentionally
-  // deferred out of the click handler. Keep a tiny optimistic override so the
-  // auxiliary pane can open/close in the urgent render, then let the URL-backed
-  // state hydrate the real thread contents when it catches up.
+  // Thread panel state is URL-backed, but router navigation is deferred out
+  // of the click handler; a tiny optimistic override lets the auxiliary pane
+  // open/close in the urgent render before the URL-backed state catches up.
   const [optimisticOpenThreadHeadId, setOptimisticOpenThreadHeadId] =
     React.useState<string | null | undefined>(undefined);
   const clearOptimisticThreadOverride = React.useCallback(() => {
@@ -185,11 +188,14 @@ export function ChannelScreen({
     });
   }, [activeChannelId, openThreadHeadId]);
   const messagesQuery = useChannelMessagesQuery(activeChannel);
+  const windowQuery = useChannelWindowQuery(activeChannel);
+  const threadRepliesQuery = useThreadReplies(
+    activeChannel,
+    effectiveOpenThreadHeadId,
+  );
   useChannelSubscription(activeChannel);
-  const { fetchOlder, hasOlderMessages, isFetchingOlder } =
+  const { fetchOlder, hasOlderMessages, historyExhausted, isFetchingOlder } =
     useFetchOlderMessages(activeChannel);
-  // Newest top-level message only: opening a channel should clear the timeline
-  // without clearing unread thread replies.
   const latestActiveMessage = React.useMemo(() => {
     const messages = messagesQuery.data;
     if (!messages) return null;
@@ -200,8 +206,6 @@ export function ChannelScreen({
     }
     return null;
   }, [messagesQuery.data]);
-  // No `lastMessageAt` fallback: it is reply-inclusive and would clear unread
-  // thread/sidebar state before a real top-level position is known.
   const activeReadAt = latestActiveMessage
     ? new Date(latestActiveMessage.created_at * 1_000).toISOString()
     : null;
@@ -209,22 +213,8 @@ export function ChannelScreen({
     if (!activeChannelId || activeChannel?.isMember === false) {
       return;
     }
-    // Passive channel-open: advance the marker to the newest top-level message
-    // only (NIP-RS Option 1). Opening a channel clears the main timeline while
-    // leaving thread badges and Home inbox thread activity intact until each
-    // thread itself is read.
     markChannelRead(activeChannelId, activeReadAt, { topLevelOnly: true });
   }, [activeChannel?.isMember, activeChannelId, activeReadAt, markChannelRead]);
-  // Install the NIP-RS parent resolver: every `thread:<root>` or `msg:<id>`
-  // context evaluated while this channel is active belongs to it (both are only
-  // ever read for the active channel's timeline messages), so the parent is
-  // always the active channel. Folding `msg:` to the channel — never to another
-  // message — means reading an ancestor never covers a descendant (LP4 Issue 2
-  // by construction); a channel-read still clears any message older than the
-  // top-level channel frontier. Non-thread/non-message keys (channels) have no
-  // parent → null, which degrades effective() to the own term. Cleared on
-  // channel leave / unmount so a stale channel id never becomes the parent of
-  // another channel's contexts.
   React.useEffect(() => {
     if (!activeChannelId) {
       setContextParentResolver(null);
@@ -268,14 +258,17 @@ export function ChannelScreen({
     messagesQuery.data,
     targetMessageEvents,
   ]);
-  const messageAuthorPubkeys = React.useMemo(
-    () => collectMessageAuthorPubkeys(resolvedMessages),
-    [resolvedMessages],
-  );
-  const messageMentionPubkeys = React.useMemo(
-    () => collectMessageMentionPubkeys(resolvedMessages),
-    [resolvedMessages],
-  );
+  const threadReplyEvents = threadRepliesQuery.data ?? EMPTY_RELAY_EVENTS;
+  const messageEventProfilePubkeys = React.useMemo(() => {
+    const events = [...resolvedMessages, ...threadReplyEvents];
+    return [
+      ...new Set([
+        ...collectMessageAuthorPubkeys(events),
+        ...collectMessageMentionPubkeys(events),
+        ...collectReactionActorPubkeys(events),
+      ]),
+    ];
+  }, [resolvedMessages, threadReplyEvents]);
   const latestMessageEvent = React.useMemo(
     () => resolvedMessages[resolvedMessages.length - 1] ?? null,
     [resolvedMessages],
@@ -354,8 +347,7 @@ export function ChannelScreen({
     () =>
       [
         ...new Set([
-          ...messageAuthorPubkeys,
-          ...messageMentionPubkeys,
+          ...messageEventProfilePubkeys,
           ...activeDmParticipantPubkeys,
           ...knownAgentPubkeys,
           ...typingEntries.map((entry) => entry.pubkey),
@@ -365,8 +357,7 @@ export function ChannelScreen({
     [
       activeDmParticipantPubkeys,
       knownAgentPubkeys,
-      messageAuthorPubkeys,
-      messageMentionPubkeys,
+      messageEventProfilePubkeys,
       sharedAgentOwnerPubkeys,
       typingEntries,
     ],
@@ -374,17 +365,6 @@ export function ChannelScreen({
   const messageProfilesQuery = useUsersBatchQuery(messageProfilePubkeys, {
     enabled: messageProfilePubkeys.length > 0,
   });
-  const agentPubkeys = React.useMemo(() => {
-    const pubkeys = new Set(knownAgentPubkeys);
-    for (const [pubkey, profile] of Object.entries(
-      messageProfilesQuery.data?.profiles ?? {},
-    )) {
-      if (profile.isAgent) {
-        pubkeys.add(normalizePubkey(pubkey));
-      }
-    }
-    return pubkeys;
-  }, [knownAgentPubkeys, messageProfilesQuery.data]);
   const agentPubkeysPending =
     activeChannel?.channelType === "dm" &&
     (channelMembersQuery.isPending ||
@@ -407,62 +387,33 @@ export function ChannelScreen({
     relayAgents,
     typingEntries,
   });
-  const observerBridgeAgents = React.useMemo(() => {
-    if (
-      !profilePanelPubkey ||
-      !openAgentSessionPubkey ||
-      normalizePubkey(profilePanelPubkey) !==
-        normalizePubkey(openAgentSessionPubkey) ||
-      managedAgents.some(
-        (agent) =>
-          normalizePubkey(agent.pubkey) === normalizePubkey(profilePanelPubkey),
-      )
-    ) {
-      return managedAgents;
-    }
-
-    return [
-      ...managedAgents,
-      {
-        pubkey: profilePanelPubkey,
-        status: "deployed" as const,
-      },
-    ];
-  }, [managedAgents, openAgentSessionPubkey, profilePanelPubkey]);
-  useManagedAgentObserverBridge(observerBridgeAgents);
-  const messageProfiles = React.useMemo(() => {
-    const base =
-      mergeCurrentProfileIntoLookup(
-        messageProfilesQuery.data?.profiles,
-        currentProfile,
-      ) ?? {};
-    const merged = mergeAgentNamesIntoProfiles(
-      base,
-      managedAgents,
-      relayAgents,
-      currentPubkey,
-    );
-    if (!isWalletBotActive) {
-      return merged;
-    }
-
-    return {
-      ...merged,
-      [WALLETBOT_PUBKEY]: {
-        avatarUrl: null,
-        displayName: "WalletBot",
-        nip05Handle: null,
-        ownerPubkey: null,
-      },
-    };
-  }, [
+  // Observer ingestion (frame decryption + derived active-turn liveness) is
+  // owner-global — mounted once in AppShell via useAgentObserverIngestion —
+  // so this screen no longer mounts its own observer/turns bridges.
+  const messageProfiles = useMessageProfiles({
+    channelMembers,
     currentProfile,
     currentPubkey,
     isWalletBotActive,
     managedAgents,
-    messageProfilesQuery.data?.profiles,
+    profiles: messageProfilesQuery.data?.profiles,
     relayAgents,
-  ]);
+  });
+  // Agent set for ChannelPane's own consumers (DM huddle member resolution,
+  // the agents list): the workspace-scoped baseline shared by every surface,
+  // widened with channel-member roles and this screen's profile lookup.
+  // Message rows no longer take this — MessageRow derives agent-ness itself
+  // from useKnownAgentPubkeys + per-pubkey profile checks.
+  const workspaceAgentPubkeys = useKnownAgentPubkeys();
+  const agentPubkeys = React.useMemo(() => {
+    const pubkeys = new Set([...workspaceAgentPubkeys, ...knownAgentPubkeys]);
+    for (const [pubkey, profile] of Object.entries(messageProfiles)) {
+      if (profile.isAgent) {
+        pubkeys.add(normalizePubkey(pubkey));
+      }
+    }
+    return pubkeys;
+  }, [knownAgentPubkeys, messageProfiles, workspaceAgentPubkeys]);
   const sendMessageMutation = useSendMessageMutation(
     activeChannel,
     currentIdentity,
@@ -512,6 +463,14 @@ export function ChannelScreen({
       resolvedMessages,
     ],
   );
+  const threadSummaries: ReadonlyMap<string, ChannelWindowThreadSummary> =
+    React.useMemo(
+      () =>
+        windowQuery.data
+          ? channelWindowThreadSummaries(windowQuery.data)
+          : new Map(),
+      [windowQuery.data],
+    );
   const handleFindSearchHit = React.useCallback((hit: SearchHit) => {
     const event = cacheSearchHitEvent(hit);
     setFindTargetEvents((currentEvents) =>
@@ -525,6 +484,20 @@ export function ChannelScreen({
     messages: timelineMessages,
     onSearchHit: handleFindSearchHit,
   });
+  const threadPanelData = useIndependentThreadPanel({
+    activeChannel,
+    channelEvents: resolvedMessages,
+    threadReplyEvents,
+    rootId: effectiveOpenThreadHeadId,
+    replyTargetId: threadReplyTargetId,
+    expandedReplyIds: expandedThreadReplyIds,
+    currentPubkey,
+    currentAvatarUrl: currentProfile?.avatarUrl ?? null,
+    profiles: messageProfiles,
+    members: channelMembers,
+    personaLookup,
+    respondToLookup,
+  });
   const {
     firstUnreadMessageId,
     getFirstReplyIdForMessage,
@@ -535,7 +508,6 @@ export function ChannelScreen({
     markRevealedRepliesRead,
     openThreadHeadMessage,
     threadFirstUnreadReplyId,
-    threadMessages,
     threadReplyTargetMessage,
     threadReplyUnreadCounts,
     threadUnreadCounts,
@@ -544,9 +516,10 @@ export function ChannelScreen({
     activeChannelId,
     timelineMessages,
     currentPubkey,
-    openThreadHeadId,
+    openThreadHeadId: effectiveOpenThreadHeadId,
     threadReplyTargetId,
     expandedThreadReplyIds,
+    openThreadMessages: threadPanelData.visibleReplies,
     getChannelReadAt,
     getMessageReadAt,
     markChannelUnread,
@@ -601,9 +574,8 @@ export function ChannelScreen({
         : undefined,
     [activeChannel, handleToggleReaction, isWalletBotActive],
   );
-  // The menu actions are typed (message) => void; the per-message read-state
-  // handlers key off the message id (message + subtree). Adapt at the seam so
-  // the handlers stay id-based and the menu stays message-based.
+  // The menu actions are typed (message) => void; the read-state handlers
+  // key off the message id (message + subtree). Adapt at the seam.
   const handleMessageMarkUnread = React.useCallback(
     (message: TimelineMessage) => handleMarkMessageUnread(message.id),
     [handleMarkMessageUnread],
@@ -649,17 +621,18 @@ export function ChannelScreen({
   }, [setChannelManagementOpen, goHome]);
   const {
     agentSessionAgents,
+    backFromAgentSession: handleBackFromAgentSession,
     channelAgentSessionAgents,
     closeAgentSession: handleCloseAgentSession,
+    hasAgentSessionReturnTarget,
     openAgentSession: handleOpenAgentSession,
     openThreadAndCloseAgentSession: handleOpenThreadAndCloseAgentSession,
   } = useChannelAgentSessions({
     activeChannel,
     activeChannelId,
-    // The agent list comes from three queries; treat it as loaded only once
-    // none of them are in their initial fetch, so a channel with genuinely
-    // zero agents can still auto-close a stale agentSession param. A disabled
-    // query (e.g. no active channel) reports isLoading=false, which is fine.
+    // Loaded only once none of the three agent queries are in their initial
+    // fetch, so a channel with genuinely zero agents still auto-closes a stale
+    // agentSession param (a disabled query reports isLoading=false — fine).
     agentsLoaded:
       !channelMembersQuery.isLoading &&
       !managedAgentsQuery.isLoading &&
@@ -668,9 +641,11 @@ export function ChannelScreen({
     handleOpenThread,
     managedAgents: agentSessionCandidates,
     openAgentSessionPubkey,
+    openThreadHeadId: effectiveOpenThreadHeadId,
     profilePanelPubkey,
     setChannelManagementOpen,
     setExpandedThreadReplyIds,
+    setOpenAgentSessionChannelId,
     setOpenAgentSessionPubkey,
     setOpenThreadHeadId,
     setProfilePanelPubkey,
@@ -687,10 +662,10 @@ export function ChannelScreen({
       setThreadReplyTargetId,
       setThreadScrollTargetId,
     });
-  // `data !== undefined` is not "loaded": the cache is seeded early by stale
-  // placeholders and the live subscription. Wait for the history fetch to settle.
-  // Latch loaded per channel so a later background refetch can't flip back to
-  // the skeleton — that re-flip is the "skeleton bouncing up and down" on entry.
+  // `data !== undefined` is not "loaded" (the cache is seeded early by stale
+  // placeholders and the live subscription); wait for the history fetch to
+  // settle, latched per channel so a background refetch can't re-flip to the
+  // skeleton (the "skeleton bouncing up and down" on entry).
   const settledChannelIdRef = React.useRef<string | null>(null);
   const hasSettledThisChannel =
     activeChannelId !== null && settledChannelIdRef.current === activeChannelId;
@@ -714,8 +689,7 @@ export function ChannelScreen({
     );
   settledChannelIdRef.current = settledChannelId;
   // Panel identity (thread/profile/agent session) lives in the URL search
-  // params, so channel changes and back/forward traversals carry it per
-  // history entry — only the local ephemeral targets need resetting here.
+  // params and carries per history entry — only ephemeral targets reset here.
   const resetComposerTargets = React.useCallback(
     (_channelId: string | null) => {
       setExpandedThreadReplyIds(new Set());
@@ -784,27 +758,15 @@ export function ChannelScreen({
     threadReplyTargetMessage,
   ]);
 
-  useLoadMissingAncestors(activeChannel, resolvedMessages);
-  // Fetch the full reply subtree server-side when a thread is open, closing the
-  // descendant gap that useLoadMissingAncestors (ancestors-only) leaves. The
-  // open thread head is the top-level message, i.e. the thread root.
-  useThreadReplies(activeChannel, effectiveOpenThreadHeadId);
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
       openAgentSessionPubkey ||
       profilePanelPubkey ||
       channelManagementOpen,
   );
-  const displayedThreadHeadMessage =
-    openThreadHeadMessage?.id === effectiveOpenThreadHeadId
-      ? openThreadHeadMessage
-      : null;
-  const displayedThreadMessages = displayedThreadHeadMessage
-    ? threadMessages
-    : [];
-  const displayedThreadReplyTargetMessage = displayedThreadHeadMessage
-    ? threadReplyTargetMessage
-    : null;
+  const displayedThreadHeadMessage = threadPanelData.threadHead;
+  const displayedThreadMessages = threadPanelData.visibleReplies;
+  const displayedThreadReplyTargetMessage = threadPanelData.replyTargetMessage;
   const displayedThreadFirstUnreadReplyId = displayedThreadHeadMessage
     ? threadFirstUnreadReplyId
     : null;
@@ -919,20 +881,28 @@ export function ChannelScreen({
         >
           {activeChannel ? (
             activeChannel.channelType === "forum" ? (
-              <>
-                {channelHeader}
-                <React.Suspense fallback={<ViewLoadingFallback kind="forum" />}>
-                  <ForumView
-                    channel={activeChannel}
-                    currentPubkey={currentPubkey}
-                    onClosePost={onCloseForumPost}
-                    onSelectPost={onSelectForumPost}
-                    postPriceLabel={postPriceLabel}
-                    selectedPostId={selectedForumPostId}
-                    targetReplyId={targetForumReplyId}
-                  />
-                </React.Suspense>
-              </>
+              <ForumChannelContent
+                canResetPanelWidth={canResetThreadPanelWidth}
+                channel={activeChannel}
+                currentPubkey={currentPubkey}
+                header={channelHeader}
+                onClosePost={onCloseForumPost}
+                onCloseProfilePanel={handleCloseProfilePanel}
+                onOpenDm={handleOpenDm}
+                onOpenProfilePanel={handleOpenProfilePanel}
+                onPanelResizeStart={handleThreadPanelResizeStart}
+                onProfilePanelTabChange={setProfilePanelTab}
+                onProfilePanelViewChange={setProfilePanelView}
+                onResetPanelWidth={handleThreadPanelWidthReset}
+                onSelectPost={onSelectForumPost}
+                panelWidthPx={threadPanelWidthPx}
+                postPriceLabel={postPriceLabel}
+                profilePanelPubkey={profilePanelPubkey}
+                profilePanelTab={profilePanelTab}
+                profilePanelView={profilePanelView}
+                selectedPostId={selectedForumPostId}
+                targetReplyId={targetForumReplyId}
+              />
             ) : (
               <React.Suspense
                 fallback={<ViewLoadingFallback includeHeader kind="channel" />}
@@ -943,6 +913,8 @@ export function ChannelScreen({
                   agentPubkeys={agentPubkeys}
                   agentPubkeysPending={agentPubkeysPending}
                   agentSessionAgents={agentSessionAgents}
+                  autoSendDraftKey={autoSendDraftKey}
+                  onAutoSendComplete={clearAutoSend}
                   botTypingEntries={botTypingEntries}
                   channelFind={channelFind}
                   channelManagementOpen={channelManagementOpen}
@@ -951,6 +923,7 @@ export function ChannelScreen({
                   fetchOlder={fetchOlder}
                   header={channelHeader}
                   hasOlderMessages={hasOlderMessages}
+                  historyExhausted={historyExhausted}
                   onAddAgent={handleOpenAddBot}
                   onCreateChannel={openCreateChannel}
                   onOpenMembers={handleOpenMembersSidebar}
@@ -976,6 +949,7 @@ export function ChannelScreen({
                   isSinglePanelView={isSinglePanelView}
                   isTimelineLoading={isTimelineLoading}
                   messages={timelineMessages}
+                  threadSummaries={threadSummaries}
                   onCancelEdit={handleCancelEdit}
                   onCancelThreadReply={handleCancelThreadReply}
                   onChannelManagementDeleted={handleChannelManagementDeleted}
@@ -992,6 +966,11 @@ export function ChannelScreen({
                       : undefined
                   }
                   onCloseAgentSession={handleCloseAgentSession}
+                  onBackFromAgentSession={
+                    hasAgentSessionReturnTarget
+                      ? handleBackFromAgentSession
+                      : undefined
+                  }
                   onCloseChannelManagement={handleCloseChannelManagement}
                   onCloseThread={handleCloseThread}
                   onDelete={
@@ -1029,6 +1008,7 @@ export function ChannelScreen({
                   onThreadPanelResizeStart={handleThreadPanelResizeStart}
                   onTargetReached={handleTargetReached}
                   onToggleReaction={effectiveToggleReaction}
+                  openAgentSessionChannelId={openAgentSessionChannelId}
                   openAgentSessionPubkey={openAgentSessionPubkey}
                   openThreadHeadId={effectiveOpenThreadHeadId}
                   shouldShowThreadSkeleton={shouldShowThreadSkeleton}
@@ -1044,6 +1024,7 @@ export function ChannelScreen({
                   targetMessageId={mainTimelineTargetMessageId}
                   threadHeadMessage={displayedThreadHeadMessage}
                   threadMessages={displayedThreadMessages}
+                  threadMessagesPending={threadRepliesQuery.isPending}
                   threadPanelWidthPx={threadPanelWidthPx}
                   threadTypingPubkeys={threadTypingPubkeys}
                   threadReplyTargetMessage={displayedThreadReplyTargetMessage}

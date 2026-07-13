@@ -453,8 +453,20 @@ export function useUpdateChannelMutation(channelId: string | null) {
         ),
       );
     },
-    onSettled: async () => {
-      await invalidateChannelState(queryClient, channelId);
+    onSettled: () => {
+      // refetchType "none": onSuccess already cached the relay-returned detail;
+      // awaiting the full channel-list refetch kept the edit dialog stuck on
+      // "Saving..." (same failure #1360 fixed for create).
+      void queryClient.invalidateQueries({
+        queryKey: channelsQueryKey,
+        refetchType: "none",
+      });
+      if (channelId) {
+        void queryClient.invalidateQueries({
+          queryKey: channelDetailQueryKey(channelId),
+          refetchType: "none",
+        });
+      }
     },
   });
 }
@@ -470,8 +482,9 @@ export function useSetChannelTopicMutation(channelId: string | null) {
 
       return setChannelTopic({ ...input, channelId });
     },
-    onSettled: async () => {
-      await invalidateChannelState(queryClient, channelId);
+    onSettled: () => {
+      // fire-and-forget: awaiting the channels-list refetch blocks the dialog
+      void invalidateChannelState(queryClient, channelId);
     },
   });
 }
@@ -487,8 +500,9 @@ export function useSetChannelPurposeMutation(channelId: string | null) {
 
       return setChannelPurpose({ ...input, channelId });
     },
-    onSettled: async () => {
-      await invalidateChannelState(queryClient, channelId);
+    onSettled: () => {
+      // fire-and-forget: awaiting the channels-list refetch blocks the dialog
+      void invalidateChannelState(queryClient, channelId);
     },
   });
 }
@@ -581,15 +595,24 @@ export function useAddChannelMembersMutation(channelId: string | null) {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (input: Omit<AddChannelMembersInput, "channelId">) => {
-      if (!channelId) {
+    mutationFn: (
+      input: Omit<AddChannelMembersInput, "channelId"> & {
+        channelId?: string;
+      },
+    ) => {
+      const { channelId: capturedChannelId, ...rest } = input;
+      const effectiveChannelId = capturedChannelId ?? channelId;
+      if (!effectiveChannelId) {
         throw new Error("No channel selected.");
       }
 
-      return addChannelMembers({ ...input, channelId });
+      return addChannelMembers({ ...rest, channelId: effectiveChannelId });
     },
-    onSettled: async () => {
-      await invalidateChannelState(queryClient, channelId);
+    onSettled: async (_data, _err, variables) => {
+      // Invalidate the effective channel (the one actually mutated) not the
+      // live hook-closure channel, which may have changed mid-send.
+      const effectiveChannelId = variables?.channelId ?? channelId;
+      await invalidateChannelState(queryClient, effectiveChannelId);
     },
   });
 }

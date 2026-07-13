@@ -1,11 +1,23 @@
 export const KIND_DELETION = 5;
 export const KIND_REACTION = 7;
+export const KIND_TEXT_NOTE = 1;
 export const KIND_STREAM_MESSAGE = 9;
 // Buzz-native deletion. The relay soft-deletes the target and emits a
 // kind:40099 system message. Treated as a deletion marker alongside kind:5.
 export const KIND_NIP29_DELETE_EVENT = 9005;
+// NIP-56 report + community-moderation command kinds. Reports (1984) persist to
+// the mod queue only; commands (9040–9044) are relay-validated and never stored.
+// Tag shapes are pinned by buzz-sdk builders + relay moderation_commands.rs.
+export const KIND_REPORT = 1984;
+export const KIND_MODERATION_BAN = 9040;
+export const KIND_MODERATION_UNBAN = 9041;
+export const KIND_MODERATION_TIMEOUT = 9042;
+export const KIND_MODERATION_UNTIMEOUT = 9043;
+export const KIND_MODERATION_RESOLVE_REPORT = 9044;
 export const KIND_STREAM_MESSAGE_V2 = 40002;
 export const KIND_STREAM_MESSAGE_EDIT = 40003;
+export const KIND_CHANNEL_THREAD_SUMMARY = 39005;
+export const KIND_CHANNEL_WINDOW_BOUNDS = 39006;
 export const KIND_STREAM_MESSAGE_DIFF = 40008;
 export const KIND_REMINDER = 40007;
 export const KIND_SYSTEM_MESSAGE = 40099;
@@ -27,11 +39,12 @@ export const KIND_HUDDLE_PARTICIPANT_JOINED = 48101;
 export const KIND_HUDDLE_PARTICIPANT_LEFT = 48102;
 export const KIND_HUDDLE_ENDED = 48103;
 // NIP-78 application-specific data. All use kind 30078; the relay
-// differentiates them by d-tag ("read-state:<slotId>", "channel-sections", "channel-mutes", "channel-stars").
+// differentiates them by d-tag ("read-state:<slotId>", "channel-sections", "channel-mutes", "channel-stars", "channel-sort").
 export const KIND_READ_STATE = 30078;
 export const KIND_CHANNEL_SECTIONS = 30078;
 export const KIND_CHANNEL_MUTES = 30078;
 export const KIND_CHANNEL_STARS = 30078;
+export const KIND_CHANNEL_SORT = 30078;
 // NIP-33 persona/team/managed-agent projection events (d-tag keyed). Published
 // backend-side as secrets-stripped snapshots; the inbound sync hook subscribes
 // to all three to patch local records. Mirror of buzz-core's KIND_PERSONA etc.
@@ -40,11 +53,21 @@ export const KIND_TEAM = 30176;
 export const KIND_MANAGED_AGENT = 30177;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
+export const KIND_AGENT_TURN_METRIC = 44200;
 export const KIND_MESH_STATUS_REPORT = 24620;
 export const KIND_MESH_CONNECT_REQUEST = 24621;
 export const KIND_MESH_CALL_ME_NOW = 24622;
 export const KIND_EVENT_REMINDER = 30300;
 export const KIND_REPO_ANNOUNCEMENT = 30617;
+export const KIND_REPO_STATE = 30618;
+export const KIND_GIT_PATCH = 1617;
+export const KIND_GIT_PULL_REQUEST = 1618;
+export const KIND_GIT_PR_UPDATE = 1619;
+export const KIND_GIT_ISSUE = 1621;
+export const KIND_GIT_STATUS_OPEN = 1630;
+export const KIND_GIT_STATUS_MERGED = 1631;
+export const KIND_GIT_STATUS_CLOSED = 1632;
+export const KIND_GIT_STATUS_DRAFT = 1633;
 // NIP-DV: relay-signed per-viewer DM visibility snapshot (d=viewer pubkey,
 // h-tags = currently-hidden DM channel ids).
 export const KIND_DM_VISIBILITY = 30622;

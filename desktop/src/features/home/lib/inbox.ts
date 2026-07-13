@@ -21,7 +21,7 @@ import type {
   RelayEvent,
 } from "@/shared/api/types";
 import { resolveEventAuthorPubkey } from "@/shared/lib/authors";
-import { resolveMentionNames } from "@/shared/lib/resolveMentionNames";
+import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
 export type InboxFilter =
   | "all"
@@ -30,10 +30,18 @@ export type InboxFilter =
   | "needs_action"
   | "activity"
   | "agent_activity"
-  | "reminders";
+  | "reminders"
+  | "drafts";
 
 export type InboxItem = {
   avatarUrl: string | null;
+  /**
+   * Stable conversation identity: `rootId ?? parentId ?? event.id` for the
+   * thread group. Does NOT change when a new reply advances the representative
+   * latest event. Use this for lifecycle continuity: scroll gating, draft
+   * keys, local-reply storage, and selection identity.
+   */
+  conversationId: string;
   id: string;
   item: FeedItem;
   categories: FeedItemCategory[];
@@ -45,6 +53,7 @@ export type InboxItem = {
   latestActivityAt: number;
   mentionNames: string[];
   bounty?: InboxBounty | null;
+  mentionPubkeysByName?: Record<string, string>;
   preview: string;
   senderLabel: string;
   subject: string;
@@ -61,13 +70,22 @@ export type InboxReply = {
   authorPubkey: string;
   avatarUrl: string | null;
   content: string;
+  createdAt: number;
   depth?: number;
   fullTimestampLabel: string;
   id: string;
+  /** Raw event kind — input to the config-nudge trust gate. */
+  kind?: number;
   parentId?: string | null;
   reactions?: TimelineReaction[];
   rootId?: string | null;
   bounty?: InboxBounty | null;
+  /**
+   * Raw event signer, NOT the tag-attributed display author
+   * (`authorPubkey`). The config-nudge trust gate authenticates against
+   * this field so `actor`/`p`-tag spoofing can't enable the card.
+   */
+  signerPubkey?: string;
   tags?: string[][];
   timeLabel?: string;
 };
@@ -80,6 +98,7 @@ export type InboxContextMessage = InboxReply & {
   depth: number;
   isSelected: boolean;
   mentionNames: string[];
+  mentionPubkeysByName?: Record<string, string>;
 };
 
 export type InboxGroup = {
@@ -293,6 +312,19 @@ function categoryPriority(category: FeedItemCategory) {
 function getInboxThreadKey(item: FeedItem) {
   const thread = getThreadReference(item.tags);
   return thread.rootId ?? thread.parentId ?? item.id;
+}
+
+/**
+ * Returns the stable conversation ID for any FeedItem or relay event: the
+ * NIP-10 root tag id, falling back to parent-reply tag id, then event id.
+ * This is the same derivation used by `buildInboxItems` for `conversationId`.
+ */
+export function getInboxConversationId(
+  tags: string[][],
+  eventId: string,
+): string {
+  const thread = getThreadReference(tags);
+  return thread.rootId ?? thread.parentId ?? eventId;
 }
 
 function getReferencedBountyId(
@@ -566,9 +598,11 @@ export function buildInboxItems({
     threadGroups.set(threadKey, group);
   }
 
-  return [...threadGroups.values()]
-    .sort((left, right) => right.latestActivityAt - left.latestActivityAt)
-    .map((group) => {
+  return [...threadGroups.entries()]
+    .sort(
+      ([, left], [, right]) => right.latestActivityAt - left.latestActivityAt,
+    )
+    .map(([conversationId, group]) => {
       const latestItem = group.items.reduce((latest, current) =>
         current.createdAt > latest.createdAt ? current : latest,
       );
@@ -584,12 +618,15 @@ export function buildInboxItems({
       });
       const subject = feedHeadline(item);
       const preview = feedPreview(item);
-      const mentionNames = resolveMentionNames(item.tags, profiles) ?? [];
       const bounty = buildInboxBountyForItem({
         currentPubkey,
         groupItems: group.items,
         item,
       });
+      const { mentionNames, mentionPubkeysByName } = resolveMentionProps(
+        item.tags,
+        profiles,
+      );
       const groupChannel = resolveGroupChannel(item, group.items, channelById);
       const channelLabel = groupChannel.name;
       const displayItem: FeedItem = {
@@ -601,6 +638,7 @@ export function buildInboxItems({
 
       return {
         avatarUrl: profiles?.[item.pubkey.toLowerCase()]?.avatarUrl ?? null,
+        conversationId,
         id: item.id,
         item: displayItem,
         categories,
@@ -610,8 +648,9 @@ export function buildInboxItems({
         groupItems: group.items,
         isActionRequired: categories.includes("needs_action"),
         latestActivityAt: group.latestActivityAt,
-        mentionNames,
         bounty,
+        mentionNames: mentionNames ?? [],
+        mentionPubkeysByName,
         preview,
         senderLabel,
         subject,

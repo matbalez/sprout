@@ -1,42 +1,42 @@
 export const personaLibraryCopy = {
   title: "My agents",
   description:
-    "The personas you have chosen for this app. Use them to create teams and launch agents.",
+    "The agents you have chosen for this app. Use them to create teams and launch agents.",
   chooseFromCatalog: "Choose from catalog",
   createNew: "New agent",
-  customAgent: "Custom agent",
-  import: "Import",
+  import: "Import snapshot",
   emptyTitle: "No agents yet",
   emptyDescription:
-    "Create a new agent, choose one from the catalog, or import one to get started.",
+    "Choose one from Agent Catalog, create your own, or import one to get started.",
   emptyImportHint:
-    "Or drop a .persona.md, .persona.json, .persona.png, or .zip file here to import.",
+    "Or drop an .agent.json or .agent.png snapshot here to import.",
 } as const;
 
 export const personaCatalogCopy = {
-  title: "Persona Catalog",
-  description: "Choose which built-in personas belong in My Agents.",
-  dialogTitle: "Choose from Persona Catalog",
-  dialogDescription:
-    "Select the built-in personas you want available in My Agents.",
+  title: "Agent Catalog",
+  description: "Browse built-in agents and add them to My Agents.",
+  dialogTitle: "Agent Catalog",
+  dialogDescription: "Browse built-in agents and add them to My Agents.",
   emptyTitle: "You're all set",
-  emptyDescription: "Everything in Persona Catalog is already in My Agents.",
+  emptyDescription: "Everything in Agent Catalog is already in My Agents.",
   emptyCatalogDescription:
-    "New personas will show up here when the app ships more options.",
-  emptyCatalogTitle: "No personas in the catalog yet",
+    "New agents will show up here when the app ships more options.",
+  emptyCatalogTitle: "No agents in the catalog yet",
   detailsAction: "View details",
   selectAction: "Choose",
-  deselectAction: "Selected",
+  deselectAction: "Deselect",
   selectedState: "Selected",
   availableState: "Available",
   detailSelectedTitle: "Selected for My Agents",
   detailSelectedDescription:
-    "Turn this off to remove the persona from teams and agent creation in this app.",
-  detailAvailableTitle: "Available in Persona Catalog",
+    "Turn this off to remove the agent from teams and agent creation in this app.",
+  detailAvailableTitle: "Available in Agent Catalog",
   detailAvailableDescription:
-    "Turn this on to make the persona available for teams and agent creation.",
+    "Turn this on to make the agent available for teams and agent creation.",
+  useAction: "Add agent",
+  addedAction: "Added to My Agents",
   teamEmptyState:
-    "No personas in My Agents yet. Create one or choose one from Persona Catalog first.",
+    "No agents in My Agents yet. Create one or choose one from Agent Catalog first.",
 } as const;
 
 export function getPersonaCatalogSelectionActionCopy(isActive: boolean) {

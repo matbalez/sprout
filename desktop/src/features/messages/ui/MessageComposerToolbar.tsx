@@ -17,7 +17,6 @@ import { ComposerEmojiPicker } from "./ComposerEmojiPicker";
 import {
   FormattingToolbar,
   isSpoilerFormattingActive,
-  type SpoilerToggleState,
   toggleSpoilerFormatting,
 } from "./FormattingToolbar";
 import { SelectionFormattingTray } from "./SelectionFormattingTray";
@@ -75,7 +74,7 @@ export const MessageComposerToolbar = React.memo(
     onLinkButton: () => void;
     onOpenMentionPicker: () => void;
     onPaperclip: () => void;
-    onSpoilerToggle?: (state: SpoilerToggleState) => void;
+    onSpoilerToggle?: () => void;
     kudosDisabled: boolean;
     bountyDisabled: boolean;
     sendDisabled: boolean;
@@ -106,7 +105,8 @@ export const MessageComposerToolbar = React.memo(
 
     const handleSpoilerClick = React.useCallback(() => {
       if (!editor) return;
-      onSpoilerToggle?.(toggleSpoilerFormatting(editor));
+      toggleSpoilerFormatting(editor);
+      onSpoilerToggle?.();
     }, [editor, onSpoilerToggle]);
 
     return (
@@ -145,7 +145,7 @@ export const MessageComposerToolbar = React.memo(
                   exit={{ x: 8, opacity: 0 }}
                   transition={presenceSpring}
                 >
-                  <Tooltip>
+                  <Tooltip disableHoverableContent>
                     <TooltipTrigger asChild>
                       <Button
                         aria-label="Toggle formatting"
@@ -170,7 +170,7 @@ export const MessageComposerToolbar = React.memo(
                   exit={{ opacity: 0, scale: 0.95 }}
                   transition={{ ...presenceSpring, delay: 0.15 }}
                 >
-                  <Tooltip>
+                  <Tooltip disableHoverableContent>
                     <TooltipTrigger asChild>
                       <Button
                         aria-label="Close formatting"
@@ -215,7 +215,8 @@ export const MessageComposerToolbar = React.memo(
                 exit={{ opacity: 0, x: -12 }}
                 transition={presenceSpring}
               >
-                <Tooltip>
+                {/* disableHoverableContent keeps tooltips from lingering over the editor. */}
+                <Tooltip disableHoverableContent>
                   <TooltipTrigger asChild>
                     <Button
                       aria-label="Mention someone"
@@ -232,7 +233,7 @@ export const MessageComposerToolbar = React.memo(
                   </TooltipTrigger>
                   <TooltipContent>Mention someone</TooltipContent>
                 </Tooltip>
-                <Tooltip>
+                <Tooltip disableHoverableContent>
                   <TooltipTrigger asChild>
                     <Button
                       aria-label="Attach image"
@@ -335,7 +336,7 @@ export const MessageComposerToolbar = React.memo(
                   exit={{ x: -8, opacity: 0 }}
                   transition={presenceSpring}
                 >
-                  <Tooltip>
+                  <Tooltip disableHoverableContent>
                     <TooltipTrigger asChild>
                       <Button
                         aria-label="Toggle formatting"

@@ -6,7 +6,10 @@ import {
   hasNestedThreadBranches,
   type MainTimelineEntry,
 } from "@/features/messages/lib/threadPanel";
-import { hasSameMessageAuthor } from "@/features/messages/lib/messageGrouping";
+import {
+  hasSameMessageAuthor,
+  isWithinGroupingWindow,
+} from "@/features/messages/lib/messageGrouping";
 import type { ImetaMedia } from "@/features/messages/lib/imetaMediaMarkdown";
 import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
 import type { TimelineMessage } from "@/features/messages/types";
@@ -35,7 +38,6 @@ import { useAnchoredScroll } from "./useAnchoredScroll";
 import { selectDeferredListRenderState } from "@/features/messages/lib/timelineSnapshot";
 
 type MessageThreadPanelProps = {
-  agentPubkeys?: ReadonlySet<string>;
   channel: Channel | null;
   channelId: string | null;
   channelName: string;
@@ -70,6 +72,11 @@ type MessageThreadPanelProps = {
     mentionPubkeys: string[],
     mediaTags?: string[][],
     options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    channelId?: string | null,
+    threadContext?: {
+      parentEventId: string | null;
+      threadHeadId: string | null;
+    } | null,
   ) => Promise<void>;
   onToggleReaction?: (
     message: TimelineMessage,
@@ -82,6 +89,7 @@ type MessageThreadPanelProps = {
   scrollTargetId: string | null;
   threadHead: TimelineMessage | null;
   threadReplies: MainTimelineEntry[];
+  threadRepliesPending?: boolean;
   threadUnreadCount?: number;
   threadReplyUnreadCounts?: ReadonlyMap<string, number>;
   threadTypingPubkeys: string[];
@@ -93,6 +101,15 @@ type MessageThreadPanelProps = {
   isMessageUnreadById?: (messageId: string) => boolean;
   onFollowThread?: () => void;
   onUnfollowThread?: () => void;
+  /**
+   * When set to `thread:<threadHead.id>`, the thread composer auto-submits
+   * once on mount (Send-from-drafts flow). Must be cleared by
+   * `onAutoSubmitComplete` before `submitMessage` fires so the param cannot
+   * re-trigger on back-navigation.
+   */
+  autoSendDraftKey?: string | null;
+  /** Called when the thread-composer auto-submit fires so the parent can clear the trigger. */
+  onAutoSubmitComplete?: () => void;
 };
 
 const EMPTY_THREAD_REPLIES: MainTimelineEntry[] = [];
@@ -280,7 +297,6 @@ export function MessageThreadPanelSkeleton({
 }
 
 export function MessageThreadPanel({
-  agentPubkeys,
   channel,
   channelId,
   channelName,
@@ -318,12 +334,15 @@ export function MessageThreadPanel({
   threadHead,
   threadHeadVideoReviewContext,
   threadReplies,
+  threadRepliesPending = false,
   threadUnreadCount,
   threadReplyUnreadCounts,
   threadTypingPubkeys,
   toolbarExtraActions,
   widthPx,
   transparentChrome = false,
+  autoSendDraftKey = null,
+  onAutoSubmitComplete,
 }: MessageThreadPanelProps) {
   const threadBodyRef = React.useRef<HTMLDivElement>(null);
   const threadContentRef = React.useRef<HTMLDivElement>(null);
@@ -341,6 +360,19 @@ export function MessageThreadPanel({
     threadBodyRef,
     threadComposerWrapperRef,
     isSinglePanelView,
+  );
+
+  // Live ref so onCaptureSendContext can read reply state at submit time
+  // (before any async mention-flow awaits change navigation state).
+  const replyTargetMessageRef = React.useRef(replyTargetMessage);
+  replyTargetMessageRef.current = replyTargetMessage;
+
+  const onCaptureSendContext = React.useCallback(
+    () => ({
+      parentEventId: replyTargetMessageRef.current?.id ?? threadHeadId,
+      threadHeadId,
+    }),
+    [threadHeadId],
   );
 
   const collapseThreadHeadReplies = React.useCallback(() => {
@@ -528,7 +560,11 @@ export function MessageThreadPanel({
       const isContinuation =
         !startsUnreadSection &&
         entry.summary === null &&
-        hasSameMessageAuthor(previousGroupMessage, entry.message);
+        hasSameMessageAuthor(previousGroupMessage, entry.message) &&
+        isWithinGroupingWindow(
+          previousGroupMessage?.createdAt,
+          entry.message.createdAt,
+        );
 
       if (connectsToVisibleChild && !entry.summary) {
         ancestorStack.push({ index, message: entry.message });
@@ -556,7 +592,7 @@ export function MessageThreadPanel({
     useAnchoredScroll({
       channelId: threadHeadId,
       contentRef: threadContentRef,
-      isLoading: repliesRenderState === "pending",
+      isLoading: threadRepliesPending || repliesRenderState === "pending",
       messages: threadMessages,
       onTargetReached: onScrollTargetResolved,
       scrollContainerRef: threadBodyRef,
@@ -583,7 +619,6 @@ export function MessageThreadPanel({
           <div className="rounded-2xl">
             <MessageRow
               actionBarPlacement="inside"
-              agentPubkeys={agentPubkeys}
               channelId={channelId}
               huddleMemberPubkeys={huddleMemberPubkeys}
               huddleMemberPubkeysPending={huddleMemberPubkeysPending}
@@ -631,7 +666,15 @@ export function MessageThreadPanel({
           className={cn(THREAD_PANEL_MESSAGE_GUTTER_CLASS, "pb-3 pt-0")}
           data-testid="message-thread-replies"
         >
-          {repliesRenderState === "list" ? (
+          {threadRepliesPending ? (
+            <div
+              className="space-y-2.5 pt-1"
+              data-testid="message-thread-replies-loading"
+            >
+              <ThreadMessageSkeleton />
+              <ThreadMessageSkeleton />
+            </div>
+          ) : repliesRenderState === "list" ? (
             visibleThreadHeadSummary ? (
               <div
                 className="space-y-0"
@@ -693,7 +736,6 @@ export function MessageThreadPanel({
                     >
                       {showUnreadDivider ? <UnreadDivider /> : null}
                       <MessageRow
-                        agentPubkeys={agentPubkeys}
                         channelId={channelId}
                         collapseDepthGuideActions={collapseDepthGuideActions}
                         collapseDescendantsLabel="Collapse replies"
@@ -848,10 +890,13 @@ export function MessageThreadPanel({
             containerClassName={THREAD_PANEL_COMPOSER_GUTTER_CLASS}
             disabled={disabled || isSending || !channelId}
             draftKey={`thread:${threadHead.id}`}
+            autoSubmitDraftKey={autoSendDraftKey}
+            onAutoSubmitComplete={onAutoSubmitComplete}
             editTarget={editTarget}
             isSending={isSending}
             onCancelEdit={onCancelEdit}
             onCancelReply={composerReplyTarget ? onCancelReply : undefined}
+            onCaptureSendContext={onCaptureSendContext}
             onEditLastOwnMessage={onEditLastOwnMessage}
             onEditSave={onEditSave}
             onSend={onSend}

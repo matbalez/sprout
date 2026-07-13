@@ -1,5 +1,5 @@
 import { formatBitcoinAmount } from "@/features/wallet/api";
-import { getUserProfile } from "@/shared/api/tauri";
+import { getUserProfile } from "@/shared/api/tauriProfiles";
 
 function shortPubkey(pubkey: string) {
   return `${pubkey.slice(0, 8)}...${pubkey.slice(-4)}`;

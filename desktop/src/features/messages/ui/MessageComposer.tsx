@@ -5,6 +5,7 @@ import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
 import { useComposerAutofocus } from "@/features/messages/lib/useComposerAutofocus";
 import type { ChannelSuggestion } from "@/features/messages/lib/useChannelLinks";
 import { useDrafts } from "@/features/messages/lib/useDrafts";
+import { resolveSentDraftKey } from "@/features/messages/ui/draftSubmitKey";
 import { useEmojiAutocomplete } from "@/features/messages/lib/useEmojiAutocomplete";
 import type { EmojiSuggestion } from "@/features/messages/lib/useEmojiAutocomplete";
 import { useCustomEmoji } from "@/features/custom-emoji/hooks";
@@ -18,6 +19,7 @@ import {
 } from "@/features/messages/lib/imetaMediaMarkdown";
 import { resolveBountyTargetPubkey } from "@/features/messages/lib/messageBounties";
 
+import { useAttachmentEditing } from "@/features/messages/lib/useAttachmentEditing";
 import {
   type MediaUploadController,
   useMediaUpload,
@@ -57,6 +59,7 @@ import { useComposerKudos } from "./useComposerKudos";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
 import { useMentionSendFlow } from "./useMentionSendFlow";
 import { useComposerContentState } from "./useComposerContentState";
+import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot";
 
 type MessageComposerProps = {
   channelId?: string | null;
@@ -65,6 +68,20 @@ type MessageComposerProps = {
   containerClassName?: string;
   disabled?: boolean;
   draftKey?: string;
+  /**
+   * When provided, the composer fires `submitMessage` once on mount after
+   * the draft matching this key has been loaded into the editor. This powers
+   * the "Send message" confirm-dialog flow in the Drafts panel. The callback
+   * `onAutoSubmitComplete` must clear the trigger (e.g. remove `?autoSend`
+   * from the URL) — it is called synchronously before `submitMessage` fires
+   * so the param is gone before any navigation the send might cause.
+   *
+   * Fires at most once per mount: a stable key value that persists across
+   * re-renders does NOT re-fire.
+   */
+  autoSubmitDraftKey?: string | null;
+  /** Called when the auto-submit fires so the parent can clear the trigger. */
+  onAutoSubmitComplete?: () => void;
   editTarget?: {
     author: string;
     body: string;
@@ -85,11 +102,26 @@ type MessageComposerProps = {
    */
   onEditLastOwnMessage?: () => boolean;
   onEditSave?: (content: string, mediaTags?: string[][]) => Promise<void>;
+  /**
+   * Called synchronously at the start of `submitMessage`, before any awaits,
+   * to capture context that must be stable throughout the async send pipeline.
+   * Used by the thread-reply composer to capture the current reply target before
+   * the mention-flow awaits can change navigation state.
+   */
+  onCaptureSendContext?: () => {
+    parentEventId: string | null;
+    threadHeadId: string | null;
+  } | null;
   onSend: (
     content: string,
     mentionPubkeys: string[],
     mediaTags?: string[][],
     options?: { bountyAmountSats?: number | null; kudos?: boolean },
+    channelId?: string | null,
+    threadContext?: {
+      parentEventId: string | null;
+      threadHeadId: string | null;
+    } | null,
   ) => Promise<void>;
   paymentAnnotation?: React.ReactNode;
   placeholder?: string;
@@ -112,10 +144,13 @@ function MessageComposerImpl({
   containerClassName,
   disabled = false,
   draftKey,
+  autoSubmitDraftKey = null,
+  onAutoSubmitComplete,
   editTarget = null,
   isSending = false,
   onCancelEdit,
   onCancelReply,
+  onCaptureSendContext,
   onEditLastOwnMessage,
   onEditSave,
   onSend,
@@ -143,6 +178,8 @@ function MessageComposerImpl({
   const [spoileredAttachmentUrls, setSpoileredAttachmentUrls] = React.useState<
     Set<string>
   >(() => new Set());
+  const spoileredAttachmentUrlsRef = React.useRef(spoileredAttachmentUrls);
+  spoileredAttachmentUrlsRef.current = spoileredAttachmentUrls;
 
   const handleFormattingToggle = React.useCallback((pressed: boolean) => {
     if (pressed) setIsEmojiPickerOpen(false);
@@ -151,7 +188,6 @@ function MessageComposerImpl({
 
   const drafts = useDrafts();
   const effectiveDraftKey = draftKey ?? channelId;
-  const previousDraftKeyRef = React.useRef<string | null>(null);
   const effectiveDraftKeyRef = React.useRef(effectiveDraftKey);
   effectiveDraftKeyRef.current = effectiveDraftKey;
   // Snapshot composer state before edit mode so cancel can restore it.
@@ -177,6 +213,41 @@ function MessageComposerImpl({
   const internalMedia = useMediaUpload();
   const media = mediaController ?? internalMedia;
   const ownsDropZone = mediaController === undefined;
+
+  // Draft-persist lifecycle: restore/clear content + imeta + spoilered urls on
+  // key change, and persist the outgoing draft in the cleanup. The StrictMode
+  // fix lives inside this hook — see useDraftPersistSnapshot.ts.
+  useDraftPersistLifecycle({
+    effectiveDraftKey,
+    channelId,
+    loadDraft: drafts.loadDraft,
+    persistDraft: drafts.persistDraft,
+    livePendingImeta: media.pendingImeta,
+    setPendingImeta: media.setPendingImeta,
+    setContent: (content) => {
+      setComposerContent(content);
+      richText.setContent(content);
+    },
+    clearContent: () => {
+      setComposerContent("");
+      richText.clearContent();
+    },
+    setSpoileredAttachmentUrls,
+    spoileredAttachmentUrlsRef,
+    syncComposerContentFromEditor,
+  });
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
+  React.useEffect(() => {
+    media.setUploadState({ status: "idle" });
+    setIsKudosActive(false);
+    setBountyAmountSats(null);
+    setSendError(null);
+    setIsEmojiPickerOpen(false);
+    mentions.clearMentions();
+    channelLinks.clearChannels();
+    emojiAutocomplete.clearEmojis();
+  }, [effectiveDraftKey]);
 
   const disabledRef = React.useRef(disabled);
   const isSendingRef = React.useRef(isSending);
@@ -211,6 +282,7 @@ function MessageComposerImpl({
   const onLinkSelectionChangeRef = React.useRef<
     ((info: LinkSelectionInfo | null) => void) | null
   >(null);
+  const onLinkShortcutRef = React.useRef<(() => boolean) | null>(null);
 
   const scrollComposerToBottom = React.useCallback(() => {
     window.requestAnimationFrame(() => {
@@ -245,6 +317,7 @@ function MessageComposerImpl({
     isAutocompleteOpen: isAutocompleteOpenRef,
     onEditLink: (info) => onEditLinkRef.current?.(info),
     onLinkSelectionChange: (info) => onLinkSelectionChangeRef.current?.(info),
+    onLinkShortcut: () => onLinkShortcutRef.current?.() ?? false,
     onUpdate: ({ cursor, text }) => {
       setComposerContentFromText(text);
 
@@ -287,6 +360,7 @@ function MessageComposerImpl({
   };
   onEditLinkRef.current = linkEditor.openFromClick;
   onLinkSelectionChangeRef.current = linkEditor.showFromCursor;
+  onLinkShortcutRef.current = linkEditor.openFromShortcut;
   useComposerSpoilerParticles(richText.editor, composerScrollRef);
 
   const mentionSendFlow = useMentionSendFlow({
@@ -305,43 +379,6 @@ function MessageComposerImpl({
     setPendingImeta: media.setPendingImeta,
     setSpoileredAttachmentUrls,
   });
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: effectiveDraftKey is the sole trigger
-  React.useEffect(() => {
-    const prevKey = previousDraftKeyRef.current;
-    if (prevKey) {
-      drafts.persistDraft(prevKey, syncComposerContentFromEditor());
-    }
-    previousDraftKeyRef.current = effectiveDraftKey;
-
-    const saved = effectiveDraftKey
-      ? drafts.loadDraft(effectiveDraftKey)
-      : undefined;
-    if (saved) {
-      setComposerContent(saved.content);
-      richText.setContent(saved.content);
-    } else {
-      setComposerContent("");
-      richText.clearContent();
-    }
-
-    media.setPendingImeta([]);
-    setSpoileredAttachmentUrls(new Set());
-    media.setUploadState({ status: "idle" });
-    setIsKudosActive(false);
-    setBountyAmountSats(null);
-    setSendError(null);
-    setIsEmojiPickerOpen(false);
-    mentions.clearMentions();
-    channelLinks.clearChannels();
-    emojiAutocomplete.clearEmojis();
-
-    return () => {
-      if (effectiveDraftKey) {
-        drafts.persistDraft(effectiveDraftKey, syncComposerContentFromEditor());
-      }
-    };
-  }, [effectiveDraftKey]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
   React.useEffect(() => {
@@ -613,6 +650,16 @@ function MessageComposerImpl({
       }
     }
 
+    const capturedThreadContext = onCaptureSendContext?.() ?? null;
+    // If a thread-reply composer reported no reply target at submit time,
+    // bail here rather than discovering the null later after async awaits.
+    if (
+      capturedThreadContext !== null &&
+      !capturedThreadContext.parentEventId
+    ) {
+      return;
+    }
+
     const savedContent = trimmed;
     const savedImeta = [...currentPendingImeta];
     const savedKudos = isKudosActive;
@@ -646,7 +693,17 @@ function MessageComposerImpl({
           bountyAmountSats: savedBountyAmountSats,
           kudos: savedKudos,
         },
-        sentDraftKey: effectiveDraftKeyRef.current,
+        capturedChannelId: channelId,
+        capturedThreadContext,
+        // resolveSentDraftKey checks at submit time (synchronously, before any
+        // await) whether a draft was actually persisted. If not — fast/
+        // never-persisted send — it returns null so the active draft is not
+        // cleared (nothing to clear). The function is exported and tested directly
+        // in MessageComposerDraftPredicate.test.mjs.
+        sentDraftKey: resolveSentDraftKey(
+          effectiveDraftKeyRef.current,
+          drafts.loadDraft,
+        ),
         spoileredAttachmentUrls,
         trimmed,
       });
@@ -656,8 +713,10 @@ function MessageComposerImpl({
       );
     }
   }, [
+    channelId,
     channelLinks.clearChannels,
     customEmoji,
+    drafts.loadDraft,
     emojiAutocomplete.clearEmojis,
     media.pendingImetaRef,
     media.setPendingImeta,
@@ -675,8 +734,46 @@ function MessageComposerImpl({
     spoileredAttachmentUrls,
     syncComposerContentFromEditor,
     contentRef,
+    onCaptureSendContext,
   ]);
   submitMessageRef.current = submitMessage;
+
+  // ── Auto-submit on draft send ────────────────────────────────────────────
+  // When `autoSubmitDraftKey` is set (the user clicked "Send message" in the
+  // Drafts panel and confirmed), fire `submitMessage` once after mount so the
+  // draft is sent through the real send path (mention resolution, media, etc.).
+  //
+  // Guard: only fire when the effective draft key matches the trigger so a
+  // stale URL param on a different channel never fires a spurious send.
+  //
+  // Fires at most once per mount (empty dep array after the key check) — the
+  // `onAutoSubmitComplete` callback clears the trigger before `submitMessage`
+  // runs, preventing re-fire on re-render or back-navigation.
+  const onAutoSubmitCompleteRef = React.useRef(onAutoSubmitComplete);
+  onAutoSubmitCompleteRef.current = onAutoSubmitComplete;
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally fires once on mount only
+  React.useEffect(() => {
+    if (
+      autoSubmitDraftKey === null ||
+      autoSubmitDraftKey !== effectiveDraftKey
+    ) {
+      return;
+    }
+    // Clear the trigger BEFORE firing so any navigation from the send cannot
+    // loop back with the param still present.
+    onAutoSubmitCompleteRef.current?.();
+    // Defer by one macrotask so the draft-persist lifecycle effect (which runs
+    // synchronously after mount) has a chance to load the draft content into
+    // the Tiptap editor before we try to submit.
+    const timer = window.setTimeout(() => {
+      submitMessageRef.current();
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount-only
 
   const handleSubmit = React.useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
@@ -860,41 +957,24 @@ function MessageComposerImpl({
     [media.removeAttachment],
   );
 
-  const handleComposerSpoilerToggle = React.useCallback(
-    ({
-      emptySelection,
-      nextSpoilered,
-    }: {
-      emptySelection: boolean;
-      nextSpoilered?: boolean;
-    }) => {
-      if (!emptySelection) return;
+  const { handleAttachmentEditSave, handleAttachmentRevert } =
+    useAttachmentEditing({
+      revertAttachment: media.revertAttachment,
+      setSpoileredAttachmentUrls,
+      uploadEditedAttachment: media.uploadEditedAttachment,
+    });
 
-      const mediaUrls = media.pendingImetaRef.current
-        .filter(
-          (attachment) =>
-            attachment.type.startsWith("image/") ||
-            attachment.type.startsWith("video/"),
-        )
-        .map((attachment) => attachment.url);
-      if (mediaUrls.length === 0) return;
-
-      setSpoileredAttachmentUrls((current) => {
-        const shouldSpoiler =
-          nextSpoilered ?? mediaUrls.some((url) => !current.has(url));
-        const next = new Set(current);
-        for (const url of mediaUrls) {
-          if (shouldSpoiler) {
-            next.add(url);
-          } else {
-            next.delete(url);
-          }
-        }
-        return next;
-      });
-    },
-    [media.pendingImetaRef],
-  );
+  const handleToggleAttachmentSpoiler = React.useCallback((url: string) => {
+    setSpoileredAttachmentUrls((current) => {
+      const next = new Set(current);
+      if (next.has(url)) {
+        next.delete(url);
+      } else {
+        next.add(url);
+      }
+      return next;
+    });
+  }, []);
 
   return (
     <>
@@ -907,7 +987,7 @@ function MessageComposerImpl({
       >
         <div
           aria-hidden="true"
-          className="absolute inset-x-0 bottom-0 h-5 bg-background"
+          className="absolute inset-x-0 bottom-0 h-5 bg-transparent"
         />
         <div className="relative flex w-full flex-col gap-0">
           <ComposerReplyEditBanner
@@ -979,7 +1059,11 @@ function MessageComposerImpl({
                   onCancelUpload={media.cancelUpload}
                   uploadingCount={media.uploadingCount}
                   uploadingPreviews={media.uploadingPreviews}
+                  onEditSave={handleAttachmentEditSave}
                   onRemove={handleRemoveAttachment}
+                  onRevert={handleAttachmentRevert}
+                  originalUrlByUrl={media.originalUrlByUrl}
+                  onToggleSpoiler={handleToggleAttachmentSpoiler}
                   spoileredUrls={spoileredAttachmentUrls}
                 />
               </div>
@@ -1059,9 +1143,7 @@ function MessageComposerImpl({
               onLinkButton={linkEditor.openFromToolbar}
               onOpenMentionPicker={openMentionPicker}
               onPaperclip={handlePaperclipClick}
-              onSpoilerToggle={handleComposerSpoilerToggle}
               sendDisabled={sendDisabled}
-              spoilerActive={spoileredAttachmentUrls.size > 0}
             />
           </form>
           <ComposerBountyDialog

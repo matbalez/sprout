@@ -35,6 +35,7 @@ import {
 } from "@/features/channels/hooks";
 import { compareMembersByRole } from "@/features/channels/lib/memberUtils";
 import {
+  DEFAULT_EPHEMERAL_TTL_SECONDS,
   formatTtlDuration,
   parseTtlDuration,
 } from "@/features/channels/lib/ephemeralChannel";
@@ -99,8 +100,6 @@ type ChannelManagementSheetProps = {
   open: boolean;
   transparentChrome?: boolean;
 };
-
-const DEFAULT_EPHEMERAL_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export function ChannelManagementSheet({
   animateSplitEnter = false,
@@ -387,14 +386,15 @@ export function ChannelManagementSheet({
           </DialogPrimitive.Portal>
         ) : null}
         {isSplitLayout ? (
+          // No translucent backdrop-blur surface here: `backdrop-filter`
+          // creates a stacking context that traps the z-40 panel header below
+          // the shared z-30 header blur strip in split layout. The pane sits on
+          // the opaque `bg-background` from PANEL_BASE_CLASS instead.
           <DialogPrimitive.Content
             className={cn(
               PANEL_BASE_CLASS,
               "h-full w-full cursor-default overflow-hidden border-l-0 p-0",
               animateSplitEnter && PANEL_ENTER_MOTION_CLASS,
-              isDark
-                ? "bg-background/85 backdrop-blur-xl supports-backdrop-filter:bg-background/75"
-                : "bg-background",
             )}
             data-testid="channel-management-sheet"
             onEscapeKeyDown={(event) => event.preventDefault()}
