@@ -704,6 +704,7 @@ pub async fn create_managed_agent(
                     .map(str::to_string)
             }),
             persona_source_version: snapshot_source_version,
+            mcp_toolsets: None,
             // Provider agents are managed externally — force false.
             start_on_app_launch: if input.backend != BackendKind::Local {
                 false
