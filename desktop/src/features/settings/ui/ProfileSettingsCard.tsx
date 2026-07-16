@@ -13,7 +13,17 @@ import {
   useUpdateProfileMutation,
 } from "@/features/profile/hooks";
 import { NsecMaskedDisplay } from "@/features/onboarding/ui/NsecMaskedDisplay";
-import { getNsec } from "@/shared/api/tauriIdentity";
+import { getNsec, signOut } from "@/shared/api/tauriIdentity";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/shared/ui/alert-dialog";
 import { MaskedAvatarBadgeFrame } from "@/features/profile/ui/MaskedAvatarBadgeFrame";
 import { ProfileAvatar } from "@/features/profile/ui/ProfileAvatar";
 import {
@@ -21,6 +31,7 @@ import {
   parseEmojiAvatarDataUrl,
 } from "@/features/profile/ui/ProfileAvatarEditor";
 import { cn } from "@/shared/lib/cn";
+import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Spinner } from "@/shared/ui/spinner";
 import { Textarea } from "@/shared/ui/textarea";
@@ -250,11 +261,15 @@ export function ProfileSettingsCard({
   const [shouldRenderAvatarEditor, setShouldRenderAvatarEditor] =
     React.useState(false);
   const [avatarSquishKey, setAvatarSquishKey] = React.useState(0);
+  const [isSignOutOpen, setIsSignOutOpen] = React.useState(false);
+  const [isSignOutPending, setIsSignOutPending] = React.useState(false);
   const displayNameInputRef = React.useRef<HTMLInputElement>(null);
   const aboutTextareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const sectionRef = React.useRef<HTMLElement>(null);
   const isEditingProfileMetadataRef = React.useRef(false);
   const avatarEditorOpenFrameRef = React.useRef<number | null>(null);
   const avatarEditorFinishTimeoutRef = React.useRef<number | null>(null);
+  const savedScrollTopRef = React.useRef<number | null>(null);
   isEditingProfileMetadataRef.current = isEditingProfileMetadata;
 
   React.useEffect(() => {
@@ -411,14 +426,31 @@ export function ProfileSettingsCard({
     window.clearTimeout(avatarEditorFinishTimeoutRef.current);
     avatarEditorFinishTimeoutRef.current = null;
   }, []);
+  const saveScrollPosition = React.useCallback(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const scroller = el.closest<HTMLElement>("[class*='overflow-y']");
+    if (scroller) savedScrollTopRef.current = scroller.scrollTop;
+  }, []);
+  const restoreScrollPosition = React.useCallback(() => {
+    const saved = savedScrollTopRef.current;
+    if (saved == null) return;
+    savedScrollTopRef.current = null;
+    const el = sectionRef.current;
+    if (!el) return;
+    const scroller = el.closest<HTMLElement>("[class*='overflow-y']");
+    if (scroller) scroller.scrollTop = saved;
+  }, []);
   const closeAvatarEditor = React.useCallback(() => {
     clearAvatarEditorFinishTimeout();
     setIsAvatarEditorOpen(false);
     setIsAvatarEditorFinishing(false);
-  }, [clearAvatarEditorFinishTimeout]);
+    restoreScrollPosition();
+  }, [clearAvatarEditorFinishTimeout, restoreScrollPosition]);
   const completeAvatarEditorClose = React.useCallback(() => {
     setIsAvatarEditorOpen(false);
     clearAvatarEditorFinishTimeout();
+    restoreScrollPosition();
     avatarEditorFinishTimeoutRef.current = window.setTimeout(
       () => {
         avatarEditorFinishTimeoutRef.current = null;
@@ -426,7 +458,11 @@ export function ProfileSettingsCard({
       },
       shouldReduceMotion ? 0 : AVATAR_EDITOR_TRANSITION_MS,
     );
-  }, [clearAvatarEditorFinishTimeout, shouldReduceMotion]);
+  }, [
+    clearAvatarEditorFinishTimeout,
+    restoreScrollPosition,
+    shouldReduceMotion,
+  ]);
   const reopenAvatarEditorAfterClose = React.useCallback(() => {
     clearAvatarEditorFinishTimeout();
     setShouldRenderAvatarEditor(true);
@@ -435,6 +471,7 @@ export function ProfileSettingsCard({
   }, [clearAvatarEditorFinishTimeout]);
 
   const openAvatarEditor = React.useCallback(() => {
+    saveScrollPosition();
     setShouldRenderAvatarEditor(true);
     setIsAvatarEditorFinishing(false);
     clearAvatarEditorFinishTimeout();
@@ -447,7 +484,7 @@ export function ProfileSettingsCard({
       avatarEditorOpenFrameRef.current = null;
       setIsAvatarEditorOpen(true);
     });
-  }, [clearAvatarEditorFinishTimeout]);
+  }, [clearAvatarEditorFinishTimeout, saveScrollPosition]);
 
   const saveProfile = React.useCallback(async () => {
     if (!canSave) {
@@ -535,7 +572,11 @@ export function ProfileSettingsCard({
   }, []);
 
   return (
-    <section className="min-w-0" data-testid="settings-profile">
+    <section
+      className="min-w-0"
+      data-testid="settings-profile"
+      ref={sectionRef}
+    >
       <div>
         <SettingsSectionHeader
           title="Profile"
@@ -731,9 +772,9 @@ export function ProfileSettingsCard({
                           data-testid="profile-metadata-card"
                         >
                           <div className="flex min-h-14 items-center justify-between gap-4 px-4 py-3">
-                            <h3 className="text-sm font-medium">
+                            <h2 className="text-lg font-semibold tracking-tight">
                               Profile info
-                            </h3>
+                            </h2>
                             <EditProfileMetadataButton
                               disabled={updateProfileMutation.isPending}
                               isEditing={isEditingProfileMetadata}
@@ -825,9 +866,9 @@ export function ProfileSettingsCard({
                               data-testid="profile-identity-toggle"
                             >
                               <div className="min-w-0">
-                                <h3 className="text-sm font-medium">
+                                <h2 className="text-lg font-semibold tracking-tight">
                                   Identity
-                                </h3>
+                                </h2>
                                 <p className="mt-1 text-sm font-normal text-muted-foreground">
                                   Your keypair and NIP-05 handle are fixed for
                                   this device.
@@ -912,6 +953,75 @@ export function ProfileSettingsCard({
             </form>
           </div>
         </div>
+      </div>
+
+      <div
+        className="mt-8 border-t border-border/60 pb-6 pt-5"
+        data-testid="settings-signout"
+      >
+        <div className="flex items-center justify-between gap-4 px-1">
+          <div className="min-w-0 space-y-1">
+            <h2 className="text-lg font-semibold tracking-tight">Sign out</h2>
+            <p className="text-sm text-muted-foreground">
+              Removes your identity key and all local app data from this device.
+              Back up your private key (nsec) first — this cannot be undone.
+            </p>
+          </div>
+          <Button
+            className="shrink-0"
+            data-testid="signout-open-dialog"
+            disabled={isSignOutPending}
+            onClick={() => setIsSignOutOpen(true)}
+            type="button"
+            variant="destructive"
+          >
+            {isSignOutPending ? (
+              <Spinner aria-label="Signing out" className="h-4 w-4 border-2" />
+            ) : null}
+            {isSignOutPending ? "Signing out…" : "Sign Out"}
+          </Button>
+        </div>
+        <AlertDialog
+          onOpenChange={(open) => {
+            if (!open && !isSignOutPending) setIsSignOutOpen(false);
+          }}
+          open={isSignOutOpen}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Sign out and wipe all data?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will delete your identity key, all agent settings, and
+                cached data from this device, then relaunch Buzz into first-run
+                setup. Make sure you have your private key (nsec) backed up
+                before continuing — this cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isSignOutPending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive/90"
+                data-testid="signout-confirm"
+                disabled={isSignOutPending}
+                onClick={() => {
+                  setIsSignOutPending(true);
+                  // Keep the pending state if signOut() resolves before restart.
+                  signOut().catch((err: unknown) => {
+                    setIsSignOutPending(false);
+                    setIsSignOutOpen(false);
+                    toast.error(
+                      err instanceof Error ? err.message : "Sign out failed.",
+                    );
+                  });
+                }}
+              >
+                {isSignOutPending ? "Signing out…" : "Sign Out"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </section>
   );

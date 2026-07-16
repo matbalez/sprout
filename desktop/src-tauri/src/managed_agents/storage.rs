@@ -40,7 +40,7 @@ pub fn managed_agents_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-fn managed_agents_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn managed_agents_store_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(managed_agents_base_dir(app)?.join("managed-agents.json"))
 }
 
@@ -384,7 +384,7 @@ fn persist_agent_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRec
 /// after the service-name change.
 #[cfg(debug_assertions)]
 pub fn migrate_agent_keys_to_dev_service(app: &tauri::AppHandle) {
-    if !cfg!(feature = "system-keyring") {
+    if !cfg!(feature = "system-keyring") || keyring_service() != "buzz-desktop-dev" {
         return;
     }
 
@@ -404,11 +404,6 @@ pub fn migrate_agent_keys_to_dev_service(app: &tauri::AppHandle) {
         .filter(|r| !r.pubkey.is_empty())
         .map(|r| r.pubkey)
         .collect();
-
-    if pubkeys.is_empty() {
-        return;
-    }
-
     // A fresh non-singleton store for the prod service — its own empty
     // cache so reads go to the OS keyring without polluting the dev
     // singleton's cache.
@@ -457,14 +452,20 @@ fn copy_agent_keys_between_stores(pubkeys: &[String], src: &impl KeyStore, dst: 
             return;
         }
     };
-
-    // One read of the prod blob.
-    let src_map: HashMap<String, String> = match src.load_all_readonly() {
-        Ok(Some(map)) => map,
-        Ok(None) => HashMap::new(), // prod has no blob yet — nothing to copy
-        Err(e) => {
-            eprintln!("buzz-desktop: keyring-dev-migration: cannot read prod keyring: {e}");
-            return;
+    // Skip production when a reset left no agents or onboarding created every dev key.
+    let src_map: HashMap<String, String> = if pubkeys
+        .iter()
+        .all(|pubkey| dst_map.contains_key(&agent_keyring_name(pubkey)))
+    {
+        HashMap::new()
+    } else {
+        match src.load_all_readonly() {
+            Ok(Some(map)) => map,
+            Ok(None) => HashMap::new(), // prod has no blob yet — nothing to copy
+            Err(e) => {
+                eprintln!("buzz-desktop: keyring-dev-migration: cannot read prod keyring: {e}");
+                return;
+            }
         }
     };
 
@@ -500,13 +501,23 @@ fn copy_agent_keys_between_stores(pubkeys: &[String], src: &impl KeyStore, dst: 
     }
 }
 
+/// Remove an agent's key from the keyring, returning an error on failure.
+/// Used by the snapshot-import rollback path, which must surface cleanup
+/// failures rather than swallowing them.
+pub(crate) fn try_delete_agent_key(pubkey: &str) -> Result<(), String> {
+    if let Some(store) = agent_secret_store() {
+        store.delete(&agent_keyring_name(pubkey))
+    } else {
+        // No keyring backend — nothing to clean up.
+        Ok(())
+    }
+}
+
 /// Remove an agent's key from the keyring (best-effort). Called when an agent
 /// is deleted so its secret does not linger in the OS store.
 pub fn delete_agent_key(pubkey: &str) {
-    if let Some(store) = agent_secret_store() {
-        if let Err(e) = store.delete(&agent_keyring_name(pubkey)) {
-            eprintln!("buzz-desktop: failed to delete agent {pubkey} key from keyring: {e}");
-        }
+    if let Err(e) = try_delete_agent_key(pubkey) {
+        eprintln!("buzz-desktop: failed to delete agent {pubkey} key from keyring: {e}");
     }
 }
 
@@ -1204,6 +1215,7 @@ mod tests {
             Some("done"),
             "marker must be set even when all keys are already present"
         );
+        assert_eq!(*src.read_count.borrow(), 0);
     }
 
     #[test]
@@ -1306,5 +1318,17 @@ mod tests {
             Some("done"),
             "marker must be set even when pubkey list is empty"
         );
+        assert_eq!(*src.read_count.borrow(), 0);
+    }
+
+    #[test]
+    fn try_delete_agent_key_returns_result() {
+        // Verify the result-returning seam exists and has the correct signature.
+        // We cannot call it in default builds (system-keyring feature is on,
+        // which accesses the real OS keychain and blocks in headless/CI). The
+        // real keychain paths are integration-tested through the #[ignore]
+        // tests in secret_store.rs; the rollback aggregation is tested in
+        // team_snapshot::tests::rollback_aggregates_multiple_errors.
+        let _: fn(&str) -> Result<(), String> = super::try_delete_agent_key;
     }
 }

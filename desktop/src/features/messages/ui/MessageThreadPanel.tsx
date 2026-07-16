@@ -884,6 +884,10 @@ export function MessageThreadPanel({
       >
         <div className="pointer-events-auto">
           <MessageComposer
+            audienceContext={{
+              type: "thread",
+              threadRootId: threadHead.id,
+            }}
             channelId={channelId}
             channelName={channelName}
             channelType={channel?.channelType ?? null}

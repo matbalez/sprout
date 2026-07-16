@@ -22,10 +22,12 @@ async function storedSidebarWidth(page: Page) {
   );
 }
 
-// Regression guard for the "Leave channel" lockup: opening a modal AlertDialog
-// from a modal Radix ContextMenu leaves `pointer-events: none` stuck on <body>
-// after the dialog closes, freezing the whole app. The fix makes the sidebar
-// context menus non-modal. This asserts the app is still interactive.
+// Regression guard for the "Leave channel" lockup: with two bundled copies of
+// @radix-ui/react-dismissable-layer, opening a modal AlertDialog from a modal
+// Radix ContextMenu left `pointer-events: none` stuck on <body> after the
+// dialog closed, freezing the whole app. Fixed by the pnpm override in
+// pnpm-workspace.yaml deduplicating the layer. This asserts the app is still
+// interactive.
 async function expectAppClickable(page: Page) {
   await expect
     .poll(() =>
@@ -55,6 +57,60 @@ async function dragSidebarRail(page: Page, deltaX: number) {
   await page.mouse.up();
 }
 
+test("automatically shows relay join requirements near the relay URL", async ({
+  page,
+}) => {
+  await page.route(
+    "https://policy.example.com/api/join-policy",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          policy: {
+            terms_markdown: "# Terms",
+            privacy_markdown: "# Privacy",
+            age_attestation_required: true,
+            version: "policy-v1",
+          },
+        }),
+      });
+    },
+  );
+  await page.goto("/");
+
+  await page.getByTestId("sidebar-profile-card").click();
+  await page.getByText("Add Community", { exact: true }).click();
+  await page.getByLabel("Relay URL").fill("wss://policy.example.com");
+
+  const ageConfirmation = page.getByLabel("I am 18 years of age or older.");
+  const agreementConfirmation = page.getByLabel(
+    "I agree to the Buzz Terms of Service and Privacy Policy.",
+  );
+  await expect(ageConfirmation).toBeVisible();
+  await expect(agreementConfirmation).toBeVisible();
+  await expect(
+    page.getByText("Review this relay's join policy below."),
+  ).toHaveCount(0);
+  await expect(page.getByText(/By continuing, you agree/)).toHaveCount(0);
+
+  const addCommunityButton = page.getByRole("button", {
+    name: "Add Community",
+  });
+  await expect(addCommunityButton).toBeDisabled();
+  await ageConfirmation.check();
+  await expect(ageConfirmation.locator("svg path")).toBeVisible();
+  await expect(addCommunityButton).toBeDisabled();
+  await agreementConfirmation.check();
+  await expect(addCommunityButton).toBeEnabled();
+
+  const consentBox = await agreementConfirmation.boundingBox();
+  const reposInput = await page.locator("#ws-repos-dir").boundingBox();
+  const addButtonBox = await addCommunityButton.boundingBox();
+  expect(consentBox?.y).toBeGreaterThan(reposInput?.y ?? Number.MAX_VALUE);
+  expect(consentBox?.y).toBeLessThan(addButtonBox?.y ?? 0);
+});
+
 test("leaving a channel from the context menu never freezes the app", async ({
   page,
 }) => {
@@ -78,7 +134,15 @@ test("leaving a channel from the context menu never freezes the app", async ({
   await expectAppClickable(page);
 });
 
-test("fades the pinned sidebar chrome edges", async ({ page }) => {
+test("fades the pinned sidebar chrome edges outside the Buzz theme", async ({
+  page,
+}) => {
+  // The Buzz default theme repaints the pinned header/footer with the
+  // sidebar gradient and drops the edge-fade pseudo-elements, so the fade
+  // treatment under test only exists on non-Buzz themes.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "github-light");
+  });
   await page.goto("/");
 
   const pinnedHeader = page.getByTestId("sidebar-pinned-header");
@@ -326,6 +390,55 @@ test("shows a sidebar update card when an update is ready", async ({
   expect(commands.indexOf("plugin:updater|install")).toBeLessThan(
     commands.indexOf("plugin:process|restart"),
   );
+});
+
+// Regression test for the sidebar card not reflecting an install started from
+// another surface (follow-up to #1820). The header UpdateIndicator and the
+// sidebar compact card both render in the "ready" state; starting the install
+// from the header must flip the sidebar card's copy too, not just the header's.
+test("reflects an install started from the header update button on the sidebar card", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByTestId("app-sidebar")).toBeVisible();
+
+  await page.evaluate(() => {
+    const testWindow = window as Window & {
+      __BUZZ_E2E__?: { mock?: { updateAvailable?: boolean } };
+    };
+
+    testWindow.__BUZZ_E2E__ = {
+      ...(testWindow.__BUZZ_E2E__ ?? {}),
+      mock: {
+        ...(testWindow.__BUZZ_E2E__?.mock ?? {}),
+        restartDelayMs: 500,
+        updateAvailable: true,
+      },
+    };
+  });
+
+  await page.getByTestId("sidebar-profile-card").click();
+  await page.getByTestId("profile-popover-settings").click();
+  await page.getByTestId("settings-nav-updates").click();
+  await page.getByRole("button", { name: "Check for Updates" }).click();
+  await expect(page.getByTestId("settings-panel-updates")).toContainText(
+    "Update downloaded. Click to apply.",
+  );
+  await page.getByTestId("settings-back-to-app").click();
+
+  await page.getByTestId("channel-general").click();
+
+  const updateCard = page.getByTestId("sidebar-update-card");
+  await expect(updateCard).toBeVisible();
+  await expect(updateCard).toContainText("Click to update");
+
+  await page
+    .getByTestId("chat-header")
+    .getByRole("button", { name: "Update now" })
+    .click();
+
+  await expect(updateCard).toContainText("Updating");
+  await expect(page.getByTestId("sidebar-update-now")).toBeDisabled();
 });
 
 // Regression test for the Linux .deb auto-update guard (PR #1535).

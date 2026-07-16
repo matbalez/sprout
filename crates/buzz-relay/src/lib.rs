@@ -21,14 +21,16 @@ pub mod error;
 pub mod handlers;
 /// Stateless HMAC-signed relay invite tokens (mint/verify).
 pub mod invite_token;
-/// Relay-signed mesh-LLM status publisher.
-pub mod mesh_status_publisher;
+/// Inter-relay mesh startup wiring (`BUZZ_MESH` seam).
+pub mod mesh_boot;
 /// Prometheus metrics: recorder, upkeep, HTTP middleware.
 pub mod metrics;
 /// NIP-11 relay information document.
 pub mod nip11;
 /// NIP-01 client/relay message parsing.
 pub mod protocol;
+/// Durable NIP-PL matcher and delivery worker.
+pub mod push_runtime;
 /// Axum router construction.
 pub mod router;
 /// Shared application state.
@@ -39,6 +41,8 @@ pub mod subscription;
 pub mod telemetry;
 /// Row-zero host binding: resolve the request community from the connection host.
 pub mod tenant;
+/// Relay-side tunnel session directory and routing.
+pub mod tunnel;
 /// Webhook secret generation and constant-time comparison.
 pub mod webhook_secret;
 /// Workflow action sink — relay-side implementation of [`buzz_workflow::ActionSink`].

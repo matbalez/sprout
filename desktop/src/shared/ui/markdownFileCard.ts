@@ -19,19 +19,21 @@ export type ResolvedFileCard = {
 
 /**
  * A snapshot candidate resolved from an imeta entry.  The card shows both
- * an **Import agent** and a **Download** action.
+ * an **Import** and a **Download** action.
  *
- * `snapshotKind` is discriminated so a future `.team.*` resolver can share
- * the same routing path without adding agent-only assumptions.
+ * `snapshotKind` is discriminated so `.agent.*` and `.team.*` attachments
+ * can share the same routing path without mixing agent-only assumptions.
  */
 export type ResolvedSnapshotCard = {
+  /** Sender-provided display label, with a filename-derived fallback. */
+  displayName: string;
   href: string;
   filename: string;
   size?: number;
   /** SHA-256 hex from the imeta `x` field — required for verified fetch. */
   sha256: string;
-  /** Discriminant for the snapshot kind — currently only "agent". */
-  snapshotKind: "agent";
+  /** Discriminant for the snapshot kind. */
+  snapshotKind: "agent" | "team";
   /**
    * Optional thumbnail URL for the card icon. PNG snapshots use the
    * attachment URL because the PNG body is the avatar card image. JSON
@@ -39,6 +41,23 @@ export type ResolvedSnapshotCard = {
    */
   thumb?: string;
 };
+
+function snapshotDisplayName(filename: string, childText: string): string {
+  const label = childText.trim();
+  const labelIsSnapshotFilename = /\.agent\.(?:json|png)$/i.test(label);
+  if (label && !labelIsSnapshotFilename) return label;
+
+  const filenameStem = filename
+    .replace(/\.agent\.(?:json|png)$/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  if (!filenameStem) return "Agent";
+
+  return filenameStem
+    .split(/\s+/)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
 
 /**
  * Classify a markdown link as a snapshot candidate.
@@ -69,24 +88,31 @@ export function resolveSnapshotCard(
   const lower = filename.toLowerCase();
   const isJson = lower.endsWith(".agent.json");
   const isPng = lower.endsWith(".agent.png");
+  const isTeamJson = lower.endsWith(".team.json");
+  const isTeamPng = lower.endsWith(".team.png");
 
-  if (!isJson && !isPng) return null;
+  if (!isJson && !isPng && !isTeamJson && !isTeamPng) return null;
+
+  const isAnyPng = isPng || isTeamPng;
 
   // For PNG: MIME must be image/png when present; other MIMEs are inconsistent.
-  if (isPng && entry.m && entry.m !== "image/png") return null;
+  if (isAnyPng && entry.m && entry.m !== "image/png") return null;
 
   // SHA-256 is required for the bounded verified fetch.
   const sha256 = entry.x?.trim();
   if (sha256?.length !== 64) return null;
 
+  const snapshotKind: "agent" | "team" = isJson || isPng ? "agent" : "team";
+
   return {
-    href: rewriteRelayUrl(href),
+    displayName: snapshotDisplayName(filename, childText),
+    href,
     filename,
     size: entry.size,
     sha256,
-    snapshotKind: "agent",
-    // PNG snapshots use the attachment URL as the thumb source because it is
-    // the avatar card image. JSON snapshots use the generic icon.
+    snapshotKind,
+    // Agent PNG snapshots carry the avatar card image. Team PNG snapshots use
+    // a transport placeholder, so render the team icon instead of that image.
     thumb: isPng ? rewriteRelayUrl(href) : undefined,
   };
 }

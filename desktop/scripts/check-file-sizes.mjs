@@ -79,7 +79,8 @@ const overrides = new Map([
   // rest of this list. Mainline channel metadata tracing adds a small amount
   // while preserving the branch wallet metadata fetch.
   // Mainline paged directory helpers merged with branch paid-channel metadata.
-  ["src-tauri/src/commands/channels.rs", 1091],
+  // Production's pending-owner overlay adds the identity-safe create handoff.
+  ["src-tauri/src/commands/channels.rs", 1137],
   // agent-lifecycle-fixes: cascade-delete in delete_persona restructured into
   // 3-phase (stage/stop/commit) + commit_cascade_agents injectable helper for
   // retry-safety. Load-bearing reviewer-required change; queued to split.
@@ -115,7 +116,8 @@ const overrides = new Map([
   ["src-tauri/src/managed_agents/nest.rs", 704],
   // keyring-dev-isolation: agent key migration added copy_agent_keys_between_stores
   // and load_readonly support; file grew past 1000 default. Queued to split.
-  ["src-tauri/src/managed_agents/storage.rs", 1325],
+  // +7 for try_delete_agent_key result-returning seam (snapshot-import rollback).
+  ["src-tauri/src/managed_agents/storage.rs", 1335],
   // harness-persona-sync: persona-runtime resolution threaded into the spawn
   // path here. Load-bearing feature growth; queued to split in the resolver
   // unify refactor followup. +26 for resolve_effective_prompt_model_provider
@@ -179,7 +181,10 @@ const overrides = new Map([
   // Git Bash readiness is intentionally colocated with buzz-agent's other
   // setup-mode requirements. The Windows-only requirement and serialization
   // test add eight lines; split remains queued with the existing file debt.
-  ["src-tauri/src/managed_agents/readiness.rs", 1762],
+  // Windows Doctor install fix: cli_install_commands_windows field added to test stubs.
+  // team-instructions-first-class: ManagedAgentRecord fixture gains the new
+  // team_id field (+1 line).
+  ["src-tauri/src/managed_agents/readiness.rs", 1765],
   // applyWorkspace reposDir parameter plus the validateReposDir binding,
   // threaded through Tauri invokes for configurable repos_dir, plus the
   // harness-persona-sync `harnessOverride` create-input bit — load-bearing
@@ -212,7 +217,9 @@ const overrides = new Map([
   // RawInstallRuntimeResult + fromRawInstallRuntimeResult mapper (+2).
   // Git Bash Doctor discovery adds the raw Tauri response and its camelCase
   // mapper. This is the existing API boundary; split remains queued.
-  ["src/shared/api/tauri.ts", 1304],
+  // team-instructions-first-class: createManagedAgent Tauri bridge threads the
+  // new teamId input through to the backend (+1 line).
+  ["src/shared/api/tauri.ts", 1305],
   // doctor-npm-eacces-preflight: hint field added to InstallStepResult (+1 line).
   // codex-acp-package-swap: "adapter_outdated" variant added to AcpAvailabilityStatus (+1 line).
   // doctor-install-reliability: AuthStatus tagged union + nodeRequired/authStatus/
@@ -223,6 +230,7 @@ const overrides = new Map([
   // Git Bash prerequisite payload adds four fields to the shared Tauri API
   // contract. This is the canonical type location; split remains queued.
   // Rebase merge adds channel-window/project API types alongside wallet fields.
+  // Production sign-out and team fields are included in the merged total.
   ["src/shared/api/types.ts", 1058],
   // readiness-gate: PersonaDialog.tsx threads computeLocalModeGate +
   // requiredCredentialEnvKeys + RequiredFieldLabel so the "New agent" dialog
@@ -278,11 +286,28 @@ const overrides = new Map([
   // + updated adapter_availability_cached() signature (Option return, cold=None)
   // prevents false restart badge on newly restarted agents. Correctness fix;
   // load-bearing — required by Thufir's IMPORTANT findings. (+15 lines)
-  ["src-tauri/src/managed_agents/discovery.rs", 1245],
+  // Windows Doctor install fix: cli_install_commands_windows field, impl block
+  // for cli_install_commands_for_os(), command_basenames() + .cmd/.bat resolution,
+  // Windows well-known dirs in common_binary_paths(), login_shell_candidates(),
+  // path_candidates_from_env_raw(). Load-bearing Windows platform support.
+  // +13: fetch_login_shell_path_inner Windows guard (POSIX PATH → None).
+  // resolve_git_bash made pub(crate) for Windows test access.
+  // +1: login_shell_candidates doc comment expanded for resolve_bash_path.
+  // Buzz-managed Node path helpers and resolution tests moved to
+  // managed_node_paths.rs and discovery/tests/managed_path_resolution.rs;
+  // ratcheting 1366 -> 1392 after adding the managed-path probes to discovery.
+  ["src-tauri/src/managed_agents/discovery.rs", 1393],
   // rebase over codex-acp-package-swap: its version-probe tests union with the
   // doctor-install-reliability nvm/login-shell/semver tests — each side alone
   // stayed under the 1000 default; the union exceeds it.
-  ["src-tauri/src/managed_agents/discovery/tests.rs", 1029],
+  // Windows Doctor install fix: command_basenames, cli_install_commands_for_os,
+  // and login_shell_candidates tests. Load-bearing platform-awareness coverage.
+  // +132: pass 2 — five cfg(windows) behavioral tests: command_basenames .cmd/.bat
+  // candidates, cli_install_commands_for_os PowerShell selection, login_shell_path
+  // None regression, .cmd shim resolution, no-git-bash error hint.
+  // +32: deterministic .cmd resolver + no-registry + install_shell_from tests.
+  // Managed-path resolution test split to discovery/tests/managed_path_resolution.rs.
+  ["src-tauri/src/managed_agents/discovery/tests.rs", 1273],
   // identity-import-keyring: the identity resolution state machine's behavioral
   // matrix (46 tests over FakeIdentityStore — probe × marker × file cells,
   // adoption / read-back-corruption / marker-failure arms, recovery-mode
@@ -319,11 +344,14 @@ const overrides = new Map([
   ["src-tauri/src/lib.rs", 1092],
   // Mainline shell layout/connection overlays push the app shell just over the
   // guard; queued to split with the existing desktop shell follow-up.
-  ["src/app/AppShell.tsx", 1018],
+  ["src/app/AppShell.tsx", 1060],
   // Branch payment annotation plumbing plus mainline composer controls. Queued
   // to split with the rest of this list.
   // Mainline channel-binding send fixes merge with bounty/kudos controls.
-  ["src/features/messages/ui/MessageComposer.tsx", 1179],
+  ["src/features/messages/ui/MessageComposer.tsx", 1235],
+  // Production's channel capture/DM routing combines with branch payment,
+  // bounty, kudos, and WalletBot send paths. Queued for the message split.
+  ["src/features/messages/hooks.ts", 1002],
   // onMarkRead + isUnread prop threading (mirrors the onMarkUnread prop
   // already here) for the single-toggle mark-read/unread menu item — a small
   // overage from load-bearing per-message plumbing, not generic debt growth.
@@ -334,7 +362,7 @@ const overrides = new Map([
   ["src/features/channels/ui/ChannelManagementSheet.tsx", 1050],
   // Mainline split-panel support plus bitcoin branch paid-join/walletbot
   // plumbing. Queued to split.
-  ["src/features/channels/ui/ChannelPane.tsx", 1023],
+  ["src/features/channels/ui/ChannelPane.tsx", 1026],
   // Mainline auxiliary panel state plus bitcoin branch paid-join/walletbot
   // header totals. Queued to split with the channel pane follow-up.
   ["src/features/channels/ui/ChannelScreen.tsx", 1076],
@@ -363,7 +391,22 @@ const overrides = new Map([
   // security fix for the lost-update race that stranded agent keys.
   // identity-import-keyring: KeyringLockedScreen, RecoveryScreen,
   // load_readonly + load_all_readonly + store_all for safe cross-service reads.
-  ["src-tauri/src/secret_store.rs", 1140],
+  // sign-out wipe: delete_all() method removes the entire keychain blob under
+  // the interprocess advisory lock; +8 lines. Load-bearing; queued to split.
+  // signout-wipe phase 2: delete_all_with_legacy_cleanup replaces delete_all;
+  // reads blob keys + deletes per-key legacy entries to prevent resurrection.
+  // + regression test for per-key resurrection via real OS keychain.
+  // Net growth ~36+32 lines over prior cap. Load-bearing correctness fix.
+  // signout-wipe pass-2 (F2): delete_all_with_legacy_cleanup DPK deletes now
+  // observable (propagate real errors); verify_fully_wiped checks all three
+  // keychain shapes (main blob, DPK blob, per-key "identity"). +73 lines.
+  ["src-tauri/src/secret_store.rs", 1307],
+  // sign-out wipe: Sign Out section (AlertDialog + controlled state) added
+  // at the bottom of the Profile settings page. Load-bearing UX feature;
+  // queued to split when ProfileSettingsCard is broken into sub-components.
+  // +20 lines: scroll-position save/restore across avatar editor open/close
+  // to prevent layout shift from the Sign Out section causing a viewport jump.
+  ["src/features/settings/ui/ProfileSettingsCard.tsx", 1033],
   // keyring-dev-isolation: keyring_service() fn (7 lines) replaces the const
   // to return "buzz-desktop-dev" in debug builds. Load-bearing isolation fix.
   // Mainline session config cache is kept alongside the wallet broker state.
@@ -455,7 +498,9 @@ const overrides = new Map([
   // +2 provider-aware effort: model/provider props threaded to BuzzAgentModelTuningFields.
   // +15 provider/model dropdown fixes: useBakedBuildEnvKeysQuery + hideProviderIds
   // for Databricks v1 gate; prospectiveRuntimeId default fallback for builtins.
-  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1180],
+  // PR-B moves default/API-key derivation into shared hooks; the explicit
+  // hidden-key projection keeps the top-level secret out of Advanced rows.
+  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1195],
   // AgentDefinitionDialog grew past 1000 with the following load-bearing fixes:
   // isRuntimeAutoSeededRef tracking for edit-mode seeding (Fizz shows models);
   // runtimeSupportsLlmProviderSelection guard on discovery provider (codex fix);

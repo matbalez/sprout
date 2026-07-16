@@ -239,6 +239,11 @@ export function UserProfilePopover({
   const selfProfileQuery = useProfileQuery(open && showProfileActions);
   const isCurrentUserOwner = ownsAuthorAgent(profile, currentPubkey);
   const viewerIsOwner = isCurrentUserOwner || isOwner === true;
+  const showMessageAction =
+    showProfileActions &&
+    !isAgentClassificationPending &&
+    (!isBotProfile || viewerIsOwner);
+  const showAnyProfileActions = showHumanProfileActions || showMessageAction;
   const canViewActivity =
     isBotProfile && viewerIsOwner && canOpenAgentActivity(pubkey);
   const presenceStatus = presenceQuery.data?.[pubkey.toLowerCase()];
@@ -296,7 +301,7 @@ export function UserProfilePopover({
   );
 
   const handleMessage = React.useCallback(async () => {
-    if (!showProfileActions || pendingAction !== null) return;
+    if (!showMessageAction || pendingAction !== null) return;
 
     clearHoverTimer();
     setPendingAction("message");
@@ -324,7 +329,7 @@ export function UserProfilePopover({
     openDmMutation,
     pendingAction,
     pubkey,
-    showProfileActions,
+    showMessageAction,
   ]);
 
   const handleHuddle = React.useCallback(async () => {
@@ -613,7 +618,7 @@ export function UserProfilePopover({
             </button>
           ) : null}
 
-          {hasUserStatus || showProfileActions ? (
+          {hasUserStatus || showAnyProfileActions ? (
             <>
               <div
                 aria-hidden="true"
@@ -632,7 +637,7 @@ export function UserProfilePopover({
                   ) : null}
                 </StatusLine>
               ) : null}
-              {showProfileActions ? (
+              {showAnyProfileActions ? (
                 <div className="flex gap-2">
                   {showHumanProfileActions ? (
                     <Button
@@ -664,29 +669,31 @@ export function UserProfilePopover({
                       )}
                     </Button>
                   ) : null}
-                  <Button
-                    className="min-w-0 flex-1"
-                    data-testid={`user-profile-popover-message-${pubkey}`}
-                    disabled={
-                      pendingAction !== null || openDmMutation.isPending
-                    }
-                    onClick={() => {
-                      void handleMessage();
-                    }}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    {pendingAction === "message" ? (
-                      <Spinner
-                        aria-hidden="true"
-                        className="h-3.5 w-3.5 border-2"
-                      />
-                    ) : (
-                      <MessageSquare />
-                    )}
-                    Message
-                  </Button>
+                  {showMessageAction ? (
+                    <Button
+                      className="min-w-0 flex-1"
+                      data-testid={`user-profile-popover-message-${pubkey}`}
+                      disabled={
+                        pendingAction !== null || openDmMutation.isPending
+                      }
+                      onClick={() => {
+                        void handleMessage();
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      {pendingAction === "message" ? (
+                        <Spinner
+                          aria-hidden="true"
+                          className="h-3.5 w-3.5 border-2"
+                        />
+                      ) : (
+                        <MessageSquare />
+                      )}
+                      Message
+                    </Button>
+                  ) : null}
                   {showHumanProfileActions ? (
                     <Button
                       className="min-w-0 flex-1"

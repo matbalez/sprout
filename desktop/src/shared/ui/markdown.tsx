@@ -1340,8 +1340,13 @@ function createMarkdownComponents(
     href,
     ...props
   }: React.ComponentPropsWithoutRef<"a">) {
-    const { channels, imetaByUrl, onOpenMessageLink, onImportSnapshotFromUrl } =
-      useMarkdownRuntime();
+    const {
+      channels,
+      imetaByUrl,
+      onOpenMessageLink,
+      onImportSnapshotFromUrl,
+      snapshotSharedBy,
+    } = useMarkdownRuntime();
     if (!interactive) {
       return <span className="font-medium text-current">{children}</span>;
     }
@@ -1355,7 +1360,7 @@ function createMarkdownComponents(
 
     const label = getReactNodeText(children);
 
-    // Agent snapshot attachment: classify before generic FileCard.
+    // Snapshot attachment (agent or team): classify before generic FileCard.
     // resolveSnapshotCard checks the filename suffix + SHA-256 field.
     const snapshotCard = resolveSnapshotCard(
       href ? imetaByUrl?.get(href) : undefined,
@@ -1365,13 +1370,20 @@ function createMarkdownComponents(
     if (snapshotCard) {
       return (
         <AgentSnapshotCard
+          displayName={snapshotCard.displayName}
           href={snapshotCard.href}
           filename={snapshotCard.filename}
+          sharedBy={snapshotSharedBy}
           size={snapshotCard.size}
           sha256={snapshotCard.sha256}
+          snapshotKind={snapshotCard.snapshotKind}
           thumb={snapshotCard.thumb}
           onImport={(fileBytes, fileName) => {
-            onImportSnapshotFromUrl?.(fileBytes, fileName);
+            onImportSnapshotFromUrl?.(
+              fileBytes,
+              fileName,
+              snapshotCard.snapshotKind,
+            );
           }}
         />
       );
@@ -1817,6 +1829,7 @@ function MarkdownInner({
   mentionNames,
   mentionPubkeysByName,
   searchQuery,
+  snapshotSharedBy,
   videoReviewContext,
 }: MarkdownProps) {
   const { channels: rawChannels } = useChannelNavigation();
@@ -1860,8 +1873,13 @@ function MarkdownInner({
       mentionPubkeysByName,
       onOpenChannel,
       onOpenMessageLink,
-      onImportSnapshotFromUrl: (fileBytes: number[], fileName: string) => {
-        requestOpenSnapshotImport({ fileBytes, fileName });
+      snapshotSharedBy,
+      onImportSnapshotFromUrl: (
+        fileBytes: number[],
+        fileName: string,
+        snapshotKind: "agent" | "team",
+      ) => {
+        requestOpenSnapshotImport({ fileBytes, fileName, snapshotKind });
         void goAgents();
       },
     }),
@@ -1872,6 +1890,7 @@ function MarkdownInner({
       mentionPubkeysByName,
       onOpenChannel,
       onOpenMessageLink,
+      snapshotSharedBy,
       goAgents,
     ],
   );
@@ -1975,6 +1994,7 @@ export const Markdown = React.memo(
     prev.imetaByUrl === next.imetaByUrl &&
     prev.configNudgeAuthorPubkey === next.configNudgeAuthorPubkey &&
     prev.searchQuery === next.searchQuery &&
+    prev.snapshotSharedBy === next.snapshotSharedBy &&
     prev.videoReviewContext === next.videoReviewContext,
 );
 Markdown.displayName = "Markdown";

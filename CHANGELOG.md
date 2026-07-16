@@ -1,5 +1,120 @@
 # Changelog
 
+## v0.4.8
+
+- fix(desktop): restore default community join option ([#1969](https://github.com/block/buzz/pull/1969)) ([`a84fe13a8`](https://github.com/block/buzz/commit/a84fe13a8c419f3d2d6ff3b577b431629b8e3e07))
+- feat(desktop): refine Projects navigation and overview hierarchy ([#1956](https://github.com/block/buzz/pull/1956)) ([`158259d95`](https://github.com/block/buzz/commit/158259d953dd56ec82cdb121b2caf075df573458))
+- Log handoff token counts ([#1954](https://github.com/block/buzz/pull/1954)) ([`ca8324d2c`](https://github.com/block/buzz/commit/ca8324d2cf696f35a553b9a561dd608881920b85))
+- fix(onboarding): add Welcome finalize skip escape hatch ([#1960](https://github.com/block/buzz/pull/1960)) ([`7ed6422c1`](https://github.com/block/buzz/commit/7ed6422c1a6e26d9c13bd9c0eb5783d8e784d173))
+- Welcome channel: Browse channels card, browser sorting, shortcut hint placement ([#1948](https://github.com/block/buzz/pull/1948)) ([`f20d79658`](https://github.com/block/buzz/commit/f20d79658c7106d2d87b4513260a594a647569b7))
+
+
+## v0.4.7
+
+- feat(desktop): confirm invites with an Opening-invite loading gate before machine onboarding ([#1950](https://github.com/block/buzz/pull/1950)) ([`2510a4b4c`](https://github.com/block/buzz/commit/2510a4b4c91b54db5a3aad852c391f3974f48ebd))
+- feat(desktop): remove theme selection from onboarding, default to Buzz + System ([#1947](https://github.com/block/buzz/pull/1947)) ([`2c08271ba`](https://github.com/block/buzz/commit/2c08271ba9f12c87ded0504f0ef028d32ff6a124))
+- fix(desktop): sentence-case runtime descriptions in onboarding setup ([#1944](https://github.com/block/buzz/pull/1944)) ([`36c3c4994`](https://github.com/block/buzz/commit/36c3c4994964142a29dccee8d54669f1c3ebdd4d))
+- feat(desktop): Projects v3 — overview redesign, activity feed, agent access & sync controls ([#1851](https://github.com/block/buzz/pull/1851)) ([`72a5c388d`](https://github.com/block/buzz/commit/72a5c388d79761b22f8cf7a3c3d41a41e40768cc))
+- Rework first-launch community onboarding ([#1936](https://github.com/block/buzz/pull/1936)) ([`8688c0416`](https://github.com/block/buzz/commit/8688c0416d50341627b0533f405469308256cf6a))
+- fix(desktop): stop marking users away while active on the machine ([#1942](https://github.com/block/buzz/pull/1942)) ([`e1865cb7f`](https://github.com/block/buzz/commit/e1865cb7f7daef1275328ed684254c531def1eb5))
+- fix(desktop): variant-aware connecting gate for first-run handoffs ([#1938](https://github.com/block/buzz/pull/1938)) ([`dd39b6249`](https://github.com/block/buzz/commit/dd39b6249fc497c28cc1cc7111003ab9f8688ce0))
+- Redesign agent AI configuration and defaults ([#1935](https://github.com/block/buzz/pull/1935)) ([`2910ea45d`](https://github.com/block/buzz/commit/2910ea45de5672dc07e716864419dea7c1914b26))
+- Add Buzz-managed Node runtime for agent installs ([#1930](https://github.com/block/buzz/pull/1930)) ([`0722346b1`](https://github.com/block/buzz/commit/0722346b1f9efb0e4b3bc6c9d9ff038d79b1b282))
+- feat(desktop): return nostr binding proof in browser fragment ([#1933](https://github.com/block/buzz/pull/1933)) ([`ccf7f1a2d`](https://github.com/block/buzz/commit/ccf7f1a2d0c3fdafc3f61dd1b88161f271df8cb8))
+- Use selected relay for desktop pairing socket ([#1934](https://github.com/block/buzz/pull/1934)) ([`91be66a2d`](https://github.com/block/buzz/commit/91be66a2d76fb176e8f375a224a607f9b52e14df))
+- fix(desktop): allow editing built-in agents ([#1928](https://github.com/block/buzz/pull/1928)) ([`202201f3a`](https://github.com/block/buzz/commit/202201f3aa4be3eff22c8ebb408bd51e44c37585))
+- fix(desktop): load downloaded mesh runtime on signed macOS builds ([#1932](https://github.com/block/buzz/pull/1932)) ([`32957692e`](https://github.com/block/buzz/commit/32957692eb94ac133c60ac303e4a05ab3142176b))
+- feat(media): require auth for relay media reads ([#1926](https://github.com/block/buzz/pull/1926)) ([`f30876285`](https://github.com/block/buzz/commit/f3087628524951de91028c9d263bcd0d0a727fab))
+- fix(desktop): remove superseded built-in agents ([#1929](https://github.com/block/buzz/pull/1929)) ([`dbf2cfc21`](https://github.com/block/buzz/commit/dbf2cfc21ef96231f54bc49575605d1dbcea25d3))
+- Move agent AI defaults into Settings ([#1919](https://github.com/block/buzz/pull/1919)) ([`3e90dd5dd`](https://github.com/block/buzz/commit/3e90dd5dd8a5f470ba3afa45f80fd594e8a15547))
+- feat(desktop): add Honey and Bumble starter agents ([#1925](https://github.com/block/buzz/pull/1925)) ([`335413461`](https://github.com/block/buzz/commit/335413461b5609408af4733d32baaa640223d18d))
+- feat(desktop): expand owned team mentions ([#1918](https://github.com/block/buzz/pull/1918)) ([`470458d32`](https://github.com/block/buzz/commit/470458d32561ad03e895e0e34ca9b966e729ab89))
+- Fix live agent reactions in Inbox and channels ([#1921](https://github.com/block/buzz/pull/1921)) ([`8212a8723`](https://github.com/block/buzz/commit/8212a872310ced1156328ccc75924f637a78a67a))
+- refactor(desktop): unify page/section header hierarchy across Agents and Settings ([#1912](https://github.com/block/buzz/pull/1912)) ([`7fbdacb03`](https://github.com/block/buzz/commit/7fbdacb03f464f341374265bfed0747b207214f6))
+
+
+## v0.4.6
+
+- Polish agent and team sharing and snapshots ([#1852](https://github.com/block/buzz/pull/1852)) ([`2f3fa586f`](https://github.com/block/buzz/commit/2f3fa586f3bd12b26b8a9dc69a424d5c28b1e27e))
+- fix(desktop): filter punctuation from avatar initials ([#1904](https://github.com/block/buzz/pull/1904)) ([`63e099709`](https://github.com/block/buzz/commit/63e099709667669be41426e7144a4a9057f8537b))
+- fix(desktop): preserve snapshot attachment URLs ([#1905](https://github.com/block/buzz/pull/1905)) ([`1ab7bbfe4`](https://github.com/block/buzz/commit/1ab7bbfe453d10cfd3522c358e5ed18931f1e1ec))
+- Chat-first agent creation via portable buzz CLI drafts ([#1878](https://github.com/block/buzz/pull/1878)) ([`54e174b5e`](https://github.com/block/buzz/commit/54e174b5e1424c13fe7451c86a418ba8b9c01f1c))
+- feat(desktop): enable community rail by default ([#1902](https://github.com/block/buzz/pull/1902)) ([`55a46b063`](https://github.com/block/buzz/commit/55a46b063e291862c034d4ce685b3d3a92804951))
+- feat(desktop): redesign Nostr bind verification flow ([#1850](https://github.com/block/buzz/pull/1850)) ([`abfe78aaf`](https://github.com/block/buzz/commit/abfe78aafb131c9100f33ed361850fb9cfeb0881))
+- fix(desktop): simplify sign out settings row ([#1903](https://github.com/block/buzz/pull/1903)) ([`3e8dae7ff`](https://github.com/block/buzz/commit/3e8dae7ff3c73b1b2b1ae26d5a4bed5db17cb269))
+- feat(desktop): Send feedback modal + profile presence chip ([#1756](https://github.com/block/buzz/pull/1756)) ([`f5c33d333`](https://github.com/block/buzz/commit/f5c33d3335fc3fa7e304bb51a9931d4cc741d255))
+- fix(desktop): seed timeline virtualization row heights ([#1887](https://github.com/block/buzz/pull/1887)) ([`406cf7911`](https://github.com/block/buzz/commit/406cf7911ee1f335fdf0be131ee057ea2c455037))
+- fix(desktop): dedupe react-dismissable-layer to stop modal menu → dialog freezes ([#1899](https://github.com/block/buzz/pull/1899)) ([`366567ac2`](https://github.com/block/buzz/commit/366567ac20b4786c1ca8e754ac5c45f0e7d59122))
+- fix(desktop): clean up Remind me later dialog footer and loading state ([#1898](https://github.com/block/buzz/pull/1898)) ([`40fe65095`](https://github.com/block/buzz/commit/40fe6509583e93054eab04906aacde834c5fcc68))
+- fix(desktop): let sidebar action card description wrap over multiple lines ([#1891](https://github.com/block/buzz/pull/1891)) ([`b36ee3e30`](https://github.com/block/buzz/commit/b36ee3e30203b4cc4ec8056ae4d9c57acf26891e))
+- mesh: upgrade runtime, enforce membership, add shared compute provider ([#1656](https://github.com/block/buzz/pull/1656)) ([`54638ff4b`](https://github.com/block/buzz/commit/54638ff4bb5af2d3d3759b44118b43052f814bb1))
+
+
+## v0.4.5
+
+- test(desktop): remove stale collapsed home chrome check ([#1871](https://github.com/block/buzz/pull/1871)) ([`395a3f149`](https://github.com/block/buzz/commit/395a3f1492807b065f8edbee9bb9c8d51018095a))
+- fix(desktop): hide message action for inaccessible agents ([#1883](https://github.com/block/buzz/pull/1883)) ([`8ce9e7914`](https://github.com/block/buzz/commit/8ce9e791453a262f21e675d3f5d27ace22a09e9b))
+- feat(desktop): add API key field, global default indicators, and collapsed advanced ([#1875](https://github.com/block/buzz/pull/1875)) ([`1742dce7b`](https://github.com/block/buzz/commit/1742dce7b25676e91631ce4056bdd2bbc05944ab))
+- fix(desktop): foreground app for deep links ([#1880](https://github.com/block/buzz/pull/1880)) ([`a26168f55`](https://github.com/block/buzz/commit/a26168f553fd8bfce8b5df88915e76ff2d7004ee))
+- chore(desktop): replace setup ? operators with clean exit ([#1882](https://github.com/block/buzz/pull/1882)) ([`4c106d878`](https://github.com/block/buzz/commit/4c106d878564e3f5b4def92f4667fe95dec015f4))
+- fix(desktop): remediate all onboarding dead paths (D1-D7) ([#1856](https://github.com/block/buzz/pull/1856)) ([`5bb619295`](https://github.com/block/buzz/commit/5bb6192951bd57c535a34cd835aba20714f408b6))
+
+
+## v0.4.4
+
+- fix(desktop): allow staged updater commands ([#1870](https://github.com/block/buzz/pull/1870)) ([`109c2c526`](https://github.com/block/buzz/commit/109c2c52641c5edd50890bffef9a236a10ea6106))
+- feat(teams): unify team model, snapshot sharing, and PNG memory parity ([#1846](https://github.com/block/buzz/pull/1846)) ([`448baeef7`](https://github.com/block/buzz/commit/448baeef770478411678e2f0be1729f04b6800d7))
+- fix(desktop): always start agents and hide unavailable mesh ([#1860](https://github.com/block/buzz/pull/1860)) ([`37bc962cb`](https://github.com/block/buzz/commit/37bc962cb8fb60857337bbfb97eb4d31c359de15))
+- Relay mesh: cross-pod tunnel + huddle transport (buzz-relay-mesh) ([#1670](https://github.com/block/buzz/pull/1670)) ([`ccb021d71`](https://github.com/block/buzz/commit/ccb021d71339009aabedc383c8f3d8e5c23e1e42))
+- feat(desktop): add Sign Out to Settings to reset and relaunch ([#1842](https://github.com/block/buzz/pull/1842)) ([`cf9723796`](https://github.com/block/buzz/commit/cf97237965a5ed9870f1c1f73ce9952e963b418b))
+
+
+## v0.4.3
+
+- Stabilize persona and stream end-to-end tests ([#1865](https://github.com/block/buzz/pull/1865)) ([`916de4e4d`](https://github.com/block/buzz/commit/916de4e4dbbf9299695a91defa6e3802b1820256))
+- refactor(clients): standardize product naming on community ([#1858](https://github.com/block/buzz/pull/1858)) ([`3e76481a1`](https://github.com/block/buzz/commit/3e76481a149bb3de459298cc989505c470c2372c))
+- fix(desktop): retain live rows after window exhaustion ([#1810](https://github.com/block/buzz/pull/1810)) ([`fa6f4819b`](https://github.com/block/buzz/commit/fa6f4819b3468a5a3725356dd71463bb37cc30c7))
+- Add private product feedback sidecar ([#1857](https://github.com/block/buzz/pull/1857)) ([`af190c93e`](https://github.com/block/buzz/commit/af190c93e1048af64c3fbfb3831c689cb703997c))
+- fix(desktop): resolve Doctor install shell and command detection on Windows ([#1854](https://github.com/block/buzz/pull/1854)) ([`1aec7ea7a`](https://github.com/block/buzz/commit/1aec7ea7a798c8bdb131a802dcd3d2ea0fb8692a))
+- fix(desktop): navigate to channel from inbox thread header ([#1847](https://github.com/block/buzz/pull/1847)) ([`ff11f26bc`](https://github.com/block/buzz/commit/ff11f26bcdc8e107d7d04f5682b2d17f586536d6))
+- feat(desktop): surface needsRestart badge on live UI surfaces ([#1853](https://github.com/block/buzz/pull/1853)) ([`b1d323c4e`](https://github.com/block/buzz/commit/b1d323c4e7ddbabbe52a868f3699a523bb6c010e))
+- fix(desktop): prevent menu-to-dialog UI lockups ([#1839](https://github.com/block/buzz/pull/1839)) ([`7f81d93eb`](https://github.com/block/buzz/commit/7f81d93eb1cf6a10c84d948d91c45a1fd4778060))
+- feat(desktop): add conversation-style DM composer ([#1768](https://github.com/block/buzz/pull/1768)) ([`bb9d9b0c0`](https://github.com/block/buzz/commit/bb9d9b0c049b9561458414b24eff157c6bbbd446))
+- feat(push): add public APNs gateway ([#1770](https://github.com/block/buzz/pull/1770)) ([`1c006822e`](https://github.com/block/buzz/commit/1c006822e4484d68e33fce14f9139c2f70ce9d66))
+- fix(desktop): stabilize agent identity restore ([#1831](https://github.com/block/buzz/pull/1831)) ([`3370cd083`](https://github.com/block/buzz/commit/3370cd0836e458f519cf90fe6299279cde6c7463))
+- fix(observer): align scroll-anchor ids with transcript display-block keys ([#1849](https://github.com/block/buzz/pull/1849)) ([`1df4a4e77`](https://github.com/block/buzz/commit/1df4a4e77da732cadad91738bc0271a926c22040))
+- [codex] Add view activity label to agent popover ([#1748](https://github.com/block/buzz/pull/1748)) ([`458c7f915`](https://github.com/block/buzz/commit/458c7f9154fc9580a766117cad0e3e378ffe5ac0))
+- ci(desktop): surface flaky E2E tests instead of retry-masking them ([#1838](https://github.com/block/buzz/pull/1838)) ([`a65340630`](https://github.com/block/buzz/commit/a653406309aa6dab8122cf3e84ddeca0c87013be))
+- fix(desktop): treat channel creator as member before 39002 provisioning ([#1830](https://github.com/block/buzz/pull/1830)) ([`7e62a25af`](https://github.com/block/buzz/commit/7e62a25af0bc71df17de806673ed02514e556e6e))
+
+
+## v0.4.2
+
+- fix(desktop): unify observer feed scroll onto useAnchoredScroll ([#1825](https://github.com/block/buzz/pull/1825)) ([`d75c2e913`](https://github.com/block/buzz/commit/d75c2e913eef763e8ea2e748c58353c3a22d544d))
+- fix(desktop): sync sidebar update card copy with global installing state ([#1827](https://github.com/block/buzz/pull/1827)) ([`b63a2e423`](https://github.com/block/buzz/commit/b63a2e4231d27f61eae952d2febab36489e773a5))
+- fix(desktop): parse codex ACP plan entries[] into checklist ([#1824](https://github.com/block/buzz/pull/1824)) ([`34dcd13d5`](https://github.com/block/buzz/commit/34dcd13d559b6c606312fca1bbc2c52310b35603))
+- fix(desktop): resolve Git Bash for Windows shell tool via PATH/git/registry fallback ([#1821](https://github.com/block/buzz/pull/1821)) ([`020ac7f40`](https://github.com/block/buzz/commit/020ac7f405c24f72e390b605571fb65e2481612c))
+- feat(desktop): show read-only MCP server config ([#1780](https://github.com/block/buzz/pull/1780)) ([`51ee1c473`](https://github.com/block/buzz/commit/51ee1c473dae018499e42106086c359c19108137))
+- fix(desktop): require user action before applying updates ([#1820](https://github.com/block/buzz/pull/1820)) ([`deed64a14`](https://github.com/block/buzz/commit/deed64a14f1ec39a1242bed46711e44d77a3086e))
+- fix(desktop): preserve selected inbox rows through reflow ([#1817](https://github.com/block/buzz/pull/1817)) ([`c06ddcf14`](https://github.com/block/buzz/commit/c06ddcf14b81834a59a4eedf020ccbe8ca72dfd7))
+- fix(snapshot): send Buzz shares as PNG avatar cards ([#1811](https://github.com/block/buzz/pull/1811)) ([`a6cfd6551`](https://github.com/block/buzz/commit/a6cfd65511ee06f9073f2d5405e2242a9e2ff4ef))
+- test(desktop): consolidate and stabilize scroll coverage ([#1815](https://github.com/block/buzz/pull/1815)) ([`d41b4c390`](https://github.com/block/buzz/commit/d41b4c390522d63a0a4e1b3e8a93fe9c84289b2a))
+- fix(buzz-agent): support max effort for gpt-5.6 family ([#1806](https://github.com/block/buzz/pull/1806)) ([`e34e0974a`](https://github.com/block/buzz/commit/e34e0974a149a2b776e779e5798cc4252cc5030c))
+- fix(desktop): widen probe test timing margins for parallel pre-push ([#1812](https://github.com/block/buzz/pull/1812)) ([`fac79215a`](https://github.com/block/buzz/commit/fac79215a4cdc8289cc94282641e69d822d419d6))
+- fix(desktop): keep pairing tests after production items ([#1807](https://github.com/block/buzz/pull/1807)) ([`68909629f`](https://github.com/block/buzz/commit/68909629f96a95797a627b19e76e03bcbd6983de))
+- chore(deps): update rust crate nostr to v0.44.4 ([#1789](https://github.com/block/buzz/pull/1789)) ([`f1f5002a9`](https://github.com/block/buzz/commit/f1f5002a970bb651173ef49027e9609b903e3fa3))
+- Add optional standalone pairing relay to Helm chart ([#1799](https://github.com/block/buzz/pull/1799)) ([`9b47c8548`](https://github.com/block/buzz/commit/9b47c8548fd061fbb806ea8b9ddee831c19cf80e))
+- chore(ci): lint desktop Tauri crate in CI ([#1801](https://github.com/block/buzz/pull/1801)) ([`bea507d8a`](https://github.com/block/buzz/commit/bea507d8aa611d8d0be893bac1339dad50162d7b))
+- fix(desktop): preserve live events and window order across channel refreshes ([#1802](https://github.com/block/buzz/pull/1802)) ([`e09e94ab8`](https://github.com/block/buzz/commit/e09e94ab88543ea0e0c6411092852c1c98187feb))
+- fix(desktop): restore macOS navigation chrome alignment ([#1797](https://github.com/block/buzz/pull/1797)) ([`109800fe5`](https://github.com/block/buzz/commit/109800fe5a67c560e3ffb750e7df28177c03f509))
+- fix(desktop): omit invalid snapshot imeta thumbnails ([#1800](https://github.com/block/buzz/pull/1800)) ([`b32f2c08f`](https://github.com/block/buzz/commit/b32f2c08f7cdbad1bcc3b6a73711c2e7a21c71bd))
+- fix(desktop): centralize known-agent trust set in useKnownAgentPubkeys ([#1703](https://github.com/block/buzz/pull/1703)) ([`095f3c728`](https://github.com/block/buzz/commit/095f3c7280153394bf2a8215b1355ef734af9ee6))
+- chore(deps): update all non-major dependencies ([#1778](https://github.com/block/buzz/pull/1778)) ([`221aceb1c`](https://github.com/block/buzz/commit/221aceb1c2f794db0bf2050d1cc66fe8d2db9cec))
+- fix(desktop): pass augmented PATH to codex-acp version probe ([#1794](https://github.com/block/buzz/pull/1794)) ([`10ae66893`](https://github.com/block/buzz/commit/10ae66893c8b454255298d0eab40bfd47a46041c))
+- feat(desktop): add team snapshot sharing commands ([#1790](https://github.com/block/buzz/pull/1790)) ([`150514f66`](https://github.com/block/buzz/commit/150514f665c5aeebb83f9c42c17e793d88ee6b9f))
+- feat(managed_agents): add buzz-team-snapshot v1 codec ([#1784](https://github.com/block/buzz/pull/1784)) ([`aceb5e045`](https://github.com/block/buzz/commit/aceb5e0456c19761f1210585be520fa291ef903c))
+
+
 ## v0.4.1
 
 - feat(desktop): auto-restart setup-mode agents after adapter install, badge drift fallback ([#1786](https://github.com/block/buzz/pull/1786)) ([`11a286b9a`](https://github.com/block/buzz/commit/11a286b9a4284f4f80943d1321f86fa41c472dcf))

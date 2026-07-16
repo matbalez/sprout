@@ -136,6 +136,10 @@ export type Identity = {
    *  the user must unlock the keyring externally and relaunch.
    *  Mutually exclusive with `lost`. */
   locked?: boolean;
+  /** True when the boot-time Phase 2 reset attempted a wipe but verification
+   *  failed. Identity resolution was skipped; the sentinel is preserved so
+   *  the next relaunch retries the wipe automatically. */
+  resetFailed?: boolean;
 };
 
 export type Profile = {
@@ -202,83 +206,19 @@ export type UserStatus = {
 
 export type UserStatusLookup = Record<string, UserStatus | null>;
 
-export type ProjectRepoCommit = {
-  hash: string;
-  shortHash: string;
-  authorName: string;
-  authorEmail: string;
-  timestamp: number;
-  subject: string;
-};
-
-export type ProjectRepoFile = {
-  path: string;
-  kind: string;
-  size: number | null;
-  previewContent: string | null;
-  lastChangedAt: number | null;
-  latestCommit: ProjectRepoCommit | null;
-};
-
-export type ProjectRepoContributor = {
-  name: string;
-  email: string;
-  commitCount: number;
-  lastCommitAt: number;
-};
-
-export type ProjectRepoSnapshot = {
-  latestCommit: ProjectRepoCommit | null;
-  commits: ProjectRepoCommit[];
-  files: ProjectRepoFile[];
-  contributors: ProjectRepoContributor[];
-};
-
-export type ProjectRepoDiffFile = {
-  path: string;
-  additions: number;
-  deletions: number;
-  patch: string;
-  /** True when the patch was cut off at the backend's per-file line cap. */
-  truncated: boolean;
-};
-
-export type ProjectRepoDiff = {
-  files: ProjectRepoDiffFile[];
-  additions: number;
-  deletions: number;
-};
-
-export type ProjectLocalRepoSnapshot = {
-  path: string;
-  snapshot: ProjectRepoSnapshot;
-};
-
-export type ProjectLocalRepository = {
-  name: string;
-  path: string;
-};
-
-export type ProjectRepoSyncStatus = {
-  localPath: string | null;
-  localBranch: string | null;
-  localHead: string | null;
-  localShortHead: string | null;
-  remoteBranch: string | null;
-  remoteHead: string | null;
-  remoteShortHead: string | null;
-  aheadCount: number;
-  behindCount: number;
-  hasUncommittedChanges: boolean;
-  hasUntrackedFiles: boolean;
-  canPush: boolean;
-  pushBlockReason: string | null;
-};
-
-export type ProjectRepoPushResult = {
-  pushed: boolean;
-  message: string;
-};
+export type {
+  ProjectLocalRepository,
+  ProjectLocalRepoSnapshot,
+  ProjectRepoCommit,
+  ProjectRepoContributor,
+  ProjectRepoDiff,
+  ProjectRepoDiffFile,
+  ProjectRepoFile,
+  ProjectRepoPullResult,
+  ProjectRepoPushResult,
+  ProjectRepoSnapshot,
+  ProjectRepoSyncStatus,
+} from "./projectGitTypes";
 
 export type RelayEvent = {
   id: string;
@@ -492,6 +432,8 @@ export type RelayMeshConfig = {
 export type CreateManagedAgentInput = {
   name: string;
   personaId?: string;
+  /** Team this instance was deployed from; controls runtime team instructions. */
+  teamId?: string;
   relayUrl?: string;
   acpCommand?: string;
   agentCommand?: string;
@@ -626,6 +568,24 @@ export type InstallRuntimeResult = {
   steps: InstallStepResult[];
   restartedCount: number;
   failedRestartCount: number;
+};
+
+export type AcpAuthMethod = {
+  id: string;
+  name: string;
+  description: string | null;
+  type: string | null;
+  args: string[];
+  command: string[];
+  meta: unknown | null;
+};
+
+export type AcpAuthMethodsResult = {
+  methods: AcpAuthMethod[];
+};
+
+export type ConnectAcpRuntimeResult = {
+  launched: boolean;
 };
 
 export type CommandAvailability = {
@@ -829,6 +789,7 @@ export type AgentTeam = {
   id: string;
   name: string;
   description: string | null;
+  instructions: string | null;
   personaIds: string[];
   isBuiltin: boolean;
   /** Absolute path to the team's backing directory (if directory-backed). */
@@ -846,6 +807,7 @@ export type AgentTeam = {
 export type CreateTeamInput = {
   name: string;
   description?: string;
+  instructions?: string;
   personaIds: string[];
 };
 
@@ -853,6 +815,7 @@ export type UpdateTeamInput = {
   id: string;
   name: string;
   description?: string;
+  instructions?: string;
   personaIds: string[];
 };
 // ── Channel Template types ─────────────────────────────────────────────────────

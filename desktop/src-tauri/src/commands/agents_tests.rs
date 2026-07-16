@@ -21,6 +21,7 @@ fn bare_agent_record(
         agent_command_override: None,
         agent_args: vec![],
         mcp_command: "".to_string(),
+        mcp_toolsets: None,
         turn_timeout_seconds: 300,
         idle_timeout_seconds: None,
         max_turn_duration_seconds: None,
@@ -35,6 +36,7 @@ fn bare_agent_record(
         backend: BackendKind::Local,
         backend_agent_id: None,
         provider_binary_path: None,
+        team_id: None,
         persona_team_dir: None,
         persona_name_in_team: None,
         created_at: "".to_string(),
@@ -158,7 +160,7 @@ fn normalize_relay_mesh_rejects_empty_model_ref() {
 
     assert_eq!(
         normalize_relay_mesh(Some(&config), &BackendKind::Local).unwrap_err(),
-        "relay mesh modelRef is required"
+        "Buzz shared compute model is required"
     );
 }
 
@@ -174,7 +176,7 @@ fn normalize_relay_mesh_rejects_non_local_backend() {
 
     assert_eq!(
         normalize_relay_mesh(Some(&config), &backend).unwrap_err(),
-        "relay mesh agents must use the local backend"
+        "Buzz shared compute agents must use the local backend"
     );
 }
 

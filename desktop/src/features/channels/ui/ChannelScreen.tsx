@@ -4,6 +4,7 @@ import { cacheSearchHitEvent } from "@/app/navigation/searchHitEventCache";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useActiveChannelHeader } from "@/features/channels/useActiveChannelHeader";
 import { useChannelPaneHandlers } from "@/features/channels/useChannelPaneHandlers";
+import { useThreadTargetSync } from "@/features/channels/useThreadTargetSync";
 import {
   getPaidJoinAmount,
   getPaidPostAmountForCurrentUser,
@@ -19,6 +20,7 @@ import {
 import { ChannelScreenEmptyState } from "@/features/channels/ui/ChannelScreenEmptyState";
 import { ChannelScreenHeader } from "@/features/channels/ui/ChannelScreenHeader";
 import { ChannelPane } from "@/features/channels/ui/ChannelScreenLazyViews";
+import { WelcomeAgentCreateDialog } from "@/features/channels/ui/WelcomeAgentCreateDialog";
 import { ForumChannelContent } from "@/features/channels/ui/ForumChannelContent";
 import { MembersSidebar } from "@/features/channels/ui/MembersSidebar";
 import {
@@ -27,6 +29,8 @@ import {
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
 import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
+import { pickWelcomeGuideAgent } from "@/features/onboarding/welcomeGuide";
+import { useWelcomeAgentCreate } from "@/features/channels/useWelcomeAgentCreate";
 import {
   mergeMessages,
   useChannelMessagesQuery,
@@ -106,6 +110,7 @@ export function ChannelScreen({
     getMessageReadAt,
     markMessageRead,
     setContextParentResolver,
+    openBrowseChannels,
     openCreateChannel,
     openChannelManagement: openGlobalChannelManagement,
     followThread,
@@ -153,9 +158,7 @@ export function ChannelScreen({
     string | null
   >(null);
   const [editTargetId, setEditTargetId] = React.useState<string | null>(null);
-  // Thread panel state is URL-backed, but router navigation is deferred out
-  // of the click handler; a tiny optimistic override lets the auxiliary pane
-  // open/close in the urgent render before the URL-backed state catches up.
+  // URL-backed thread state catches up after navigation; this override keeps urgent open/close renders responsive.
   const [optimisticOpenThreadHeadId, setOptimisticOpenThreadHeadId] =
     React.useState<string | null | undefined>(undefined);
   const clearOptimisticThreadOverride = React.useCallback(() => {
@@ -238,26 +241,19 @@ export function ChannelScreen({
   const deleteMessageMutation = useDeleteMessageMutation(activeChannel);
   const editMessageMutation = useEditMessageMutation(activeChannel);
   const joinChannelMutation = useJoinChannelMutation(activeChannel);
-  const [findTargetEvents, setFindTargetEvents] = React.useState<RelayEvent[]>(
-    [],
-  );
+  const [findEvents, setFindEvents] = React.useState<RelayEvent[]>([]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: clear spliced find results exactly when the active channel changes.
   React.useEffect(() => {
-    setFindTargetEvents([]);
+    setFindEvents([]);
   }, [activeChannelId]);
   const resolvedMessages = React.useMemo(() => {
     const currentMessages = messagesQuery.data ?? [];
-    const extraEvents = [...targetMessageEvents, ...findTargetEvents];
+    const extraEvents = [...targetMessageEvents, ...findEvents];
     if (!activeChannel || extraEvents.length === 0) {
       return currentMessages;
     }
     return extraEvents.reduce(mergeMessages, currentMessages);
-  }, [
-    activeChannel,
-    findTargetEvents,
-    messagesQuery.data,
-    targetMessageEvents,
-  ]);
+  }, [activeChannel, findEvents, messagesQuery.data, targetMessageEvents]);
   const threadReplyEvents = threadRepliesQuery.data ?? EMPTY_RELAY_EVENTS;
   const messageEventProfilePubkeys = React.useMemo(() => {
     const events = [...resolvedMessages, ...threadReplyEvents];
@@ -312,6 +308,15 @@ export function ChannelScreen({
   );
   const managedAgentsQuery = useManagedAgentsQuery();
   const managedAgents = managedAgentsQuery.data ?? [];
+  const welcomeGuideAgent = React.useMemo(
+    () => pickWelcomeGuideAgent(managedAgents),
+    [managedAgents],
+  );
+  const welcomeAgentCreate = useWelcomeAgentCreate({
+    activeChannel,
+    currentIdentity,
+    welcomeGuideAgent,
+  });
   const relayAgentsQuery = useRelayAgentsQuery();
   const relayAgents = relayAgentsQuery.data ?? [];
   const activeDmParticipantPubkeys = React.useMemo(
@@ -387,9 +392,6 @@ export function ChannelScreen({
     relayAgents,
     typingEntries,
   });
-  // Observer ingestion (frame decryption + derived active-turn liveness) is
-  // owner-global — mounted once in AppShell via useAgentObserverIngestion —
-  // so this screen no longer mounts its own observer/turns bridges.
   const messageProfiles = useMessageProfiles({
     channelMembers,
     currentProfile,
@@ -400,20 +402,20 @@ export function ChannelScreen({
     relayAgents,
   });
   // Agent set for ChannelPane's own consumers (DM huddle member resolution,
-  // the agents list): the workspace-scoped baseline shared by every surface,
+  // the agents list): the community-scoped baseline shared by every surface,
   // widened with channel-member roles and this screen's profile lookup.
   // Message rows no longer take this — MessageRow derives agent-ness itself
   // from useKnownAgentPubkeys + per-pubkey profile checks.
-  const workspaceAgentPubkeys = useKnownAgentPubkeys();
+  const communityAgentPubkeys = useKnownAgentPubkeys();
   const agentPubkeys = React.useMemo(() => {
-    const pubkeys = new Set([...workspaceAgentPubkeys, ...knownAgentPubkeys]);
+    const pubkeys = new Set([...communityAgentPubkeys, ...knownAgentPubkeys]);
     for (const [pubkey, profile] of Object.entries(messageProfiles)) {
       if (profile.isAgent) {
         pubkeys.add(normalizePubkey(pubkey));
       }
     }
     return pubkeys;
-  }, [knownAgentPubkeys, messageProfiles, workspaceAgentPubkeys]);
+  }, [knownAgentPubkeys, messageProfiles, communityAgentPubkeys]);
   const sendMessageMutation = useSendMessageMutation(
     activeChannel,
     currentIdentity,
@@ -473,7 +475,7 @@ export function ChannelScreen({
     );
   const handleFindSearchHit = React.useCallback((hit: SearchHit) => {
     const event = cacheSearchHitEvent(hit);
-    setFindTargetEvents((currentEvents) =>
+    setFindEvents((currentEvents) =>
       currentEvents.some((currentEvent) => currentEvent.id === event.id)
         ? currentEvents
         : [...currentEvents, event],
@@ -574,8 +576,6 @@ export function ChannelScreen({
         : undefined,
     [activeChannel, handleToggleReaction, isWalletBotActive],
   );
-  // The menu actions are typed (message) => void; the read-state handlers
-  // key off the message id (message + subtree). Adapt at the seam.
   const handleMessageMarkUnread = React.useCallback(
     (message: TimelineMessage) => handleMarkMessageUnread(message.id),
     [handleMarkMessageUnread],
@@ -606,7 +606,11 @@ export function ChannelScreen({
     activeChannel && !activeChannel.archivedAt && activeChannel.isMember
       ? handleSendVideoReviewComment
       : undefined;
-  const handleOpenAddBot = React.useCallback(() => setIsAddBotOpen(true), []);
+  const handleOpenAddBot = React.useCallback(
+    (options?: { beforeSend?: () => void }) =>
+      welcomeAgentCreate.openAddAgent(() => setIsAddBotOpen(true), options),
+    [welcomeAgentCreate],
+  );
   const handleOpenMembersSidebar = React.useCallback(
     () => setIsMembersSidebarOpen(true),
     [],
@@ -630,9 +634,6 @@ export function ChannelScreen({
   } = useChannelAgentSessions({
     activeChannel,
     activeChannelId,
-    // Loaded only once none of the three agent queries are in their initial
-    // fetch, so a channel with genuinely zero agents still auto-closes a stale
-    // agentSession param (a disabled query reports isLoading=false — fine).
     agentsLoaded:
       !channelMembersQuery.isLoading &&
       !managedAgentsQuery.isLoading &&
@@ -662,10 +663,6 @@ export function ChannelScreen({
       setThreadReplyTargetId,
       setThreadScrollTargetId,
     });
-  // `data !== undefined` is not "loaded" (the cache is seeded early by stale
-  // placeholders and the live subscription); wait for the history fetch to
-  // settle, latched per channel so a background refetch can't re-flip to the
-  // skeleton (the "skeleton bouncing up and down" on entry).
   const settledChannelIdRef = React.useRef<string | null>(null);
   const hasSettledThisChannel =
     activeChannelId !== null && settledChannelIdRef.current === activeChannelId;
@@ -688,8 +685,6 @@ export function ChannelScreen({
       timelineLoadingNow,
     );
   settledChannelIdRef.current = settledChannelId;
-  // Panel identity (thread/profile/agent session) lives in the URL search
-  // params and carries per history entry — only ephemeral targets reset here.
   const resetComposerTargets = React.useCallback(
     (_channelId: string | null) => {
       setExpandedThreadReplyIds(new Set());
@@ -721,42 +716,21 @@ export function ChannelScreen({
     targetMessageId,
     timelineMessages,
   });
-  React.useEffect(() => {
-    if (openThreadHeadId && !openThreadHeadMessage) {
-      // While the timeline is still loading (e.g. a reload restoring the
-      // thread param from the URL) the head simply hasn't arrived yet.
-      if (isTimelineLoading) {
-        return;
-      }
-      clearOptimisticThreadOverride();
-      setOpenThreadHeadId(null, { replace: true });
-      setExpandedThreadReplyIds(new Set());
-      setThreadScrollTargetId(null);
-      return;
-    }
-
-    if (openThreadHeadMessage && !threadReplyTargetId) {
-      setThreadReplyTargetId(openThreadHeadMessage.id);
-      return;
-    }
-
-    if (threadReplyTargetId && !threadReplyTargetMessage) {
-      setThreadReplyTargetId(openThreadHeadMessage?.id ?? null);
-    }
-    if (editTargetId && !editTargetMessage) {
-      setEditTargetId(null);
-    }
-  }, [
+  useThreadTargetSync({
     clearOptimisticThreadOverride,
     editTargetId,
     editTargetMessage,
     isTimelineLoading,
     openThreadHeadId,
     openThreadHeadMessage,
+    setEditTargetId,
+    setExpandedThreadReplyIds,
     setOpenThreadHeadId,
+    setThreadReplyTargetId,
+    setThreadScrollTargetId,
     threadReplyTargetId,
     threadReplyTargetMessage,
-  ]);
+  });
 
   const hasAuxiliaryPanel = Boolean(
     effectiveOpenThreadHeadId ||
@@ -875,6 +849,15 @@ export function ChannelScreen({
   return (
     <AgentSessionProvider onOpenAgentSession={handleOpenAgentSession}>
       <ProfilePanelProvider onOpenProfilePanel={handleOpenProfilePanel}>
+        <WelcomeAgentCreateDialog
+          guideName={welcomeGuideAgent?.name ?? "your welcome guide"}
+          isSending={welcomeAgentCreate.isSending}
+          onCreateInChat={() => void welcomeAgentCreate.createInChat()}
+          onCreateManually={welcomeAgentCreate.createManually}
+          onOpenChange={welcomeAgentCreate.setIsOpen}
+          open={welcomeAgentCreate.isOpen}
+          sendError={welcomeAgentCreate.error}
+        />
         <div
           className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
           ref={channelContentRef}
@@ -925,6 +908,7 @@ export function ChannelScreen({
                   hasOlderMessages={hasOlderMessages}
                   historyExhausted={historyExhausted}
                   onAddAgent={handleOpenAddBot}
+                  onBrowseChannels={openBrowseChannels}
                   onCreateChannel={openCreateChannel}
                   onOpenMembers={handleOpenMembersSidebar}
                   isFetchingOlder={isFetchingOlder}

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Bot, Hash, LogIn, Plus, Sparkles, UserPlus } from "lucide-react";
+import { HashSearch } from "@/shared/ui/icons";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useMediaUpload } from "@/features/messages/lib/useMediaUpload";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
@@ -56,6 +57,7 @@ import {
 } from "@/features/channels/ui/ChannelPane.helpers";
 import type { ChannelPaneProps } from "@/features/channels/ui/ChannelPane.types";
 import * as agentSessionSelection from "@/features/channels/ui/agentSessionSelection";
+import { usePrepareDmSendChannel } from "@/features/channels/ui/usePrepareDmSendChannel";
 import { Button } from "@/shared/ui/button";
 import { buildMainTimelineEntries } from "@/features/messages/lib/threadPanel";
 import { useRenderScopedReactionHydration } from "@/features/messages/lib/useRenderScopedReactionHydration";
@@ -104,6 +106,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   onChannelManagementDeleted,
   onCloseProfilePanel,
   onAddAgent,
+  onBrowseChannels,
   onCreateChannel,
   onCloseThread,
   onDelete,
@@ -165,6 +168,10 @@ export const ChannelPane = React.memo(function ChannelPane({
   const [welcomeComposerBannerState, setWelcomeComposerBannerState] =
     React.useState<WelcomeComposerBannerState>("prompt");
   const { goChannel } = useAppNavigation();
+  const prepareDmSendChannel = usePrepareDmSendChannel(
+    activeChannel,
+    currentPubkey,
+  );
   const mainComposerMedia = useMediaUpload();
   const isNonMemberView =
     activeChannel !== null &&
@@ -179,6 +186,15 @@ export const ChannelPane = React.memo(function ChannelPane({
       : "Join to participate";
   const hasMainComposerOverlay = !isNonMemberView;
   const activeChannelId = activeChannel?.id ?? null;
+  const activeChannelIdRef = React.useRef(activeChannelId);
+  const channelPaneMountedRef = React.useRef(false);
+  activeChannelIdRef.current = activeChannelId;
+  React.useEffect(() => {
+    channelPaneMountedRef.current = true;
+    return () => {
+      channelPaneMountedRef.current = false;
+    };
+  }, []);
   // Clear the ?autoSend search param once the auto-submit fires so
   // back-navigation cannot re-trigger the send.
   // When `onAutoSendComplete` is provided it does a surgical single-key clear
@@ -371,12 +387,23 @@ export const ChannelPane = React.memo(function ChannelPane({
         channelId,
       );
 
+      if (
+        channelId &&
+        channelId !== activeChannelId &&
+        channelPaneMountedRef.current &&
+        activeChannelIdRef.current === activeChannelId
+      ) {
+        await goChannel(channelId, { replace: true });
+      }
+
       if (shouldCompleteWelcomeBanner) {
         completeWelcomeComposerBanner();
       }
     },
     [
+      activeChannelId,
       completeWelcomeComposerBanner,
+      goChannel,
       isActiveWelcomeChannel,
       knownAgentPubkeys,
       onSendMessage,
@@ -433,6 +460,15 @@ export const ChannelPane = React.memo(function ChannelPane({
 
     const actions = [];
     if (isWelcomeChannel(activeChannel)) {
+      if (onBrowseChannels) {
+        actions.push({
+          icon: <HashSearch aria-hidden className="h-6 w-6" />,
+          label: "Browse channels",
+          onClick: onBrowseChannels,
+          testId: "welcome-intro-action-browse-channels",
+        });
+      }
+
       if (onCreateChannel) {
         actions.push({
           icon: <Plus aria-hidden className="h-6 w-6" />,
@@ -445,8 +481,12 @@ export const ChannelPane = React.memo(function ChannelPane({
       if (onAddAgent) {
         actions.push({
           icon: <Bot aria-hidden className="h-6 w-6" />,
-          label: "Create a custom agent",
-          onClick: onAddAgent,
+          label: "Create an agent",
+          onClick: () =>
+            onAddAgent({
+              beforeSend: () =>
+                messageTimelineRef.current?.scrollToBottomOnNextUpdate(),
+            }),
           testId: "welcome-intro-action-create-agent",
         });
       }
@@ -488,7 +528,13 @@ export const ChannelPane = React.memo(function ChannelPane({
       channelName: activeChannel.name,
       description: getChannelIntroDescription(activeChannel),
     };
-  }, [activeChannel, onAddAgent, onCreateChannel, onOpenMembers]);
+  }, [
+    activeChannel,
+    onAddAgent,
+    onBrowseChannels,
+    onCreateChannel,
+    onOpenMembers,
+  ]);
 
   const visibleMessages = React.useMemo(() => {
     if (!isWelcomeChannel(activeChannel)) {
@@ -733,6 +779,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                   <WelcomeComposerBanner state={welcomeComposerBannerState} />
                 ) : null}
                 <MessageComposer
+                  audienceContext={{ type: "timeline" }}
                   channelId={activeChannel?.id ?? null}
                   channelName={activeChannel?.name ?? "channel"}
                   channelType={activeChannel?.channelType ?? null}
@@ -747,6 +794,11 @@ export const ChannelPane = React.memo(function ChannelPane({
                   onEditLastOwnMessage={handleEditLastOwnMainMessage}
                   onEditSave={onEditSave}
                   paymentAnnotation={postPriceLabel}
+                  onPrepareSendChannel={
+                    activeChannel?.channelType === "dm"
+                      ? prepareDmSendChannel
+                      : undefined
+                  }
                   onSend={handleSendMessage}
                   profiles={profiles}
                   placeholder={

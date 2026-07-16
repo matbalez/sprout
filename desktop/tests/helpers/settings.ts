@@ -10,7 +10,7 @@ type SettingsSection =
   | "appearance"
   | "shortcuts"
   | "tokens"
-  | "relay-members"
+  | "community-members"
   | "mobile"
   | "updates"
   | "doctor";

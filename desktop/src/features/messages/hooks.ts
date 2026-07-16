@@ -28,6 +28,7 @@ import {
 
 export { mergeMessages, mergeTimelineCacheMessages };
 import { splitOutgoingTags } from "@/features/messages/lib/imetaMediaMarkdown";
+import { messageMentionPubkeys } from "@/features/messages/lib/messageMentionPubkeys";
 import {
   clearTimeoutState,
   recordTimeoutFromRejection,
@@ -193,6 +194,25 @@ export function resolveEffectiveChannel(
     return fallbackChannel;
   }
   return channelsCache?.find((c) => c.id === capturedChannelId) ?? null;
+}
+
+/**
+ * Resolves a send target captured as either the channel object itself or its id.
+ * A relay-returned channel remains authoritative even when the shared channel
+ * list is temporarily stale and does not contain it.
+ *
+ * Exported for unit testing.
+ */
+export function resolveSendChannel(
+  targetChannel: Channel | undefined,
+  capturedChannelId: string | null | undefined,
+  channelsCache: Channel[] | undefined,
+  fallbackChannel: Channel | null,
+): Channel | null {
+  return (
+    targetChannel ??
+    resolveEffectiveChannel(capturedChannelId, channelsCache, fallbackChannel)
+  );
 }
 
 /**
@@ -473,6 +493,7 @@ export function useSendMessageMutation(
     Error,
     {
       channelId?: string;
+      targetChannel?: Channel;
       content: string;
       mentionPubkeys?: string[];
       parentEventId?: string | null;
@@ -484,6 +505,7 @@ export function useSendMessageMutation(
   >({
     mutationFn: async ({
       channelId: capturedChannelId,
+      targetChannel,
       content,
       bountyAmountSats,
       kudos,
@@ -491,22 +513,25 @@ export function useSendMessageMutation(
       parentEventId,
       mediaTags,
     }) => {
-      // Resolve the target channel from the compose-time id when provided, so
-      // a channel switch mid-send does not redirect the message. Fall back to
-      // the closed-over `channel` for callers that don't supply a capturedId.
-      // A supplied-but-unresolvable id throws rather than silently falling back
-      // to the live channel (silent misdelivery is the failure mode we're fixing).
-      const effectiveChannel = resolveEffectiveChannel(
+      // Prefer a channel captured by the caller at compose time. Otherwise,
+      // resolve a captured id from the shared channel cache so navigation
+      // cannot redirect the message. Legacy callers without either value use
+      // the closed-over `channel`.
+      const effectiveChannel = resolveSendChannel(
+        targetChannel,
         capturedChannelId,
         queryClient.getQueryData<Channel[]>(channelsQueryKey),
         channel,
       );
 
-      if (capturedChannelId != null && effectiveChannel == null) {
-        throw new Error("Channel is no longer available.");
+      if (effectiveChannel == null) {
+        if (capturedChannelId != null) {
+          throw new Error("Channel is no longer available.");
+        }
+        throw new Error("This channel does not support message sending yet.");
       }
 
-      if (!effectiveChannel || effectiveChannel.channelType === "forum") {
+      if (effectiveChannel.channelType === "forum") {
         throw new Error("This channel does not support message sending yet.");
       }
 
@@ -524,8 +549,13 @@ export function useSendMessageMutation(
         emojiTags,
         mentionTags,
       } = splitOutgoingTags(mediaTags);
+      const recipientPubkeys = messageMentionPubkeys(
+        effectiveChannel,
+        identity.pubkey,
+        mentionPubkeys,
+      );
 
-      if (isWalletBotChannel(channel)) {
+      if (isWalletBotChannel(effectiveChannel)) {
         if (
           parentEventId ||
           (mediaTags && mediaTags.length > 0) ||
@@ -617,7 +647,7 @@ export function useSendMessageMutation(
           content,
           parentEventId ?? null,
           imetaTags,
-          normalizedMentionPubkeys,
+          recipientPubkeys,
           undefined,
           annotationTags,
           emojiTags,
@@ -634,7 +664,7 @@ export function useSendMessageMutation(
               identity.pubkey,
               parentEventId,
               resolveReplyRootId(parentEventId, cachedMessages),
-              normalizedMentionPubkeys,
+              recipientPubkeys,
             )
           : [];
         const baseTags = parentEventId
@@ -654,10 +684,9 @@ export function useSendMessageMutation(
             ...baseTags,
             // For non-replies, add mention p-tags here (replies get them via buildReplyTags)
             ...(!parentEventId
-              ? normalizeMentionPubkeys(
-                  normalizedMentionPubkeys,
-                  identity.pubkey,
-                ).map((pk) => ["p", pk])
+              ? normalizeMentionPubkeys(recipientPubkeys, identity.pubkey).map(
+                  (pk) => ["p", pk],
+                )
               : []),
             ...imetaTags,
             ...emojiTags,
@@ -685,7 +714,7 @@ export function useSendMessageMutation(
       const sentMessage = await relayClient.sendMessage(
         effectiveChannel.id,
         content,
-        normalizedMentionPubkeys,
+        recipientPubkeys,
         [...annotationTags, ...mentionTags],
         identity.pubkey,
       );
@@ -704,6 +733,7 @@ export function useSendMessageMutation(
     },
     onMutate: async ({
       channelId: capturedChannelId,
+      targetChannel,
       content,
       bountyAmountSats,
       kudos,
@@ -711,11 +741,11 @@ export function useSendMessageMutation(
       parentEventId,
       mediaTags,
     }) => {
-      // Mirror the mutationFn channel resolution so the optimistic message
-      // lands in the same cache key the real send will eventually populate.
-      // A supplied-but-unresolvable id returns undefined (skips optimistic write)
-      // rather than silently writing to the live channel.
-      const effectiveChannel = resolveEffectiveChannel(
+      // Mirror mutationFn's target resolution so the optimistic message lands
+      // in the cache for the same channel as the real send. A caller-supplied
+      // channel remains valid even when a stale channel-list read omitted it.
+      const effectiveChannel = resolveSendChannel(
+        targetChannel,
         capturedChannelId,
         queryClient.getQueryData<Channel[]>(channelsQueryKey),
         channel,
@@ -874,7 +904,7 @@ export function useToggleReactionMutation() {
       }
 
       // Custom-emoji reaction: emoji is `:shortcode:`. Resolve its image URL
-      // from the cached workspace palette so the kind:7 carries the NIP-30
+      // from the cached community palette so the kind:7 carries the NIP-30
       // `["emoji", shortcode, url]` tag. Unicode reactions resolve to no URL.
       const emojiUrl = reactionEmojiUrl(
         emoji,

@@ -296,6 +296,13 @@ test("shows profile save feedback as a toast", async ({ page }) => {
 });
 
 test("nests the avatar edit button in a clipped notch", async ({ page }) => {
+  // Under the Buzz default theme the settings nav overrides `--sidebar-active`
+  // (white pill on the gradient) while the avatar edit button deliberately
+  // keeps the root accent-driven token, so the shared-token comparison below
+  // only holds outside the Buzz theme.
+  await page.addInitScript(() => {
+    window.localStorage.setItem("buzz-theme", "github-light");
+  });
   await page.goto("/");
 
   await openSettings(page, "profile");
@@ -623,26 +630,109 @@ test("snaps custom avatar colors to the dot grid", async ({ page }) => {
   await expect(page.getByTestId("profile-avatar-done")).toBeVisible();
 });
 
+test("opens Send feedback from the profile menu", async ({ page }) => {
+  await page.goto("/");
+  await openProfileMenu(page);
+  await page.getByTestId("profile-popover-send-feedback").click();
+  await expect(page.getByTestId("send-feedback-dialog")).toBeVisible();
+  await expect(page.getByTestId("feedback-privacy-disclosure")).toContainText(
+    "not posted to a channel",
+  );
+});
+
+test("keeps Send disabled when a stale attachment attempt finishes", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    uploadDelayMs: 1_200,
+    uploadDescriptors: [
+      {
+        url: `https://mock.relay/media/${"b".repeat(64)}.png`,
+        sha256: "b".repeat(64),
+        size: 42,
+        type: "image/png",
+        uploaded: 42,
+      },
+    ],
+  });
+  await page.goto("/");
+
+  await openProfileMenu(page);
+  await page.getByTestId("profile-popover-send-feedback").click();
+  await page.getByTestId("feedback-message").fill("Attachment race");
+  await page.getByTestId("feedback-attach-image").click();
+  await expect(page.getByTestId("feedback-attach-image")).toContainText(
+    "Attaching…",
+  );
+
+  await page.waitForTimeout(450);
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await openProfileMenu(page);
+  await page.getByTestId("profile-popover-send-feedback").click();
+  await page.getByTestId("feedback-message").fill("Second attachment");
+  await page.getByTestId("feedback-attach-image").click();
+
+  const submit = page.getByTestId("feedback-submit");
+  await expect(submit).toBeDisabled();
+  await page.waitForTimeout(900);
+  await expect(page.getByTestId("feedback-attach-image")).toContainText(
+    "Attaching…",
+  );
+  await expect(submit).toBeDisabled();
+
+  await expect(page.getByTestId("feedback-attachment-thumb")).toBeVisible();
+  await expect(submit).toBeEnabled();
+});
+
+test("proxies feedback attachment previews", async ({ page }) => {
+  const sha256 = "c".repeat(64);
+  const proxyUrl = `http://127.0.0.1:54321/media/${sha256}.png`;
+  await installMockBridge(page, {
+    uploadDescriptors: [
+      {
+        url: `http://localhost:3000/media/${sha256}.png`,
+        sha256,
+        size: 42,
+        type: "image/png",
+        uploaded: 42,
+      },
+    ],
+  });
+  await page.goto("/");
+
+  await openProfileMenu(page);
+  await page.getByTestId("profile-popover-send-feedback").click();
+  await page.getByTestId("feedback-attach-image").click();
+
+  const thumbnail = page.getByTestId("feedback-attachment-thumb");
+  await expect(thumbnail.locator("img")).toHaveAttribute("src", proxyUrl);
+  await thumbnail.click();
+
+  const preview = page.getByTestId("feedback-attachment-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview.locator("img")).toHaveAttribute("src", proxyUrl);
+});
+
 test("updates presence from the profile menu", async ({ page }) => {
   await page.goto("/");
 
   await openProfileMenu(page);
   await expect(
-    page.getByTestId("profile-popover-current-status"),
+    page.getByTestId("profile-popover-presence-trigger"),
   ).toContainText("Online");
 
   await page.getByTestId("profile-popover-presence-trigger").click();
   await page.getByTestId("profile-popover-status-away").click();
   await openProfileMenu(page);
   await expect(
-    page.getByTestId("profile-popover-current-status"),
+    page.getByTestId("profile-popover-presence-trigger"),
   ).toContainText("Away");
 
   await page.getByTestId("profile-popover-presence-trigger").click();
   await page.getByTestId("profile-popover-status-offline").click();
   await openProfileMenu(page);
   await expect(
-    page.getByTestId("profile-popover-current-status"),
+    page.getByTestId("profile-popover-presence-trigger"),
   ).toContainText("Offline");
 });
 
@@ -1008,7 +1098,7 @@ test("renders settings in the app shell with a back button", async ({
     "true",
   );
   await expect(page.getByTestId("settings-nav-lightning-wallet")).toBeVisible();
-  await expect(page.getByText("Workspaces", { exact: true })).toBeVisible();
+  await expect(page.getByText("Communities", { exact: true })).toBeVisible();
   await expect(
     page.getByTestId("settings-nav-channel-templates"),
   ).toBeVisible();
@@ -1274,15 +1364,18 @@ test("opens settings with the keyboard shortcut and updates theme", async ({
   ).toBeVisible();
   await page.getByTestId("settings-nav-appearance").click();
 
-  // Default theme is catppuccin-macchiato (dark)
+  // Default is Buzz in System mode; Playwright's default color scheme is
+  // light, so the app boots with the light Buzz theme.
   await expect
     .poll(() =>
-      page.evaluate(() => document.documentElement.classList.contains("dark")),
+      page.evaluate(() => document.documentElement.classList.contains("light")),
     )
     .toBe(true);
 
-  // Switch to Light mode tab to reveal light themes
-  await page.getByRole("button", { name: "Light" }).click();
+  // Switch to Light mode tab to reveal light themes. Target the testid — in
+  // the default System mode the "Light" paired-theme tile shares the same
+  // accessible name as the mode button.
+  await page.getByTestId("appearance-mode-light").click();
 
   // Switch to a light theme — verifies dark→light transition
   await page.getByTestId("theme-option-github-light").click();
@@ -1314,7 +1407,7 @@ test("opens settings with the keyboard shortcut and updates theme", async ({
     .toBe("github-light");
 
   // Switch to Dark mode tab to reveal dark themes
-  await page.getByRole("button", { name: "Dark" }).click();
+  await page.getByTestId("appearance-mode-dark").click();
 
   // Switch back to a dark theme — verifies light→dark transition
   await page.getByTestId("theme-option-dracula").click();

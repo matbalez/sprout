@@ -1,8 +1,100 @@
+use std::{collections::VecDeque, sync::Mutex};
+
 use serde::Serialize;
-use tauri::Emitter;
+use tauri::{Emitter, Manager, State};
 use url::Url;
 
 use crate::nostr_bind;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingCommunityDeepLink {
+    id: String,
+    kind: String,
+    relay_url: String,
+    code: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct PendingCommunityDeepLinks(Mutex<VecDeque<PendingCommunityDeepLink>>);
+
+impl PendingCommunityDeepLinks {
+    fn enqueue(&self, pending: PendingCommunityDeepLink) {
+        let mut queue = self.0.lock().expect("pending deep-link queue poisoned");
+        if queue.iter().any(|item| {
+            item.kind == pending.kind
+                && item.relay_url == pending.relay_url
+                && item.code == pending.code
+        }) {
+            return;
+        }
+        queue.push_back(pending);
+    }
+
+    fn first(&self) -> Option<PendingCommunityDeepLink> {
+        self.0
+            .lock()
+            .expect("pending deep-link queue poisoned")
+            .front()
+            .cloned()
+    }
+
+    fn acknowledge(&self, id: &str) -> bool {
+        let mut queue = self.0.lock().expect("pending deep-link queue poisoned");
+        if queue.front().is_some_and(|item| item.id == id) {
+            queue.pop_front();
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn take_pending_community_deep_link(
+    pending: State<'_, PendingCommunityDeepLinks>,
+) -> Option<PendingCommunityDeepLink> {
+    pending.first()
+}
+
+#[tauri::command]
+pub(crate) fn acknowledge_pending_community_deep_link(
+    id: String,
+    pending: State<'_, PendingCommunityDeepLinks>,
+) -> bool {
+    pending.acknowledge(&id)
+}
+
+fn queue_community_deep_link(
+    app: &tauri::AppHandle,
+    kind: &str,
+    relay_url: String,
+    code: Option<String>,
+) {
+    app.state::<PendingCommunityDeepLinks>()
+        .enqueue(PendingCommunityDeepLink {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: kind.to_owned(),
+            relay_url,
+            code,
+        });
+}
+
+fn activate_main_window(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if let Err(error) = window.unminimize() {
+        eprintln!("buzz-desktop: failed to unminimize main window for deep link: {error}");
+    }
+    if let Err(error) = window.show() {
+        eprintln!("buzz-desktop: failed to show main window for deep link: {error}");
+    }
+    if let Err(error) = window.set_focus() {
+        eprintln!("buzz-desktop: failed to focus main window for deep link: {error}");
+    }
+}
 
 /// Parse the query string of a `buzz://message?…` URL into the JSON
 /// payload emitted on `deep-link-message`. Returns `None` when a required
@@ -43,6 +135,7 @@ fn parse_message_deep_link(url: &Url) -> Option<serde_json::Value> {
 fn parse_join_deep_link(url: &Url) -> Option<serde_json::Value> {
     let mut relay: Option<String> = None;
     let mut code: Option<String> = None;
+    let mut policy_receipt: Option<String> = None;
     for (k, v) in url.query_pairs() {
         let v = v.into_owned();
         if v.is_empty() {
@@ -51,6 +144,7 @@ fn parse_join_deep_link(url: &Url) -> Option<serde_json::Value> {
         match k.as_ref() {
             "relay" => relay = Some(v),
             "code" => code = Some(v),
+            "policy_receipt" => policy_receipt = Some(v),
             _ => {}
         }
     }
@@ -62,6 +156,7 @@ fn parse_join_deep_link(url: &Url) -> Option<serde_json::Value> {
     Some(serde_json::json!({
         "relayUrl": relay_url,
         "code": code,
+        "policyReceipt": policy_receipt,
     }))
 }
 
@@ -78,6 +173,7 @@ struct NostrBindDeepLinkPayload {
     origin: String,
     expires_at: String,
     return_mode: String,
+    callback_url: Option<String>,
 }
 
 fn non_empty_param(url: &Url, name: &str) -> Result<String, String> {
@@ -86,6 +182,35 @@ fn non_empty_param(url: &Url, name: &str) -> Result<String, String> {
         .map(|(_, value)| value.into_owned())
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("missing {name}"))
+}
+
+fn optional_non_empty_param(url: &Url, name: &str) -> Option<String> {
+    url.query_pairs()
+        .find(|(key, _)| key == name)
+        .map(|(_, value)| value.into_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_nostr_bind_callback_url(callback_url: &str, origin: &str) -> Result<(), String> {
+    let callback =
+        Url::parse(callback_url).map_err(|error| format!("invalid callback_url: {error}"))?;
+    let origin = Url::parse(origin).map_err(|error| format!("invalid origin: {error}"))?;
+    if callback.scheme() != "https" {
+        return Err("callback_url must use https".into());
+    }
+    if callback.host_str().is_none() {
+        return Err("callback_url missing host".into());
+    }
+    if !callback.username().is_empty() || callback.password().is_some() {
+        return Err("callback_url must not include credentials".into());
+    }
+    if callback.scheme() != origin.scheme()
+        || callback.host_str() != origin.host_str()
+        || callback.port_or_known_default() != origin.port_or_known_default()
+    {
+        return Err("callback_url must match origin".into());
+    }
+    Ok(())
 }
 
 fn parse_nostr_bind_deep_link(url: &Url) -> Result<NostrBindDeepLinkPayload, String> {
@@ -99,6 +224,7 @@ fn parse_nostr_bind_deep_link(url: &Url) -> Result<NostrBindDeepLinkPayload, Str
     let origin = non_empty_param(url, "origin")?;
     let expires_at = non_empty_param(url, "expires_at")?;
     let return_mode = non_empty_param(url, "return")?;
+    let callback_url = optional_non_empty_param(url, "callback_url");
 
     nostr_bind::validate_challenge_id(&challenge_id)?;
     nostr_bind::validate_nonce(&nonce)?;
@@ -108,8 +234,16 @@ fn parse_nostr_bind_deep_link(url: &Url) -> Result<NostrBindDeepLinkPayload, Str
     // Expired links still reach the consent surface so the user gets an explicit
     // failure instead of a silent stderr-only rejection from a launched app.
     nostr_bind::validate_expires_at_format(&expires_at)?;
-    if return_mode != nostr_bind::RETURN_MODE {
-        return Err("unsupported return mode".into());
+    match return_mode.as_str() {
+        nostr_bind::RETURN_MODE_CLIPBOARD => {}
+        nostr_bind::RETURN_MODE_BROWSER_FRAGMENT_V1 if callback_url.is_some() => {}
+        nostr_bind::RETURN_MODE_BROWSER_FRAGMENT_V1 => {
+            return Err("browser_fragment_v1 requires callback_url".into());
+        }
+        _ => return Err("unsupported return mode".into()),
+    }
+    if let Some(callback_url) = callback_url.as_deref() {
+        validate_nostr_bind_callback_url(callback_url, &origin)?;
     }
 
     Ok(NostrBindDeepLinkPayload {
@@ -123,6 +257,7 @@ fn parse_nostr_bind_deep_link(url: &Url) -> Result<NostrBindDeepLinkPayload, Str
         origin,
         expires_at,
         return_mode,
+        callback_url,
     })
 }
 
@@ -169,6 +304,8 @@ pub(crate) fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                     return;
                 }
             }
+            activate_main_window(app);
+            queue_community_deep_link(app, "connect", relay_url.clone(), None);
             let _ = app.emit("deep-link-connect", relay_url);
         }
         Some("join") => {
@@ -179,6 +316,10 @@ pub(crate) fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                 eprintln!("buzz-desktop: join deep link missing/invalid relay or code: {url_str}");
                 return;
             };
+            activate_main_window(app);
+            let relay_url = payload["relayUrl"].as_str().unwrap_or_default().to_owned();
+            let code = payload["code"].as_str().map(str::to_owned);
+            queue_community_deep_link(app, "join", relay_url, code);
             let _ = app.emit("deep-link-join", payload);
         }
         Some("message") => {
@@ -194,10 +335,12 @@ pub(crate) fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
                 eprintln!("buzz-desktop: message deep link missing channel or id: {url_str}");
                 return;
             };
+            activate_main_window(app);
             let _ = app.emit("deep-link-message", payload);
         }
         Some("nostr-bind") => match parse_nostr_bind_deep_link(&url) {
             Ok(payload) => {
+                activate_main_window(app);
                 let _ = app.emit("deep-link-nostr-bind", payload);
             }
             Err(error) => {
@@ -217,7 +360,39 @@ pub(crate) fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
 mod tests {
     use url::Url;
 
-    use super::{parse_join_deep_link, parse_message_deep_link, parse_nostr_bind_deep_link};
+    use super::{
+        parse_join_deep_link, parse_message_deep_link, parse_nostr_bind_deep_link,
+        PendingCommunityDeepLink, PendingCommunityDeepLinks,
+    };
+
+    fn pending(id: &str, relay_url: &str, code: Option<&str>) -> PendingCommunityDeepLink {
+        PendingCommunityDeepLink {
+            id: id.to_owned(),
+            kind: if code.is_some() { "join" } else { "connect" }.to_owned(),
+            relay_url: relay_url.to_owned(),
+            code: code.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn pending_community_links_are_fifo_and_acknowledged_in_order() {
+        let queue = PendingCommunityDeepLinks::default();
+        queue.enqueue(pending("first", "wss://one.example", Some("one")));
+        queue.enqueue(pending("second", "wss://two.example", Some("two")));
+        assert_eq!(queue.first().unwrap().id, "first");
+        assert!(!queue.acknowledge("second"));
+        assert!(queue.acknowledge("first"));
+        assert_eq!(queue.first().unwrap().id, "second");
+    }
+
+    #[test]
+    fn pending_community_links_dedupe_exact_intents() {
+        let queue = PendingCommunityDeepLinks::default();
+        queue.enqueue(pending("first", "wss://one.example", Some("one")));
+        queue.enqueue(pending("duplicate", "wss://one.example", Some("one")));
+        assert!(queue.acknowledge("first"));
+        assert!(queue.first().is_none());
+    }
 
     fn valid_nostr_bind_url() -> Url {
         Url::parse(
@@ -282,6 +457,17 @@ mod tests {
         let payload = parse_join_deep_link(&url).expect("required params present");
         assert_eq!(payload["relayUrl"], "wss://relay.example");
         assert_eq!(payload["code"], "abc.def");
+        assert!(payload["policyReceipt"].is_null());
+    }
+
+    #[test]
+    fn parse_join_deep_link_extracts_policy_receipt() {
+        let url = Url::parse(
+            "buzz://join?relay=wss%3A%2F%2Frelay.example&code=abc.def&policy_receipt=receipt.value",
+        )
+        .unwrap();
+        let payload = parse_join_deep_link(&url).expect("required params present");
+        assert_eq!(payload["policyReceipt"], "receipt.value");
     }
 
     #[test]
@@ -321,6 +507,51 @@ mod tests {
         assert_eq!(payload.origin, "https://example.com");
         assert_eq!(payload.expires_at, "2999-01-01T00:00:00Z");
         assert_eq!(payload.return_mode, "clipboard");
+        assert_eq!(payload.callback_url, None);
+    }
+
+    #[test]
+    fn parse_nostr_bind_deep_link_accepts_same_origin_callback_url() {
+        let url = Url::parse("buzz://nostr-bind?challenge_id=550e8400-e29b-41d4-a716-446655440000&nonce=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi01234567&verification_code=123456&audience=buzz%3Anostr-identity&action=bind_nostr_identity&protocol=buzz-nostr-identity&version=1&origin=https%3A%2F%2Fexample.com&expires_at=2999-01-01T00%3A00%3A00Z&return=clipboard&callback_url=https%3A%2F%2Fexample.com%2Fbuzz%3FmockSession%3D1").unwrap();
+        let payload = parse_nostr_bind_deep_link(&url).unwrap();
+        assert_eq!(
+            payload.callback_url.as_deref(),
+            Some("https://example.com/buzz?mockSession=1")
+        );
+    }
+
+    #[test]
+    fn parse_nostr_bind_deep_link_accepts_browser_fragment_return() {
+        let url = Url::parse("buzz://nostr-bind?challenge_id=550e8400-e29b-41d4-a716-446655440000&nonce=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi01234567&verification_code=123456&audience=buzz%3Anostr-identity&action=bind_nostr_identity&protocol=buzz-nostr-identity&version=1&origin=https%3A%2F%2Fexample.com&expires_at=2999-01-01T00%3A00%3A00Z&return=browser_fragment_v1&callback_url=https%3A%2F%2Fexample.com%2Fbuzz").unwrap();
+        let payload = parse_nostr_bind_deep_link(&url).unwrap();
+
+        assert_eq!(payload.return_mode, "browser_fragment_v1");
+        assert_eq!(
+            payload.callback_url.as_deref(),
+            Some("https://example.com/buzz")
+        );
+    }
+
+    #[test]
+    fn parse_nostr_bind_deep_link_requires_callback_for_browser_fragment_return() {
+        let url = Url::parse("buzz://nostr-bind?challenge_id=550e8400-e29b-41d4-a716-446655440000&nonce=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi01234567&verification_code=123456&audience=buzz%3Anostr-identity&action=bind_nostr_identity&protocol=buzz-nostr-identity&version=1&origin=https%3A%2F%2Fexample.com&expires_at=2999-01-01T00%3A00%3A00Z&return=browser_fragment_v1").unwrap();
+
+        assert_eq!(
+            parse_nostr_bind_deep_link(&url).unwrap_err(),
+            "browser_fragment_v1 requires callback_url"
+        );
+    }
+
+    #[test]
+    fn parse_nostr_bind_deep_link_rejects_cross_origin_callback_url() {
+        let url = Url::parse("buzz://nostr-bind?challenge_id=550e8400-e29b-41d4-a716-446655440000&nonce=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi01234567&verification_code=123456&audience=buzz%3Anostr-identity&action=bind_nostr_identity&protocol=buzz-nostr-identity&version=1&origin=https%3A%2F%2Fexample.com&expires_at=2999-01-01T00%3A00%3A00Z&return=clipboard&callback_url=https%3A%2F%2Fevil.example%2Fbuzz").unwrap();
+        assert!(parse_nostr_bind_deep_link(&url).is_err());
+    }
+
+    #[test]
+    fn parse_nostr_bind_deep_link_rejects_http_callback_url() {
+        let url = Url::parse("buzz://nostr-bind?challenge_id=550e8400-e29b-41d4-a716-446655440000&nonce=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi01234567&verification_code=123456&audience=buzz%3Anostr-identity&action=bind_nostr_identity&protocol=buzz-nostr-identity&version=1&origin=https%3A%2F%2Fexample.com&expires_at=2999-01-01T00%3A00%3A00Z&return=clipboard&callback_url=http%3A%2F%2Fexample.com%2Fbuzz").unwrap();
+        assert!(parse_nostr_bind_deep_link(&url).is_err());
     }
 
     #[test]

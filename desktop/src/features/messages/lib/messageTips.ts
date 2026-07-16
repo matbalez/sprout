@@ -3,6 +3,7 @@ import type { TimelineTipSummary } from "@/features/messages/types";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import { KIND_REACTION } from "@/shared/constants/kinds";
 import { resolveEventAuthorPubkey } from "@/shared/lib/authors";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 
 const HEX_RE = /^[0-9a-f]+$/i;
 const TIP_RECEIPT_CONTENT_PREFIX = "sprout-tip:";
@@ -138,7 +139,7 @@ export function buildTipsByEventId({
     const displayName =
       profile?.displayName?.trim() ||
       profile?.nip05Handle?.trim() ||
-      `${actorPubkey.slice(0, 8)}…`;
+      truncatePubkey(actorPubkey);
     existing.users.push({
       pubkey: actorPubkey,
       displayName,

@@ -113,6 +113,7 @@ impl AgentDefinition {
             backend: BackendKind::default(),
             backend_agent_id: None,
             provider_binary_path: None,
+            team_id: None,
             persona_team_dir: None,
             persona_name_in_team: None,
             created_at: self.created_at,
@@ -196,6 +197,9 @@ pub struct ManagedAgentRecord {
     pub name: String,
     #[serde(default)]
     pub persona_id: Option<String>,
+    /// Team this instance was deployed from. Resolves runtime team instructions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
     /// nsec private key. Held in memory but persisted to the OS keyring (keyed
     /// by `pubkey`) rather than serialized to `managed-agents.json`. The
     /// storage layer blanks this before writing JSON once the key is safely in
@@ -600,7 +604,7 @@ pub struct InstallStepResult {
     pub stderr: String,
     pub exit_code: Option<i32>,
     /// Actionable guidance shown in the UI when this step failed due to a
-    /// recognized condition (e.g. EACCES on a root-owned npm global prefix).
+    /// recognized condition (e.g. EACCES writing Buzz's private npm prefix).
     /// `None` when the step succeeded or no pattern matched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
@@ -676,6 +680,9 @@ pub struct TeamRecord {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    /// Runtime-layered instructions shared by every member deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     pub persona_ids: Vec<String>,
     #[serde(default)]
     pub is_builtin: bool,
@@ -700,6 +707,7 @@ pub struct TeamRecord {
 pub struct CreateTeamRequest {
     pub name: String,
     pub description: Option<String>,
+    pub instructions: Option<String>,
     #[serde(default)]
     pub persona_ids: Vec<String>,
 }
@@ -710,26 +718,9 @@ pub struct UpdateTeamRequest {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
+    pub instructions: Option<String>,
     #[serde(default)]
     pub persona_ids: Vec<String>,
-}
-
-/// Result of syncing a directory-backed team with its backing directory.
-#[derive(Debug, Clone, Serialize)]
-pub struct SyncResult {
-    pub personas_added: Vec<String>,
-    pub personas_removed: Vec<String>,
-    pub personas_updated: Vec<String>,
-    pub metadata_changed: bool,
-}
-
-/// Report from the one-time packs→teams migration.
-#[derive(Debug, Clone, Serialize)]
-pub struct MigrationReport {
-    pub packs_migrated: usize,
-    pub personas_updated: usize,
-    pub agents_updated: usize,
-    pub errors: Vec<String>,
 }
 
 pub const DEFAULT_ACP_COMMAND: &str = "buzz-acp";

@@ -325,10 +325,14 @@ function RuntimeDetails({ runtime }: { runtime: AcpRuntimeCatalogEntry }) {
     runtime.command &&
     runtime.binaryPath
   ) {
+    const description = describeResolvedCommand(
+      runtime.command,
+      runtime.binaryPath,
+    );
     return (
       <>
         <p className="mt-2 text-sm leading-5 text-muted-foreground">
-          {describeResolvedCommand(runtime.command, runtime.binaryPath)}
+          {description.charAt(0).toUpperCase() + description.slice(1)}
         </p>
         {runtime.defaultArgs.length > 0 ? (
           <p className="mt-1 text-xs text-muted-foreground/80">
@@ -363,7 +367,7 @@ function RuntimeDetails({ runtime }: { runtime: AcpRuntimeCatalogEntry }) {
           This updates the machine-global{" "}
           <code className="rounded bg-muted px-0.5 text-2xs">codex-acp</code>{" "}
           adapter. Older Buzz releases using the legacy adapter contract may
-          lose relay access until{" "}
+          lose community access until{" "}
           <code className="rounded bg-muted px-0.5 text-2xs">
             @zed-industries/codex-acp@0.16.0
           </code>{" "}

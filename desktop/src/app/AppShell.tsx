@@ -46,6 +46,8 @@ import { useAgentsDataRefresh } from "@/features/agents/lib/useAgentsDataRefresh
 import { useAutoRestartPolicy } from "@/features/agents/lib/useAutoRestartPolicy";
 import { usePersonaSync } from "@/features/agents/lib/usePersonaSync";
 import { useAgentObserverIngestion } from "@/features/agents/useAgentObserverIngestion";
+import { AgentManagementDialogs } from "@/features/agents/ui/AgentManagementDialogs";
+import { RequestedAgentCreateDialogs } from "@/features/agents/ui/RequestedAgentCreateDialogs";
 import {
   usePresenceSession,
   usePresenceSubscription,
@@ -55,11 +57,12 @@ import {
   useUserStatusQuery,
   useUserStatusSubscription,
 } from "@/features/user-status/hooks";
-import { useWorkspaceEmojiLiveUpdates } from "@/features/custom-emoji/hooks";
+import { useCommunityEmojiLiveUpdates } from "@/features/custom-emoji/hooks";
 import { useArchiveSync } from "@/features/local-archive/archiveSyncManager";
 import { useObserverArchiveSeed } from "@/features/local-archive/useObserverArchiveSeed";
 import { useAgentMetricArchiveSeed } from "@/features/local-archive/useAgentMetricArchiveSeed";
 import { useProfileQuery } from "@/features/profile/hooks";
+import { SendFeedbackController } from "@/features/settings/ui/SendFeedbackController";
 import {
   DEFAULT_SETTINGS_SECTION,
   type SettingsSection,
@@ -70,10 +73,11 @@ import { useDueReminderBadgeCount } from "@/features/reminders/hooks";
 import { RemindMeLaterProvider } from "@/features/reminders/ui/RemindMeLaterProvider";
 import { useReminderNotifications } from "@/features/reminders/useReminderNotifications";
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
-import { WorkspaceRail } from "@/features/sidebar/ui/WorkspaceRail";
+import { CommunityRail } from "@/features/sidebar/ui/CommunityRail";
 import { useChannelMutes } from "@/features/sidebar/lib/useChannelMutes";
 import { useChannelStars } from "@/features/sidebar/lib/useChannelStars";
-import { useWorkspaces } from "@/features/workspaces/useWorkspaces";
+import type { CreateChannelInput } from "@/features/sidebar/lib/useCreateChannelForm";
+import { useCommunities } from "@/features/communities/useCommunities";
 import { useApplyTemplate } from "@/features/channel-templates/useApplyTemplate";
 import { getUserWalletBolt12Offer } from "@/features/wallet/api";
 import { relayClient } from "@/shared/api/relayClient";
@@ -115,9 +119,9 @@ export function AppShell() {
   useTauriWindowDrag();
   useWebviewScrollBoundaryLock();
 
-  const workspacesHook = useWorkspaces();
-  const workspaceRailEnabled = useFeatureEnabled("workspaceRail");
-  const [isAddWorkspaceOpen, setIsAddWorkspaceOpen] = React.useState(false);
+  const communitiesHook = useCommunities();
+  const communityRailEnabled = useFeatureEnabled("workspaceRail");
+  const [isAddCommunityOpen, setIsAddCommunityOpen] = React.useState(false);
   const [isChannelManagementOpen, setIsChannelManagementOpen] =
     React.useState(false);
   const [managedChannelId, setManagedChannelId] = React.useState<string | null>(
@@ -126,8 +130,8 @@ export function AppShell() {
   const [searchFocusRequest, setSearchFocusRequest] = React.useState(0);
   const [browseDialogType, setBrowseDialogType] =
     React.useState<BrowseDialogType>(null);
-  const [isNewDmOpen, setIsNewDmOpen] = React.useState(false);
   const [isCreateChannelOpen, setIsCreateChannelOpen] = React.useState(false);
+  const [isSendFeedbackOpen, setIsSendFeedbackOpen] = React.useState(false);
   const [isHuddleDrawerOpen, setIsHuddleDrawerOpen] = React.useState(false);
   const mainInsetRef = React.useRef<HTMLElement>(null);
   const location = useLocation();
@@ -136,6 +140,7 @@ export function AppShell() {
     goAgents,
     goChannel,
     goHome,
+    goNewMessage,
     goProjects,
     goPulse,
     goSettings,
@@ -145,24 +150,24 @@ export function AppShell() {
   } = useAppNavigation();
   const { canGoBack, canGoForward, goBack, goForward } =
     useBackForwardControls();
-  // Navigate home before switching workspaces so the outgoing channel URL is
+  // Navigate home before switching communities so the outgoing channel URL is
   // cleared. Without this, ChannelScreen's read effect continues firing
-  // markChannelRead({ topLevelOnly: true }) for the previous workspace's
+  // markChannelRead({ topLevelOnly: true }) for the previous community's
   // channel, advancing its NIP-RS markers and causing the rail badge to vanish
   // on the next 30s poll (A→B→A→B disappearance bug).
-  // Guard: skip goHome() when re-selecting the already-active workspace so
+  // Guard: skip goHome() when re-selecting the already-active community so
   // the current channel is not unexpectedly cleared.
-  const handleSwitchWorkspace = React.useCallback(
+  const handleSwitchCommunity = React.useCallback(
     (id: string) => {
-      if (id !== workspacesHook.activeWorkspace?.id) {
+      if (id !== communitiesHook.activeCommunity?.id) {
         void goHome();
       }
-      workspacesHook.switchWorkspace(id);
+      communitiesHook.switchCommunity(id);
     },
     [
       goHome,
-      workspacesHook.activeWorkspace?.id,
-      workspacesHook.switchWorkspace,
+      communitiesHook.activeCommunity?.id,
+      communitiesHook.switchCommunity,
     ],
   );
   const { selectedChannelId, selectedView } = React.useMemo(
@@ -213,7 +218,7 @@ export function AppShell() {
   useRelayAutoHeal();
   usePresenceSubscription();
   useUserStatusSubscription();
-  useWorkspaceEmojiLiveUpdates();
+  useCommunityEmojiLiveUpdates();
   useMembershipNotifications(identityQuery.data?.pubkey);
   const presenceSession = usePresenceSession(deferredPubkey);
   const selfStatusQuery = useUserStatusQuery(
@@ -244,7 +249,7 @@ export function AppShell() {
       : undefined;
   const relayConnectionCard = useSidebarRelayConnectionCard(
     channelsErrorMessage,
-    workspacesHook.activeWorkspace?.relayUrl,
+    communitiesHook.activeCommunity?.relayUrl,
   );
   const memberChannels = React.useMemo(
     () => channels.filter((channel) => channel.isMember),
@@ -310,7 +315,7 @@ export function AppShell() {
   } = useUnreadChannels(sidebarChannels, activeChannel, {
     pubkey: identityQuery.data?.pubkey,
     relayClient,
-    relayUrl: workspacesHook.activeWorkspace?.relayUrl,
+    relayUrl: communitiesHook.activeCommunity?.relayUrl,
     currentPubkey: identityQuery.data?.pubkey,
     mutedChannelIds,
     notifyForActiveChannel: notificationSettings.settings.notifyWhileViewing,
@@ -447,7 +452,11 @@ export function AppShell() {
   }, []);
 
   const handleBrowseChannelJoin = React.useCallback(
-    async (channel: Channel) => {
+    async (channelId: string) => {
+      const channel = channels.find((candidate) => candidate.id === channelId);
+      if (!channel) {
+        throw new Error("Channel is no longer available.");
+      }
       const joinPaymentChannel = await hydrateChannelForJoinPayment(channel);
       const paidJoinAmountBaseUnits = getPaidJoinAmount(joinPaymentChannel);
       queryClient.setQueryData<Channel[]>(channelsQueryKey, (current = []) =>
@@ -477,7 +486,100 @@ export function AppShell() {
       }
       await queryClient.invalidateQueries({ queryKey: channelsQueryKey });
     },
-    [queryClient],
+    [channels, queryClient],
+  );
+
+  const handleCreateChannel = React.useCallback(
+    async ({
+      description,
+      name,
+      paidJoinAmount,
+      paidPostAmount,
+      hiveChannel,
+      visibility,
+      ttlSeconds,
+      templateId,
+    }: CreateChannelInput) => {
+      const paymentBolt12Offer =
+        paidJoinAmount || paidPostAmount
+          ? await paidChannelCreatorOffer(identityQuery.data?.pubkey)
+          : undefined;
+      const createdChannel = await createChannelMutation.mutateAsync({
+        name,
+        description,
+        channelType: "stream",
+        visibility,
+        ttlSeconds,
+        paidJoinAmount,
+        paidPostAmount,
+        paymentBolt12Offer,
+        hiveChannel,
+      });
+
+      await applyCanvas(templateId, createdChannel.id, name);
+      await goChannel(createdChannel.id);
+      void applyAgents(templateId, createdChannel.id);
+    },
+    [
+      applyAgents,
+      applyCanvas,
+      createChannelMutation,
+      goChannel,
+      identityQuery.data?.pubkey,
+    ],
+  );
+
+  const handleCreateForum = React.useCallback(
+    async ({
+      description,
+      name,
+      paidJoinAmount,
+      paidPostAmount,
+      hiveChannel,
+      visibility,
+      ttlSeconds,
+      templateId,
+    }: CreateChannelInput) => {
+      const paymentBolt12Offer =
+        paidJoinAmount || paidPostAmount
+          ? await paidChannelCreatorOffer(identityQuery.data?.pubkey)
+          : undefined;
+      const createdForum = await createForumMutation.mutateAsync({
+        name,
+        description,
+        channelType: "forum",
+        visibility,
+        ttlSeconds,
+        paidJoinAmount,
+        paidPostAmount,
+        paymentBolt12Offer,
+        hiveChannel,
+      });
+
+      await applyCanvas(templateId, createdForum.id, name);
+      await goChannel(createdForum.id);
+      void applyAgents(templateId, createdForum.id);
+    },
+    [
+      applyAgents,
+      applyCanvas,
+      createForumMutation,
+      goChannel,
+      identityQuery.data?.pubkey,
+    ],
+  );
+
+  // The channel browser can create either a stream or a forum depending on
+  // which section opened it. Route to the matching handler.
+  const handleBrowseChannelCreate = React.useCallback(
+    async (input: CreateChannelInput) => {
+      if (browseDialogType === "forum") {
+        await handleCreateForum(input);
+      } else {
+        await handleCreateChannel(input);
+      }
+    },
+    [browseDialogType, handleCreateChannel, handleCreateForum],
   );
 
   const handleHideDm = React.useCallback(
@@ -590,7 +692,10 @@ export function AppShell() {
   // Dispatch `buzz://message` deep links into the router.
   useMessageDeepLinks();
 
-  const handleOpenNewDm = React.useCallback(() => setIsNewDmOpen(true), []);
+  const handleOpenNewDm = React.useCallback(
+    () => void goNewMessage(),
+    [goNewMessage],
+  );
   const handleOpenCreateChannel = React.useCallback(
     () => setIsCreateChannelOpen(true),
     [],
@@ -679,6 +784,7 @@ export function AppShell() {
             markAllChannelsRead,
             markChannelRead,
             markChannelUnread,
+            openBrowseChannels: handleOpenBrowseChannels,
             openCreateChannel: handleOpenCreateChannel,
             openChannelManagement: (channelId?: string) => {
               setManagedChannelId(
@@ -716,16 +822,16 @@ export function AppShell() {
                     isHuddleDrawerOpen && "buzz-huddle-app-surface-open",
                   )}
                 >
-                  {workspaceRailEnabled ? (
-                    <WorkspaceRail
-                      activeWorkspaceId={
-                        workspacesHook.activeWorkspace?.id ?? null
+                  {communityRailEnabled ? (
+                    <CommunityRail
+                      activeCommunityId={
+                        communitiesHook.activeCommunity?.id ?? null
                       }
-                      onAddWorkspace={() => setIsAddWorkspaceOpen(true)}
-                      onRemoveWorkspace={workspacesHook.removeWorkspace}
-                      onSwitchWorkspace={handleSwitchWorkspace}
-                      onUpdateWorkspace={workspacesHook.updateWorkspace}
-                      workspaces={workspacesHook.workspaces}
+                      onAddCommunity={() => setIsAddCommunityOpen(true)}
+                      onRemoveCommunity={communitiesHook.removeCommunity}
+                      onSwitchCommunity={handleSwitchCommunity}
+                      onUpdateCommunity={communitiesHook.updateCommunity}
+                      communities={communitiesHook.communities}
                     />
                   ) : null}
                   <SidebarProvider className="min-h-0 flex-1 flex-col overflow-hidden">
@@ -733,9 +839,9 @@ export function AppShell() {
                       <AppTopChrome
                         canGoBack={canGoBack}
                         canGoForward={canGoForward}
-                        hasWorkspaceRail={
-                          workspaceRailEnabled &&
-                          workspacesHook.workspaces.length > 1
+                        hasCommunityRail={
+                          communityRailEnabled &&
+                          communitiesHook.communities.length > 1
                         }
                         onGoBack={goBack}
                         onGoForward={goForward}
@@ -786,111 +892,36 @@ export function AppShell() {
                     ) : (
                       <div className="flex min-h-0 flex-1 overflow-hidden">
                         <AppSidebar
-                          activeWorkspace={workspacesHook.activeWorkspace}
+                          activeCommunity={communitiesHook.activeCommunity}
                           channels={sidebarChannels}
                           currentPubkey={identityQuery.data?.pubkey}
                           errorMessage={channelsErrorMessage}
                           fallbackDisplayName={identityQuery.data?.displayName}
                           homeBadgeCount={homeBadgeCount + dueReminderBadge}
-                          isAddWorkspaceOpen={isAddWorkspaceOpen}
+                          isAddCommunityOpen={isAddCommunityOpen}
                           relayConnectionCard={relayConnectionCard}
                           isCreatingChannel={createChannelMutation.isPending}
                           isCreatingForum={createForumMutation.isPending}
                           isLoading={channelsQuery.isLoading}
-                          isOpeningDm={openDmMutation.isPending}
-                          isNewDmOpen={isNewDmOpen}
                           isCreateChannelOpen={isCreateChannelOpen}
                           isPresencePending={presenceSession.isPending}
-                          onAddWorkspace={(workspace) => {
-                            const id = workspacesHook.addWorkspace(workspace);
-                            handleSwitchWorkspace(id);
+                          onAddCommunity={(community) => {
+                            const id = communitiesHook.addCommunity(community);
+                            handleSwitchCommunity(id);
                           }}
-                          onAddWorkspaceOpenChange={setIsAddWorkspaceOpen}
-                          onNewDmOpenChange={setIsNewDmOpen}
+                          onAddCommunityOpenChange={setIsAddCommunityOpen}
+                          onNewMessage={handleOpenNewDm}
                           onCreateChannelOpenChange={setIsCreateChannelOpen}
-                          onOpenAddWorkspace={() => setIsAddWorkspaceOpen(true)}
-                          onUpdateWorkspace={workspacesHook.updateWorkspace}
-                          onRemoveWorkspace={workspacesHook.removeWorkspace}
-                          onSwitchWorkspace={handleSwitchWorkspace}
-                          onCreateAgent={() =>
-                            void goAgents().then(requestOpenCreateAgent)
-                          }
+                          onOpenAddCommunity={() => setIsAddCommunityOpen(true)}
+                          onSendFeedback={() => setIsSendFeedbackOpen(true)}
+                          onUpdateCommunity={communitiesHook.updateCommunity}
+                          onRemoveCommunity={communitiesHook.removeCommunity}
+                          onSwitchCommunity={handleSwitchCommunity}
+                          onCreateAgent={() => requestOpenCreateAgent()}
                           selfPresenceStatus={presenceSession.currentStatus}
-                          workspaces={workspacesHook.workspaces}
-                          onCreateChannel={async ({
-                            description,
-                            name,
-                            paidJoinAmount,
-                            paidPostAmount,
-                            hiveChannel,
-                            visibility,
-                            ttlSeconds,
-                            templateId,
-                          }) => {
-                            const paymentBolt12Offer =
-                              paidJoinAmount || paidPostAmount
-                                ? await paidChannelCreatorOffer(
-                                    identityQuery.data?.pubkey,
-                                  )
-                                : undefined;
-                            const createdChannel =
-                              await createChannelMutation.mutateAsync({
-                                name,
-                                description,
-                                channelType: "stream",
-                                visibility,
-                                ttlSeconds,
-                                paidJoinAmount,
-                                paidPostAmount,
-                                paymentBolt12Offer,
-                                hiveChannel,
-                              });
-
-                            await applyCanvas(
-                              templateId,
-                              createdChannel.id,
-                              name,
-                            );
-                            await goChannel(createdChannel.id);
-                            void applyAgents(templateId, createdChannel.id);
-                          }}
-                          onCreateForum={async ({
-                            description,
-                            name,
-                            paidJoinAmount,
-                            paidPostAmount,
-                            hiveChannel,
-                            visibility,
-                            ttlSeconds,
-                            templateId,
-                          }) => {
-                            const paymentBolt12Offer =
-                              paidJoinAmount || paidPostAmount
-                                ? await paidChannelCreatorOffer(
-                                    identityQuery.data?.pubkey,
-                                  )
-                                : undefined;
-                            const createdForum =
-                              await createForumMutation.mutateAsync({
-                                name,
-                                description,
-                                channelType: "forum",
-                                visibility,
-                                ttlSeconds,
-                                paidJoinAmount,
-                                paidPostAmount,
-                                paymentBolt12Offer,
-                                hiveChannel,
-                              });
-
-                            await applyCanvas(
-                              templateId,
-                              createdForum.id,
-                              name,
-                            );
-                            await goChannel(createdForum.id);
-                            void applyAgents(templateId, createdForum.id);
-                          }}
+                          communities={communitiesHook.communities}
+                          onCreateChannel={handleCreateChannel}
+                          onCreateForum={handleCreateForum}
                           onHideDm={handleHideDm}
                           onMarkAllChannelsRead={markAllChannelsRead}
                           onMarkChannelRead={markChannelRead}
@@ -961,21 +992,28 @@ export function AppShell() {
                         <RelayConnectionOverlay
                           card={relayConnectionCard}
                           errorMessage={channelsErrorMessage}
-                          hasWorkspaceRail={
-                            workspaceRailEnabled &&
-                            workspacesHook.workspaces.length > 1
+                          hasCommunityRail={
+                            communityRailEnabled &&
+                            communitiesHook.communities.length > 1
                           }
                           isHuddleDrawerOpen={isHuddleDrawerOpen}
                         />
                       </div>
                     )}
+                    <RequestedAgentCreateDialogs />
+                    <AgentManagementDialogs />
                     <AppShellOverlays
                       activeChannel={managedChannel}
                       browseDialogType={browseDialogType}
                       channels={channels}
                       currentPubkey={identityQuery.data?.pubkey}
                       isChannelManagementOpen={isChannelManagementOpen}
+                      isCreatingBrowseChannel={
+                        createChannelMutation.isPending ||
+                        createForumMutation.isPending
+                      }
                       onBrowseChannelJoin={handleBrowseChannelJoin}
+                      onBrowseChannelCreate={handleBrowseChannelCreate}
                       onBrowseDialogOpenChange={handleBrowseDialogOpenChange}
                       onChannelManagementOpenChange={(open) => {
                         setIsChannelManagementOpen(open);
@@ -991,6 +1029,10 @@ export function AppShell() {
                       onSelectChannel={(channelId) => {
                         void goChannel(channelId);
                       }}
+                    />
+                    <SendFeedbackController
+                      onOpenChange={setIsSendFeedbackOpen}
+                      open={isSendFeedbackOpen}
                     />
                   </SidebarProvider>
                 </div>

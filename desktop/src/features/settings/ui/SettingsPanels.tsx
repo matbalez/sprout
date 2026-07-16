@@ -28,7 +28,7 @@ import type {
   NotificationSettings,
 } from "@/features/notifications/hooks";
 import type { SoundName, SoundSlot } from "@/features/notifications/lib/sound";
-import { RelayMembersSettingsCard } from "@/features/relay-members/ui/RelayMembersSettingsCard";
+import { CommunityMembersSettingsCard } from "@/features/community-members/ui/CommunityMembersSettingsCard";
 import { CustomEmojiSettingsCard } from "@/features/custom-emoji/ui/CustomEmojiSettingsCard";
 import { LocalArchiveSettingsCard } from "@/features/local-archive/ui/LocalArchiveSettingsCard";
 import { cn } from "@/shared/lib/cn";
@@ -65,6 +65,7 @@ import { MobilePairingCard } from "./MobilePairingCard";
 import { ModerationQueueCard } from "./ModerationQueueCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
+import { GlobalAgentConfigSettingsCard } from "./GlobalAgentConfigSettingsCard";
 import { ProfileSettingsCard } from "./ProfileSettingsCard";
 import { UpdateChecker } from "../UpdateChecker";
 import type { SettingsSection } from "../settingsSections";
@@ -148,8 +149,8 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     icon: Keyboard,
   },
   {
-    value: "relay-members",
-    label: "Relay Access",
+    value: "community-members",
+    label: "Community access",
     icon: LockKeyhole,
   },
   {
@@ -159,13 +160,13 @@ export const settingsSections: SettingsSectionDescriptor[] = [
   },
   {
     value: "custom-emoji",
-    label: "Custom Emoji",
+    label: "Custom emoji",
     icon: Smile,
     featureGate: "custom-emoji",
   },
   {
     value: "local-archive",
-    label: "Local Archive",
+    label: "Local archive",
     icon: Archive,
   },
   {
@@ -684,7 +685,12 @@ export function renderSettingsSection(
     case "experimental":
       return <ExperimentalFeaturesCard />;
     case "agents":
-      return <PreventSleepSettingsCard />;
+      return (
+        <div className="space-y-12">
+          <PreventSleepSettingsCard />
+          <GlobalAgentConfigSettingsCard />
+        </div>
+      );
     case "channel-templates":
       return <ChannelTemplatesSettingsCard />;
     case "compute":
@@ -693,8 +699,10 @@ export function renderSettingsSection(
       return <ThemeSettingsCard />;
     case "shortcuts":
       return <KeyboardShortcutsCard />;
-    case "relay-members":
-      return <RelayMembersSettingsCard currentPubkey={props.currentPubkey} />;
+    case "community-members":
+      return (
+        <CommunityMembersSettingsCard currentPubkey={props.currentPubkey} />
+      );
     case "moderation":
       return <ModerationQueueCard />;
     case "custom-emoji":

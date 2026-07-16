@@ -28,6 +28,7 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
@@ -57,6 +58,7 @@ import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurn
 import type { ChannelSection } from "@/features/sidebar/lib/useChannelSections";
 import type { Channel } from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
+import { getPlatformKeysById } from "@/shared/lib/keyboard-shortcuts";
 import { HashSearch } from "@/shared/ui/icons";
 import { StatusEmoji } from "@/features/user-status/ui/StatusEmoji";
 
@@ -200,6 +202,9 @@ export function SectionActionsMenu({
           <DropdownMenuItem onSelect={() => deferMenuAction(onBrowse)}>
             <HashSearch className="h-4 w-4" />
             <span>{browseLabel ?? "Browse channels"}</span>
+            <DropdownMenuShortcut>
+              {getPlatformKeysById("browse-channels")}
+            </DropdownMenuShortcut>
           </DropdownMenuItem>
         ) : null}
         {onCreate ? (
@@ -337,6 +342,8 @@ export function ChannelGroupSection({
   listTestId,
   onBrowseClick,
   onCreateClick,
+  onQuickCreateClick,
+  quickCreateLabel,
   showQuickCreate,
   onMarkAllRead,
   onMarkChannelRead,
@@ -374,6 +381,14 @@ export function ChannelGroupSection({
   listTestId: string;
   onBrowseClick?: () => void;
   onCreateClick?: () => void;
+  /**
+   * Overrides the quick-create (`+`) button's click handler. Defaults to
+   * `onCreateClick`. Used to point the sidebar `+` at the unified
+   * "Add channel" search-and-create browser instead of the bare create form.
+   */
+  onQuickCreateClick?: () => void;
+  /** Overrides the quick-create button's aria-label/tooltip. */
+  quickCreateLabel?: string;
   showQuickCreate?: boolean;
   onMarkChannelRead: (
     channelId: string,
@@ -411,11 +426,7 @@ export function ChannelGroupSection({
     items.length > 0 ? (
       <SidebarMenu data-testid={listTestId}>
         {items.map((channel) => (
-          // modal={false}: menu items (e.g. Leave channel) open a modal
-          // AlertDialog. A modal ContextMenu would leave `pointer-events: none`
-          // stuck on <body> when it closes as the dialog mounts, freezing the
-          // whole app. Non-modal avoids installing that body guard entirely.
-          <ContextMenu key={channel.id} modal={false}>
+          <ContextMenu key={channel.id}>
             <ContextMenuTrigger asChild>
               <SidebarMenuItem className="content-visibility-auto-row">
                 {draggable ? (
@@ -484,10 +495,10 @@ export function ChannelGroupSection({
         title={title}
         actions={
           <>
-            {showQuickCreate && onCreateClick ? (
+            {showQuickCreate && (onQuickCreateClick ?? onCreateClick) ? (
               <SectionQuickAction
-                label={createLabel ?? "Create channel"}
-                onClick={onCreateClick}
+                label={quickCreateLabel ?? createLabel ?? "Create channel"}
+                onClick={(onQuickCreateClick ?? onCreateClick) as () => void}
                 testId={
                   actionsTestId ? `${actionsTestId}-quick-create` : undefined
                 }
@@ -610,10 +621,7 @@ export function CustomChannelSection({
             )}
             data-section-actions-open={actionsMenuOpen || undefined}
           >
-            {/* modal={false}: Rename/Delete section open a modal dialog;
-                a modal ContextMenu would leave `pointer-events: none` stuck on
-                <body> after it closes, freezing the app. */}
-            <ContextMenu modal={false}>
+            <ContextMenu>
               <ContextMenuTrigger asChild>
                 <div className="relative" {...dragHandleProps}>
                   <SidebarGroupLabel asChild>
@@ -702,10 +710,7 @@ export function CustomChannelSection({
                 {channels.length > 0 ? (
                   <SidebarMenu>
                     {channels.map((channel) => (
-                      // modal={false}: see note on the other channel ContextMenu
-                      // above — avoids the pointer-events lockup when Leave
-                      // channel's AlertDialog opens.
-                      <ContextMenu key={channel.id} modal={false}>
+                      <ContextMenu key={channel.id}>
                         <ContextMenuTrigger asChild>
                           <SidebarMenuItem>
                             <DraggableChannelRow channelId={channel.id}>

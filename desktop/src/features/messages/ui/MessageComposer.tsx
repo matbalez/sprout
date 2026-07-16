@@ -2,6 +2,7 @@ import * as React from "react";
 
 import { EditorContent } from "@tiptap/react";
 import { useChannelLinks } from "@/features/messages/lib/useChannelLinks";
+import { handleAgentSnapshotPaste } from "@/features/messages/lib/agentSnapshotClipboard";
 import { useComposerAutofocus } from "@/features/messages/lib/useComposerAutofocus";
 import type { ChannelSuggestion } from "@/features/messages/lib/useChannelLinks";
 import { useDrafts } from "@/features/messages/lib/useDrafts";
@@ -15,6 +16,7 @@ import {
   findSpoileredImetaMediaUrls,
   type ImetaMedia,
   mergeOutgoingTags,
+  restoreImetaMediaDisplayLabels,
   stripImetaMediaLines,
 } from "@/features/messages/lib/imetaMediaMarkdown";
 import { resolveBountyTargetPubkey } from "@/features/messages/lib/messageBounties";
@@ -25,6 +27,8 @@ import {
   useMediaUpload,
 } from "@/features/messages/lib/useMediaUpload";
 import { useMentions } from "@/features/messages/lib/useMentions";
+import { getPersistentAgentAudienceScope } from "@/features/messages/lib/persistentAgentAudience";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import type { UserProfileLookup } from "@/features/profile/lib/identity";
 import {
   hasMentionClipboardHtml,
@@ -58,10 +62,16 @@ import { useComposerBounty } from "./useComposerBounty";
 import { useComposerKudos } from "./useComposerKudos";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
 import { useMentionSendFlow } from "./useMentionSendFlow";
+import { usePersistentAgentMentionHydration } from "./usePersistentAgentMentionHydration";
 import { useComposerContentState } from "./useComposerContentState";
 import { useDraftPersistLifecycle } from "./useDraftPersistSnapshot";
 
+type MessageComposerAudienceContext =
+  | { type: "timeline" }
+  | { type: "thread"; threadRootId: string };
+
 type MessageComposerProps = {
+  audienceContext?: MessageComposerAudienceContext | null;
   channelId?: string | null;
   channelName: string;
   channelType?: ChannelType | null;
@@ -102,16 +112,14 @@ type MessageComposerProps = {
    */
   onEditLastOwnMessage?: () => boolean;
   onEditSave?: (content: string, mediaTags?: string[][]) => Promise<void>;
-  /**
-   * Called synchronously at the start of `submitMessage`, before any awaits,
-   * to capture context that must be stable throughout the async send pipeline.
-   * Used by the thread-reply composer to capture the current reply target before
-   * the mention-flow awaits can change navigation state.
-   */
+  /** Captures send context synchronously before awaits can change navigation. */
   onCaptureSendContext?: () => {
     parentEventId: string | null;
     threadHeadId: string | null;
   } | null;
+  /** Resolves the channel required to prepare mentions before sending. */
+  onPrepareSendChannel?: (pubkeys?: string[]) => Promise<string | null>;
+  onPreparingMentionSendChange?: (isPreparing: boolean) => void;
   onSend: (
     content: string,
     mentionPubkeys: string[],
@@ -138,6 +146,7 @@ type MessageComposerProps = {
 };
 
 function MessageComposerImpl({
+  audienceContext = null,
   channelId = null,
   channelName,
   channelType = null,
@@ -153,6 +162,8 @@ function MessageComposerImpl({
   onCaptureSendContext,
   onEditLastOwnMessage,
   onEditSave,
+  onPrepareSendChannel,
+  onPreparingMentionSendChange,
   onSend,
   paymentAnnotation,
   placeholder,
@@ -187,7 +198,19 @@ function MessageComposerImpl({
   }, []);
 
   const drafts = useDrafts();
+  const identityQuery = useIdentityQuery();
   const effectiveDraftKey = draftKey ?? channelId;
+  const ownerPubkey = identityQuery.data?.pubkey ?? null;
+  const audienceThreadRootId =
+    audienceContext?.type === "thread" ? audienceContext.threadRootId : null;
+  const audienceScope =
+    audienceContext && channelId && ownerPubkey
+      ? getPersistentAgentAudienceScope({
+          ownerPubkey,
+          channelId,
+          threadRootId: audienceThreadRootId,
+        })
+      : null;
   const effectiveDraftKeyRef = React.useRef(effectiveDraftKey);
   effectiveDraftKeyRef.current = effectiveDraftKey;
   // Snapshot composer state before edit mode so cancel can restore it.
@@ -325,6 +348,8 @@ function MessageComposerImpl({
       channelLinks.updateChannelQuery(text, cursor);
       emojiAutocomplete.updateEmojiQuery(text, cursor);
 
+      persistentMentionHydrationRef.current?.reconcile(text);
+
       if (text.trim().length > 0) {
         notifyTyping();
       }
@@ -363,6 +388,19 @@ function MessageComposerImpl({
   onLinkShortcutRef.current = linkEditor.openFromShortcut;
   useComposerSpoilerParticles(richText.editor, composerScrollRef);
 
+  const persistentMentionHydration = usePersistentAgentMentionHydration({
+    audienceScope,
+    hydrationKey: effectiveDraftKey,
+    isEditing: editTarget != null,
+    mentions,
+    richText,
+  });
+  const persistentAudience = persistentMentionHydration.audience;
+  const persistentMentionHydrationRef = React.useRef(
+    persistentMentionHydration,
+  );
+  persistentMentionHydrationRef.current = persistentMentionHydration;
+
   const mentionSendFlow = useMentionSendFlow({
     channelId,
     channelLinks,
@@ -372,12 +410,24 @@ function MessageComposerImpl({
     drafts,
     emojiAutocomplete,
     mentions,
+    onPrepareSendChannel,
     onSendRef,
     richText,
     setContent: setComposerContent,
     setIsEmojiPickerOpen,
     setPendingImeta: media.setPendingImeta,
     setSpoileredAttachmentUrls,
+    onSuccessfulExplicitAgentAudience:
+      persistentAudience.enabled && audienceContext && ownerPubkey
+        ? ({ channelId: successfulChannelId, ...promotion }) => {
+            const scope = getPersistentAgentAudienceScope({
+              ownerPubkey,
+              channelId: successfulChannelId,
+              threadRootId: audienceThreadRootId,
+            });
+            persistentAudience.promotePubkeys({ ...promotion, scope });
+          }
+        : undefined,
   });
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: editTarget?.id is the trigger
@@ -396,21 +446,19 @@ function MessageComposerImpl({
       // Strip the trailing `![image|video](url)` lines that correspond to
       // imeta attachments — the user manages those via the attachments row,
       // not via raw markdown in the editor.
-      const editableBody = stripImetaMediaLines(
+      const editableImeta = restoreImetaMediaDisplayLabels(
         editTarget.body,
         editTarget.imetaMedia ?? [],
       );
+      const editableBody = stripImetaMediaLines(editTarget.body, editableImeta);
       setComposerContent(editableBody);
       richText.setContent(editableBody);
       // Seed the composer's pending-imeta state with the original event's
       // attachments so they show up in `ComposerAttachments` and the user
       // can remove existing ones / add new ones before saving.
-      media.setPendingImeta(editTarget.imetaMedia ?? []);
+      media.setPendingImeta(editableImeta);
       setSpoileredAttachmentUrls(
-        findSpoileredImetaMediaUrls(
-          editTarget.body,
-          editTarget.imetaMedia ?? [],
-        ),
+        findSpoileredImetaMediaUrls(editTarget.body, editableImeta),
       );
       // Defer focus to the next frame so it runs after any focus-
       // restoration the trigger UI (e.g. the message-row context menu)
@@ -651,8 +699,6 @@ function MessageComposerImpl({
     }
 
     const capturedThreadContext = onCaptureSendContext?.() ?? null;
-    // If a thread-reply composer reported no reply target at submit time,
-    // bail here rather than discovering the null later after async awaits.
     if (
       capturedThreadContext !== null &&
       !capturedThreadContext.parentEventId
@@ -667,6 +713,8 @@ function MessageComposerImpl({
     const savedSpoileredAttachmentUrls = new Set(spoileredAttachmentUrls);
 
     setSendError(null);
+    onPreparingMentionSendChange?.(true);
+    persistentMentionHydration.beginSubmit();
     try {
       await mentionSendFlow.sendMessageWithMentionFlow({
         onClearExtras: () => {
@@ -706,11 +754,16 @@ function MessageComposerImpl({
         ),
         spoileredAttachmentUrls,
         trimmed,
+        audienceGeneration: persistentAudience.generation,
+        audienceRevision: audienceScope ? persistentAudience.revision : null,
       });
     } catch (error) {
       setSendError(
         error instanceof Error ? error.message : "Failed to send message.",
       );
+    } finally {
+      persistentMentionHydration.endSubmit();
+      onPreparingMentionSendChange?.(false);
     }
   }, [
     channelId,
@@ -735,6 +788,11 @@ function MessageComposerImpl({
     syncComposerContentFromEditor,
     contentRef,
     onCaptureSendContext,
+    onPreparingMentionSendChange,
+    audienceScope,
+    persistentMentionHydration,
+    persistentAudience.generation,
+    persistentAudience.revision,
   ]);
   submitMessageRef.current = submitMessage;
 
@@ -895,12 +953,10 @@ function MessageComposerImpl({
             return true;
           }
 
-          // --- Mention / channel-link normalization ---
-          // When copying from the chat area the browser puts styled HTML
-          // on the clipboard. The mention/channel-link wrappers have
-          // font-weight:600 which Tiptap's Bold extension misinterprets
-          // as bold. Strip those wrappers and use ProseMirror's pasteHTML
-          // to parse the cleaned HTML into proper rich content nodes.
+          // Restore Buzz snapshots before normal styled-HTML normalization.
+          if (handleAgentSnapshotPaste(event, media.setPendingImeta))
+            return true;
+          // Strip mention/channel wrappers that Tiptap would misread as bold.
           const html = event.clipboardData?.getData("text/html");
           if (html && hasMentionClipboardHtml(html)) {
             const cleanHtml = normalizeMentionClipboardHtml(html);
@@ -918,7 +974,7 @@ function MessageComposerImpl({
         },
       },
     });
-  }, [richText.editor, scrollComposerToBottom]);
+  }, [media.setPendingImeta, richText.editor, scrollComposerToBottom]);
 
   // ── Send button state ───────────────────────────────────────────────
   const sendDisabled = React.useMemo(

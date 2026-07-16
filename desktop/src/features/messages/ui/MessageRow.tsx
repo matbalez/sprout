@@ -43,6 +43,7 @@ import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext"
 import { parseImetaTags } from "@/features/messages/lib/parseImeta";
 import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
+import { resolveSnapshotSharedBy } from "@/features/messages/lib/snapshotSharedBy";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 import { Markdown } from "@/shared/ui/markdown";
 import type { VideoReviewContext } from "@/shared/ui/VideoPlayer";
@@ -223,7 +224,7 @@ export const MessageRow = React.memo(
       () => resolveMentionProps(message.tags, profiles),
       [profiles, message.tags],
     );
-    // "Is this pubkey an agent" = the workspace-scoped baseline every surface
+    // "Is this pubkey an agent" = the community-scoped baseline every surface
     // shares (managed ∪ relay) plus the pubkey's own profile `isAgent` flag from this surface's lookup. Both are per-pubkey
     // O(1) checks — no per-row rescan of `profiles` (that duplicated parent
     // work in every mounted row and re-ran on each profile-lookup change).
@@ -261,6 +262,14 @@ export const MessageRow = React.memo(
     const imetaByUrl = React.useMemo(
       () => (message.tags ? parseImetaTags(message.tags) : undefined),
       [message.tags],
+    );
+    const snapshotSharedBy = React.useMemo(
+      () =>
+        resolveSnapshotSharedBy(
+          { signerPubkey: message.signerPubkey },
+          profiles,
+        ),
+      [message.signerPubkey, profiles],
     );
 
     const { customEmoji, emojiOnly } = useMessageEmoji(
@@ -404,6 +413,7 @@ export const MessageRow = React.memo(
               mentionNames={mentionNames}
               mentionPubkeysByName={mentionPubkeysByName}
               searchQuery={searchQuery}
+              snapshotSharedBy={snapshotSharedBy}
               videoReviewContext={videoReviewContext}
             />
           );

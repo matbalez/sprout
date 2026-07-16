@@ -1,9 +1,11 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::managed_agents::{
+    buzz_managed_command_path, buzz_managed_node_bin_dir, buzz_managed_npm_bin_dir,
     AcpAvailabilityStatus, AcpRuntimeCatalogEntry, AuthStatus, CommandAvailabilityInfo,
 };
 
@@ -22,6 +24,10 @@ pub(crate) struct KnownAcpRuntime {
     pub underlying_cli: Option<&'static str>,
     /// Shell commands to install the runtime CLI itself (run sequentially).
     pub cli_install_commands: &'static [&'static str],
+    /// Windows-specific CLI install commands (e.g. PowerShell installers).
+    /// When non-empty on Windows, these are used instead of `cli_install_commands`.
+    #[allow(dead_code)] // read only on Windows via cli_install_commands_for_os()
+    pub cli_install_commands_windows: &'static [&'static str],
     /// Shell commands to install the ACP adapter (run sequentially, after CLI).
     pub adapter_install_commands: &'static [&'static str],
     /// Link to docs/repo for manual instructions.
@@ -66,6 +72,23 @@ pub(crate) struct KnownAcpRuntime {
     pub auth_probe_args: Option<&'static [&'static str]>,
 }
 
+impl KnownAcpRuntime {
+    /// Return the CLI install commands for the current platform.
+    ///
+    /// On Windows, returns `cli_install_commands_windows` when non-empty,
+    /// falling back to the default `cli_install_commands`. On other platforms
+    /// always returns `cli_install_commands`.
+    pub fn cli_install_commands_for_os(&self) -> &[&str] {
+        #[cfg(windows)]
+        {
+            if !self.cli_install_commands_windows.is_empty() {
+                return self.cli_install_commands_windows;
+            }
+        }
+        self.cli_install_commands
+    }
+}
+
 const GOOSE_AVATAR_URL: &str = "https://goose-docs.ai/img/logo_dark.png";
 const CLAUDE_CODE_AVATAR_URL: &str = "https://anthropic.gallerycdn.vsassets.io/extensions/anthropic/claude-code/2.1.77/1773707456892/Microsoft.VisualStudio.Services.Icons.Default";
 const CODEX_AVATAR_URL: &str = "https://openai.gallerycdn.vsassets.io/extensions/openai/chatgpt/26.5313.41514/1773706730621/Microsoft.VisualStudio.Services.Icons.Default";
@@ -73,7 +96,6 @@ const BUZZ_AGENT_AVATAR_URL: &str =
     "https://raw.githubusercontent.com/block/buzz/refs/heads/main/crates/buzz-agent/buzz-agent.png";
 
 fn common_binary_paths() -> &'static [PathBuf] {
-    use std::sync::OnceLock;
     static PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
     PATHS.get_or_init(|| {
         let mut paths = vec![
@@ -82,6 +104,12 @@ fn common_binary_paths() -> &'static [PathBuf] {
             PathBuf::from("/usr/bin"),
             PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         ];
+        if let Some(managed_node_bin) = buzz_managed_node_bin_dir() {
+            paths.insert(0, managed_node_bin);
+        }
+        if let Some(managed_bin) = buzz_managed_npm_bin_dir() {
+            paths.insert(0, managed_bin);
+        }
         if let Some(home) = dirs::home_dir() {
             paths.extend([
                 home.join(".local/share/mise/shims"),
@@ -89,6 +117,22 @@ fn common_binary_paths() -> &'static [PathBuf] {
                 home.join(".volta/bin"),
                 home.join(".asdf/shims"),
             ]);
+        }
+        // Windows well-known dirs for npm global shims and standalone installer targets.
+        #[cfg(windows)]
+        {
+            if let Some(appdata) = std::env::var_os("APPDATA") {
+                paths.push(PathBuf::from(appdata).join("npm"));
+            }
+            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+                paths.push(
+                    PathBuf::from(local)
+                        .join("Programs")
+                        .join("OpenAI")
+                        .join("Codex")
+                        .join("bin"),
+                );
+            }
         }
         paths
     })
@@ -105,6 +149,7 @@ const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
         mcp_hooks: false,
         underlying_cli: Some("goose"),
         cli_install_commands: &["curl -fsSL https://github.com/block-open-source/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash"],
+        cli_install_commands_windows: &[], // goose install script is already Windows-aware
         adapter_install_commands: &[],
         install_instructions_url: "https://block.github.io/goose/",
         cli_install_hint: "Install Goose via the official install script.",
@@ -135,6 +180,7 @@ const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
         mcp_hooks: false,
         underlying_cli: Some("claude"),
         cli_install_commands: &["curl -fsSL https://claude.ai/install.sh | bash"],
+        cli_install_commands_windows: &["powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex\""],
         adapter_install_commands: &["npm install -g @agentclientprotocol/claude-agent-acp"],
         install_instructions_url: "https://github.com/agentclientprotocol/claude-agent-acp",
         cli_install_hint: "Install the Claude Code CLI via the official install script.",
@@ -165,6 +211,7 @@ const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
         mcp_hooks: false,
         underlying_cli: Some("codex"),
         cli_install_commands: &["curl -fsSL https://chatgpt.com/codex/install.sh | sh"],
+        cli_install_commands_windows: &["powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"irm https://chatgpt.com/codex/install.ps1 | iex\""],
         adapter_install_commands: &["npm install -g @agentclientprotocol/codex-acp"],
         install_instructions_url: "https://github.com/agentclientprotocol/codex-acp",
         cli_install_hint: "Install the Codex CLI via the official install script.",
@@ -196,6 +243,7 @@ const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
         mcp_hooks: true,
         underlying_cli: None,
         cli_install_commands: &[],
+        cli_install_commands_windows: &[],
         adapter_install_commands: &[],
         install_instructions_url: "https://github.com/block/buzz",
         cli_install_hint: "Ships with the Buzz desktop app.",
@@ -288,9 +336,9 @@ pub(crate) fn known_acp_runtime_exact(id: &str) -> Option<&'static KnownAcpRunti
 }
 
 /// The agent command a freshly-created agent defaults to when the create
-/// request supplies none. Resolves the bundled `buzz-agent` from the catalog —
-/// the same shape `mesh_llm::preset` uses — so the default can't drift from the
-/// provider definition. Falls back to the id if the catalog entry is missing.
+/// request supplies none. Resolves the bundled `buzz-agent` from the catalog so
+/// the default cannot drift from the provider definition. Falls back to the id
+/// if the catalog entry is missing.
 ///
 /// The previous default was the bare global `goose`, which is not on PATH on a
 /// stock Windows install: every worker failed with `program not found`. The
@@ -400,32 +448,32 @@ pub fn normalize_agent_args(command: &str, agent_args: Vec<String>) -> Vec<Strin
     normalized
 }
 
+fn profile_target_dirs(root: &Path) -> [PathBuf; 2] {
+    if cfg!(debug_assertions) {
+        // `just dev` builds fresh debug sidecars; never prefer stale release output.
+        [root.join("target/debug"), root.join("target/release")]
+    } else {
+        [root.join("target/release"), root.join("target/debug")]
+    }
+}
+
 fn command_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        workspace_root_dir().join("target/release"),
-        workspace_root_dir().join("target/debug"),
-    ];
-
+    let mut dirs = profile_target_dirs(&workspace_root_dir()).to_vec();
     if let Ok(current_dir) = std::env::current_dir() {
-        dirs.push(current_dir.join("target/release"));
-        dirs.push(current_dir.join("target/debug"));
+        dirs.extend(profile_target_dirs(&current_dir));
     }
 
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(parent) = exe_path.parent() {
-            dirs.push(parent.to_path_buf());
+    dirs.extend(
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(Path::to_path_buf)),
+    );
+    dirs.into_iter().fold(Vec::new(), |mut unique, dir| {
+        if !unique.contains(&dir) {
+            unique.push(dir);
         }
-    }
-
-    let mut unique = Vec::new();
-    for dir in dirs {
-        if unique.iter().any(|candidate: &PathBuf| candidate == &dir) {
-            continue;
-        }
-        unique.push(dir);
-    }
-
-    unique
+        unique
+    })
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -473,6 +521,10 @@ fn resolve_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String
 /// The cache eliminates redundant login-shell spawns when multiple agents share
 /// the same binaries (e.g. `npx`, `uvx`).
 pub fn resolve_command(command: &str) -> Option<PathBuf> {
+    if let Some(managed) = resolve_buzz_managed_command(command) {
+        return Some(managed);
+    }
+
     let cache = resolve_cache();
 
     // Fast path: return cached result without allocating a key.
@@ -567,14 +619,47 @@ pub(crate) fn availability_drift(
     }
 }
 
+/// Return all candidate basenames for `command` on the current platform.
+///
+/// Always includes `executable_basename(command)` (appends `.exe` on Windows).
+/// On Windows also includes `.cmd` and `.bat` variants so npm-generated shims
+/// (e.g. `codex-acp.cmd` in `%APPDATA%\npm`) are discoverable.
+fn command_basenames(command: &str) -> Vec<String> {
+    let candidates = vec![executable_basename(command)];
+    #[cfg(windows)]
+    {
+        let mut candidates = candidates;
+        if !command.contains('.') {
+            candidates.push(format!("{command}.cmd"));
+            candidates.push(format!("{command}.bat"));
+        }
+        return candidates;
+    }
+    #[allow(unreachable_code)]
+    candidates
+}
+
+fn resolve_buzz_managed_command(command: &str) -> Option<PathBuf> {
+    let basenames = command_basenames(command);
+    basenames
+        .iter()
+        .find_map(|basename| buzz_managed_command_path(command, basename))
+}
+
 fn resolve_command_uncached(command: &str) -> Option<PathBuf> {
     if let Some(path) = resolve_workspace_command(command) {
         return Some(path);
     }
 
+    let basenames = command_basenames(command);
+
     if command_looks_like_path(command) {
         let path = PathBuf::from(command);
         return path.exists().then_some(path);
+    }
+
+    if let Some(managed) = resolve_buzz_managed_command(command) {
+        return Some(managed);
     }
 
     for candidate in path_candidates_from_env(command) {
@@ -583,13 +668,27 @@ fn resolve_command_uncached(command: &str) -> Option<PathBuf> {
         }
     }
 
+    // On Windows, also scan PATH for .cmd/.bat shims (npm globals).
+    #[cfg(windows)]
+    {
+        for basename in command_basenames(command).iter().skip(1) {
+            for candidate in path_candidates_from_env_raw(basename) {
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
     if let Some(path) = find_via_login_shell(command) {
         return Some(path);
     }
     for dir in common_binary_paths() {
-        let candidate = dir.join(executable_basename(command));
-        if is_executable_file(&candidate) {
-            return Some(candidate);
+        for basename in &basenames {
+            let candidate = dir.join(basename);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
         }
     }
 
@@ -599,9 +698,11 @@ fn resolve_command_uncached(command: &str) -> Option<PathBuf> {
     // invisible.
     if let Some(home) = dirs::home_dir() {
         if let Some(nvm_bin) = find_nvm_default_bin(&home) {
-            let candidate = nvm_bin.join(executable_basename(command));
-            if is_executable_file(&candidate) {
-                return Some(candidate);
+            for basename in &basenames {
+                let candidate = nvm_bin.join(basename);
+                if is_executable_file(&candidate) {
+                    return Some(candidate);
+                }
             }
         }
     }
@@ -619,11 +720,40 @@ fn path_candidates_from_env(command: &str) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Run a command in a login shell (tries zsh then bash).
+/// Like `path_candidates_from_env` but joins `basename` as-is (no `.exe` suffix).
+/// Used for `.cmd`/`.bat` shim resolution on Windows.
+#[cfg(windows)]
+fn path_candidates_from_env_raw(basename: &str) -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(basename))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// Collect login shell candidates for the current platform.
+///
+/// On Unix: `/bin/zsh`, `/bin/bash` (the historical defaults).
+/// On Windows: Git Bash via `resolve_bash_path` — skips `BUZZ_SHELL` because
+/// login-shell callers use bash-only `-l -c` syntax.
+fn login_shell_candidates() -> Vec<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        vec![PathBuf::from("/bin/zsh"), PathBuf::from("/bin/bash")]
+    }
+    #[cfg(windows)]
+    {
+        super::git_bash::resolve_bash_path().into_iter().collect()
+    }
+}
+
+/// Run a command in a login shell (tries zsh then bash on Unix, Git Bash on Windows).
 /// Returns trimmed stdout if the command succeeds with non-empty output.
 fn run_in_login_shell(args: &[&str]) -> Option<String> {
-    for shell in ["/bin/zsh", "/bin/bash"] {
-        let Ok(output) = Command::new(shell).args(args).output() else {
+    for shell in login_shell_candidates() {
+        let Ok(output) = Command::new(&shell).args(args).output() else {
             continue;
         };
         if !output.status.success() {
@@ -661,9 +791,22 @@ fn path_cache() -> &'static std::sync::Mutex<LoginShellPath> {
 }
 
 fn fetch_login_shell_path_inner() -> Option<String> {
-    let stdout = run_in_login_shell(&["-l", "-c", "echo $PATH"])?;
-    let last_line = stdout.lines().rfind(|l| !l.trim().is_empty())?;
-    Some(last_line.trim().to_string())
+    // On Windows, Git Bash's `echo $PATH` returns POSIX colon-delimited paths
+    // (`/mingw64/bin:/c/Users/...`) which poison native Windows children that
+    // split on `;`. login_shell_path() feeds agent_models, runtime, and
+    // cli_probe — all native processes. Return None so they inherit the real
+    // Windows PATH instead.
+    #[cfg(windows)]
+    {
+        return None;
+    }
+
+    #[cfg(not(windows))]
+    {
+        let stdout = run_in_login_shell(&["-l", "-c", "echo $PATH"])?;
+        let last_line = stdout.lines().rfind(|l| !l.trim().is_empty())?;
+        Some(last_line.trim().to_string())
+    }
 }
 
 /// Return the user's full PATH from a login shell.
@@ -817,13 +960,16 @@ fn runtime_needs_npm(runtime: &KnownAcpRuntime) -> bool {
         .any(|cmd| is_npm_global_install(cmd))
 }
 
-/// Returns `true` when `cmd` is an `npm install -g` invocation.
+/// Returns `true` when `cmd` is an npm global install/uninstall invocation.
 ///
-/// Used by Doctor to determine whether Node.js is required before running an
-/// install step, and by the npm EACCES preflight in the install command path.
+/// Buzz rewrites these catalog commands to an app-private npm prefix before
+/// execution; the global shape remains in the catalog so existing install plans
+/// and Doctor's Node.js-required detection stay simple.
 pub(crate) fn is_npm_global_install(cmd: &str) -> bool {
     let t = cmd.trim_start();
-    t.starts_with("npm install -g ") || t.starts_with("npm i -g ")
+    t.starts_with("npm install -g ")
+        || t.starts_with("npm i -g ")
+        || t.starts_with("npm uninstall -g ")
 }
 
 /// Run a CLI auth probe with a 10-second process-level timeout.
@@ -1129,7 +1275,7 @@ pub fn discover_acp_runtimes() -> Vec<AcpRuntimeCatalogEntry> {
                 .map(|cmd| normalize_agent_args(cmd, Vec::new()))
                 .unwrap_or_default();
 
-            let can_auto_install = !runtime.cli_install_commands.is_empty()
+            let can_auto_install = !runtime.cli_install_commands_for_os().is_empty()
                 || !runtime.adapter_install_commands.is_empty();
 
             let cli_hint = runtime.cli_install_hint;
@@ -1150,11 +1296,14 @@ pub fn discover_acp_runtimes() -> Vec<AcpRuntimeCatalogEntry> {
                 }
             };
 
-            // node_required: an npm adapter step is pending AND node/npm are absent.
+            // node_required now means Buzz cannot provide npm for this platform.
+            // On supported desktop platforms, Buzz downloads a private Node/npm
+            // runtime into app data before running npm-backed adapter installs.
             let node_required = matches!(
                 availability,
                 AcpAvailabilityStatus::AdapterMissing | AcpAvailabilityStatus::NotInstalled
             ) && runtime_needs_npm(runtime)
+                && buzz_managed_node_bin_dir().is_none()
                 && resolve_command("npm").is_none()
                 && resolve_command("node").is_none();
 

@@ -92,6 +92,9 @@ pub enum AcpError {
     #[error("Hard turn timeout exceeded")]
     HardTimeout,
 
+    #[error("Agent did not stop within {0:?} after cancellation")]
+    CancelDrainTimeout(std::time::Duration),
+
     #[error("Request timeout — agent did not respond within {0:?}")]
     Timeout(std::time::Duration),
 
@@ -116,6 +119,17 @@ fn agent_error_from_json(error: &serde_json::Value) -> AcpError {
         None => error.to_string(),
     };
     AcpError::AgentError { code, message }
+}
+
+fn build_initialize_params() -> serde_json::Value {
+    serde_json::json!({
+        "protocolVersion": 2,
+        "clientCapabilities": build_client_capabilities(),
+        "clientInfo": {
+            "name": "buzz-acp",
+            "version": env!("CARGO_PKG_VERSION")
+        },
+    })
 }
 
 /// ACP client that owns an agent subprocess and communicates over its stdio.
@@ -330,6 +344,29 @@ pub(crate) fn build_codex_config_env(
     Ok(Some(serde_json::Value::Object(base).to_string()))
 }
 
+fn build_client_capabilities() -> serde_json::Value {
+    serde_json::json!({
+        // Signal to ACP adapters that Buzz can hand users to terminal-native
+        // auth flows. Adapters decide which auth methods to expose; Buzz does
+        // not hardcode vendor login commands from this capability.
+        "auth": {
+            "terminal": true
+        },
+        // Signal to goose that we handle `_goose/unstable/session/update`
+        // notifications. Without this the custom notification is suppressed
+        // on goose's side and usage data is never emitted.
+        "_meta": {
+            "goose": {
+                "customNotifications": true
+            },
+            // Non-standard extension used by claude-agent-acp to advertise the
+            // exact terminal login argv for subscription auth. Unknown `_meta`
+            // keys are ignored by other adapters.
+            "terminal-auth": true
+        }
+    })
+}
+
 impl AcpClient {
     /// Kill the agent subprocess and wait for it to exit (no zombies).
     ///
@@ -498,26 +535,18 @@ impl AcpClient {
     pub async fn initialize(&mut self) -> Result<serde_json::Value, AcpError> {
         // Requesting version 2 is an intentional temporary pin — we are squatting
         // on ACP v2 ahead of the upstream ACP RFD. Revisit when that RFD merges.
-        let params = serde_json::json!({
-            "protocolVersion": 2,
-            "clientCapabilities": {
-                // Signal to goose that we handle `_goose/unstable/session/update`
-                // notifications. Without this the custom notification is suppressed
-                // on goose's side and usage data is never emitted.
-                "_meta": {
-                    "goose": {
-                        "customNotifications": true
-                    }
-                }
-            },
-            "clientInfo": {
-                "name": "buzz-acp",
-                "version": env!("CARGO_PKG_VERSION")
-            }
-        });
+        let params = build_initialize_params();
         let result = self.send_request("initialize", params).await?;
         tracing::debug!(target: "acp::init", "initialize response: {result}");
         Ok(result)
+    }
+
+    /// Send the ACP `authenticate` request for an adapter-advertised method.
+    pub async fn authenticate(&mut self, method_id: &str) -> Result<serde_json::Value, AcpError> {
+        let params = serde_json::json!({
+            "methodId": method_id,
+        });
+        self.send_request("authenticate", params).await
     }
 
     /// Send `session/new` and return the full response alongside the session ID.
@@ -815,6 +844,12 @@ impl AcpClient {
     /// cancellation look broken. This variant gives the agent a short chance to
     /// acknowledge cancellation, then returns a timeout so the caller can respawn
     /// the agent process and actually stop the work.
+    ///
+    /// The `grace` window is a cleanup deadline, not the turn's real max-turn
+    /// wall clock — a bounded drain that expires maps to
+    /// [`AcpError::CancelDrainTimeout`], never [`AcpError::HardTimeout`], so
+    /// callers can distinguish "agent didn't stop in time" from a genuine
+    /// configured hard-cap breach.
     pub async fn cancel_with_cleanup_grace(
         &mut self,
         session_id: &str,
@@ -822,8 +857,13 @@ impl AcpClient {
     ) -> Result<StopReason, AcpError> {
         let _ = self.current_hard_deadline.take();
         let hard_deadline = tokio::time::Instant::now() + grace;
-        self.cancel_with_cleanup_until(session_id, hard_deadline)
+        match self
+            .cancel_with_cleanup_until(session_id, hard_deadline)
             .await
+        {
+            Err(AcpError::HardTimeout) => Err(AcpError::CancelDrainTimeout(grace)),
+            other => other,
+        }
     }
 
     async fn cancel_with_cleanup_until(
@@ -2053,13 +2093,7 @@ mod tests {
             "method": "initialize",
             "params": {
                 "protocolVersion": 2,
-                "clientCapabilities": {
-                    "_meta": {
-                        "goose": {
-                            "customNotifications": true
-                        }
-                    }
-                },
+                "clientCapabilities": build_client_capabilities(),
                 "clientInfo": {
                     "name": "buzz-acp",
                     "version": "0.1.0"
@@ -2072,6 +2106,11 @@ mod tests {
             Some("buzz-acp")
         );
         assert!(msg["params"]["clientCapabilities"].is_object());
+        assert_eq!(
+            msg["params"]["clientCapabilities"]["auth"]["terminal"].as_bool(),
+            Some(true),
+            "terminal auth capability must be advertised so adapters can expose terminal login methods"
+        );
         assert_eq!(
             msg["params"]["clientCapabilities"]["_meta"]["goose"]["customNotifications"].as_bool(),
             Some(true),
@@ -2541,6 +2580,27 @@ mod tests {
         assert!(
             matches!(result, Err(AcpError::HardTimeout)),
             "expected HardTimeout, got {result:?}"
+        );
+    }
+
+    /// `cancel_with_cleanup_grace`'s bounded drain deadline must map to
+    /// [`AcpError::CancelDrainTimeout`], never [`AcpError::HardTimeout`] —
+    /// the two share an underlying deadline mechanism but must not share
+    /// classification, since callers dead-letter a real `HardTimeout` and
+    /// must not dead-letter a drain that simply ran past its grace window.
+    #[tokio::test]
+    async fn cancel_with_cleanup_grace_maps_expiry_to_cancel_drain_timeout() {
+        // Agent ignores `session/cancel` on stdin and keeps producing noise
+        // forever — never drains within the grace window.
+        let mut client = spawn_script("while true; do echo 'noise'; sleep 0.01; done").await;
+        client.last_prompt_id = Some(999);
+        let grace = std::time::Duration::from_millis(200);
+        let result = client
+            .cancel_with_cleanup_grace("test-session", grace)
+            .await;
+        assert!(
+            matches!(result, Err(AcpError::CancelDrainTimeout(g)) if g == grace),
+            "expected CancelDrainTimeout({grace:?}), got {result:?}"
         );
     }
 

@@ -1,9 +1,6 @@
 import { formatBitcoinAmount } from "@/features/wallet/api";
 import { getUserProfile } from "@/shared/api/tauriProfiles";
-
-function shortPubkey(pubkey: string) {
-  return `${pubkey.slice(0, 8)}...${pubkey.slice(-4)}`;
-}
+import { truncatePubkey } from "@/shared/lib/pubkey";
 
 export function normalizeKlaimMentionName(
   name: string | null | undefined,
@@ -30,9 +27,9 @@ export async function resolveKlaimGiftMentionName(pubkey: string) {
     return (
       normalizeKlaimMentionName(profile.displayName) ||
       normalizeKlaimMentionName(profile.nip05Handle) ||
-      shortPubkey(pubkey)
+      truncatePubkey(pubkey)
     );
   } catch {
-    return shortPubkey(pubkey);
+    return truncatePubkey(pubkey);
   }
 }

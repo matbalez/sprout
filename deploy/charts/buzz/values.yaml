@@ -75,6 +75,10 @@ relay:
   sendBuffer: 1000
   requireAuthToken: true
   requireRelayMembership: true
+  # Staged rollout gate for authenticated media reads. When true, relay
+  # GET/HEAD /media/* requires Blossom kind 24242 t=get plus relay membership.
+  # Keep false until deployed desktop/mobile/CLI clients attach read auth.
+  requireMediaGetAuth: false
   allowNipOaAuth: true
   pubkeyAllowlist: false
   corsOrigins: []
@@ -214,17 +218,18 @@ httproute:
 # enabled: true  → mount a PVC at mountPath (durable across pod restarts, but a
 #   single ReadWriteOnce PVC binds to one node, so it does NOT support multi-pod
 #   scheduling across nodes on a Deployment).
-# enabled: false → mount a per-pod emptyDir at mountPath (pure scratch). This is
-#   the correct choice for multi-replica HA: each pod gets its own local working
-#   space, nothing is shared, and there is no volume to multi-attach. Safe
-#   because the object store + Postgres are the sources of truth, not this disk.
+# enabled: false → mount a per-pod emptyDir at mountPath (pure scratch), bounded
+#   by size. This is the correct choice for multi-replica HA: each pod gets its
+#   own local working space, nothing is shared, and there is no volume to
+#   multi-attach. Safe because the object store + Postgres are the sources of
+#   truth, not this disk.
 persistence:
   git:
     enabled: true
     mountPath: /var/lib/buzz/git
     storageClass: ""
     accessMode: ReadWriteOnce
-    size: 10Gi
+    size: 10Gi                    # PVC capacity or emptyDir sizeLimit
     annotations: {}
     existingClaim: ""
 
